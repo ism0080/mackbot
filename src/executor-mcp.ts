@@ -156,13 +156,13 @@ const renderContent = (content: CallToolResult["content"]): string => {
 };
 
 /** Executor's browser-mode pause envelope (and the pre-`requestId` `executionId` variant). */
-const APPROVAL_URL_PATTERN = /https?:\/\/[^\s"'<>]+/u;
-const APPROVAL_KEY_PATTERN = /"approvalUrl"\s*:/u;
-const APPROVAL_TEXT_PATTERN =
+export const APPROVAL_URL_PATTERN = /https?:\/\/[^\s"'<>]+/u;
+export const APPROVAL_KEY_PATTERN = /"approvalUrl"\s*:/u;
+export const APPROVAL_TEXT_PATTERN =
   /(approval (?:is )?required|user_approval_required|approve (?:the|this))/iu;
 const REQUEST_ID_PATTERN = /"(?:requestId|executionId)"\s*:\s*"([^"]+)"/u;
 
-const approvalNotice = (haystack: string): string => {
+export const approvalNotice = (haystack: string): string => {
   const url = APPROVAL_URL_PATTERN.exec(haystack)?.[0];
   const requestId = REQUEST_ID_PATTERN.exec(haystack)?.[1];
   const lines = ["APPROVAL REQUIRED — this call paused and needs the user to act."];
@@ -173,6 +173,14 @@ const approvalNotice = (haystack: string): string => {
     lines.push("Then call executor_resume with the requestId shown below.");
   }
   return lines.join("\n");
+};
+
+/** Return an approval notice if `haystack` looks like a paused approval, else null. */
+export const maybeApprovalNotice = (haystack: string): string | null => {
+  const looksPaused =
+    APPROVAL_KEY_PATTERN.test(haystack) ||
+    (APPROVAL_TEXT_PATTERN.test(haystack) && APPROVAL_URL_PATTERN.test(haystack));
+  return looksPaused ? approvalNotice(haystack) : null;
 };
 
 /** Assemble the model-facing body from content text and structured content. */

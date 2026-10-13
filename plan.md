@@ -22,7 +22,7 @@ mackbot is the self-hosted version of that: a fleet of durable agent bots, each 
 | Routines on a schedule | Cron Triggers → per-bot briefs (stable `operationId` = at-most-once) | "Show me once" workflow capture → saved routine |
 | Memory, smarter over time | Per-conversation typed docs + automatic compaction | Cross-bot shared memory via a `memory` Executor app (late todo, see below) |
 | Approvals / Auto Review | Executor approvals guard server-side; `browser` elicitation mode — paused call returns an `approvalUrl` surfaced over the HTTP API / event stream (a Telegram link once that channel lands), `resume` collects the answer; unsafe tools never auto-replay | `model` elicitation mode: approve/deny buttons in Telegram, answered via `resume` |
-| Bots in one thread passing work | — | Bot-to-bot delegation (a tool that hands work to another bot DO) |
+| Bots in one thread passing work | Built-in `delegate_to_bot` pi tool: any bot submit()s a task to another bot's DO and long-polls (55s) or returns a receipt; unsafe replay; approval links relayed in the answer. No per-bot gating (any→any) in v1 | Bot-to-bot delegation hardening: `delegatesTo` allowlists in bots.json, fire-and-poll / async callbacks, and richer multi-bot threading |
 
 Infrastructure pattern is the Hermes one (always-on durable agent harness). Product shape is Grok Bot: a fleet of teammates with jobs, not one general assistant.
 

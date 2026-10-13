@@ -58,6 +58,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
+import { createBotDelegation } from "./bot-delegation.ts";
 import { getBot, loadBots, resolveModelRef } from "./bots.ts";
 import type { ModelRef, ThinkingLevel } from "./bots.ts";
 
@@ -131,15 +132,18 @@ const toThinkingLevel = (level: ThinkingLevel): ModelThinkingLevel =>
  * is installed in the registry, so every conversation reaches Executor.
  */
 const makeHarnessFactory =
-  (env: Env): PiHarnessFactory =>
+  (env: Env, botId: string): PiHarnessFactory =>
   async ({ storage, context }) => {
     const registry = createRegistry();
     registry.install(createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }));
+    registry.install(createBotDelegation({ env, sourceBotId: botId }));
     const models = createModels();
     models.setProvider(opencodeGoProvider());
     models.setProvider(createAI({ binding: env.AI }).provider);
     return Harness.open(storage, { models, registry, settings: HARNESS_SETTINGS }, context);
   };
+
+
 
 /**
  * One bot: a pi-durable `PiHarness` hosted in a SQLite-backed Durable Object,
@@ -155,7 +159,7 @@ export class Bot extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.lifecycle = Lifecycle.install(this);
-    this.harness = new PiHarness({ harness: makeHarnessFactory(env) });
+    this.harness = new PiHarness({ harness: makeHarnessFactory(env, this.lifecycle.name) });
     this.lifecycle.use(this.harness);
   }
 
