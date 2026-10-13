@@ -1,0 +1,52 @@
+{
+  "name": "@ism0080/oxlint-plugin-forge",
+  "version": "0.3.5",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./catalog": {
+      "types": "./dist/catalog.d.ts",
+      "default": "./dist/catalog.js"
+    },
+    "./profiles": {
+      "types": "./dist/profiles.d.ts",
+      "default": "./dist/profiles.js"
+    }
+  },
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/**/*.map",
+    "!dist/vitest.config.*",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -b --clean && tsc -b",
+    "typecheck": "tsc -b --pretty false",
+    "test": "pnpm build && vitest run --config vitest.config.ts && node tests/smoke.mjs",
+    "publish:local": "pnpm build && pnpm publish --registry http://localhost:4873 --no-git-checks --tag local"
+  },
+  "dependencies": {
+    "@oxlint/plugins": "^1.82.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
+  },
+  "peerDependencies": {
+    "oxlint": ">=1.69.0"
+  },
+  "peerDependenciesMeta": {
+    "oxlint": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=26"
+  }
+}

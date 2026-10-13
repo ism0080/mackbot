@@ -1,0 +1,11 @@
+{
+  "jsPlugins": [
+    {
+      "name": "forge",
+      "specifier": "../../dist/index.js"
+    }
+  ],
+  "rules": {
+    "forge/no-direct-fetch": "error"
+  }
+}

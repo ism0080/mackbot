@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": ".",
+    "outDir": "dist",
+    "tsBuildInfoFile": "dist/.tsbuildinfo",
+    "rewriteRelativeImportExtensions": true,
+    "target": "es2023",
+    "lib": ["es2023"],
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "noUnusedLocals": true,
+    "skipLibCheck": true
+  },
+  "include": [
+    "catalog.ts",
+    "config.ts",
+    "index.ts",
+    "profiles.ts",
+    "registry.ts",
+    "rules/**/*.ts",
+    "shared/**/*.ts"
+  ],
+  "exclude": ["dist", "tests"]
+}

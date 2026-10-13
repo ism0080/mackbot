@@ -1,0 +1,20 @@
+# Dependencies (root and vendored tooling)
+node_modules/
+
+# Build output & incremental build state
+dist/
+*.tsbuildinfo
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+.dev.vars
+
+# Alchemy / Cloudflare local state
+.alchemy/
+.wrangler/
+
+# Coverage & caches
+coverage/
+.cache/

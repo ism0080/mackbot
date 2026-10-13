@@ -1,0 +1,30 @@
+{
+  "name": "mackbot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lint": "oxlint --config oxlint.config.ts",
+    "format": "oxfmt",
+    "tools:oxlint": "cd tools/oxlint && tsc -b --clean && tsc -b && vitest run --config vitest.config.ts && node tests/smoke.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261013.1",
+    "@oxlint/plugins": "^1.82.0",
+    "oxfmt": "^0.67.0",
+    "oxlint": "^1.82.0",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.0"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.2.0",
+    "@earendil-works/pi-ai": "1.2.0",
+    "@earendil-works/pi-durable": "1.2.0",
+    "@effect/platform-bun": "4.0.4",
+    "@effect/platform-node": "4.0.4",
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "agents": "0.28.1",
+    "alchemy": "2.0.0-beta.83",
+    "effect": "4.0.4"
+  }
+}
