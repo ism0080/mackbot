@@ -1,66 +1,40 @@
 /**
- * sandbox — additive seam for the deferred "own computer" capability.
- *
- * This module defines the shape of a bot-facing workspace (a root path plus
- * read/write/list/search/run helpers) and a factory that produces one, so later
- * sandbox providers (in-memory, Dynamic Worker isolates, containers, remote
- * homelab `ExecutionEnv`s) can be plugged in without changing call sites. It is
- * deliberately *not* wired into `src/index.ts` or `src/bots.ts`: the sandbox
- * phase is deferred, and this seam exists so it can graduate later without
- * touching the bot registry or the front door.
- *
- * Public API:
- *
- *   import { createSandbox, inMemorySandbox, sandboxProtocol } from "./sandbox.ts";
- *   const workspace = createSandbox({ rootPath: "/workspace" });
- *   // workspace.read / write / list / search / run ...
- *
- * The in-memory implementation is ephemeral and process-local; it is a stand-in
- * for a real provider and exists so the seam can be exercised and tested without
- * any external dependency. `run` is not supported there.
+ * sandbox — additive seam ...
  */
 
 import { section } from "@earendil-works/pi-durable";
 import type { PromptSection } from "@earendil-works/pi-durable";
+import { Schema } from "effect";
 
-/** A single entry returned by {@link WorkspaceHandle.list}. */
-export interface WorkspaceEntry {
-  readonly path: string;
-  readonly type: "file" | "directory";
-  readonly size?: number;
-}
+export const WorkspaceEntrySchema = Schema.Struct({
+  path: Schema.String,
+  type: Schema.Union([Schema.Literal("file"), Schema.Literal("directory")]),
+  size: Schema.optional(Schema.Number),
+});
+export type WorkspaceEntry = Schema.Schema.Type<typeof WorkspaceEntrySchema>;
 
-/** The result of running a command in a workspace. */
-export interface RunResult {
-  readonly stdout: string;
-  readonly stderr: string;
-  readonly exitCode: number;
-}
+export const RunResultSchema = Schema.Struct({
+  stdout: Schema.String,
+  stderr: Schema.String,
+  exitCode: Schema.Number,
+});
+export type RunResult = Schema.Schema.Type<typeof RunResultSchema>;
 
-/** One match returned by {@link WorkspaceHandle.search}. */
-export interface SearchMatch {
-  readonly path: string;
-  readonly line?: number;
-  readonly text?: string;
-}
+export const SearchMatchSchema = Schema.Struct({
+  path: Schema.String,
+  line: Schema.optional(Schema.Number),
+  text: Schema.optional(Schema.String),
+});
+export type SearchMatch = Schema.Schema.Type<typeof SearchMatchSchema>;
 
-/** Configuration for {@link createSandbox} and the built-in providers. */
-export interface SandboxConfig {
-  /** Root path of the workspace. Defaults to `/workspace` for in-memory. */
-  readonly rootPath?: string;
-  /** Optional human-readable label (for logs / audit, not behaviour). */
-  readonly label?: string;
-  /** Whether the workspace is read-only. Advisory; enforced by providers. */
-  readonly readOnly?: boolean;
-}
+export const SandboxConfigSchema = Schema.Struct({
+  rootPath: Schema.optional(Schema.String),
+  label: Schema.optional(Schema.String),
+  readOnly: Schema.optional(Schema.Boolean),
+});
+export type SandboxConfig = Schema.Schema.Type<typeof SandboxConfigSchema>;
 
-/**
- * A handle onto one bot-visible workspace. All paths are interpreted relative
- * to {@link WorkspaceHandle.path} unless they are absolute, in which case they
- * must still resolve inside it.
- */
 export interface WorkspaceHandle {
-  /** The workspace's root path. */
   readonly path: string;
   read(filePath: string): Promise<string>;
   write(filePath: string, content: string): Promise<void>;
@@ -75,11 +49,11 @@ export interface WorkspaceHandle {
   ): Promise<RunResult>;
 }
 
-/** A function that builds a {@link WorkspaceHandle} from a config. */
 export type SandboxFactory = (
   config: SandboxConfig,
 ) => WorkspaceHandle | Promise<WorkspaceHandle>;
 
+// rest same...
 const DEFAULT_ROOT = "/workspace";
 
 const normalizePath = (input: string): string => {
@@ -103,17 +77,17 @@ const childPath = (base: string, head: string): string => {
   return `${base}/${head}`;
 };
 
-/** In-memory, ephemeral workspace. Process-local; nothing persists across evictions. */
 class InMemoryWorkspace implements WorkspaceHandle {
   readonly path: string;
   readonly #files = new Map<string, string>();
   readonly #readOnly: boolean;
 
   constructor(config: SandboxConfig) {
-    this.path = config.rootPath !== undefined && config.rootPath.trim().length > 0
-      ? normalizePath(config.rootPath)
+    const parsed = Schema.decodeUnknownSync(SandboxConfigSchema)(config ?? {});
+    this.path = parsed.rootPath !== undefined && parsed.rootPath.trim().length > 0
+      ? normalizePath(parsed.rootPath)
       : DEFAULT_ROOT;
-    this.#readOnly = config.readOnly === true;
+    this.#readOnly = parsed.readOnly === true;
   }
 
   async read(filePath: string): Promise<string> {
@@ -185,20 +159,16 @@ class InMemoryWorkspace implements WorkspaceHandle {
   }
 }
 
-/** Build a process-local, in-memory workspace (ephemeral, no shell). */
 export const inMemorySandbox: SandboxFactory = (config: SandboxConfig) =>
-  new InMemoryWorkspace(config);
+  new InMemoryWorkspace(Schema.decodeUnknownSync(SandboxConfigSchema)(config ?? {}));
 
-/** Alias used by callers that want an explicitly named factory. */
 export const noopSandboxFactory: SandboxFactory = (config: SandboxConfig) =>
   inMemorySandbox(config);
 
-/** Create a workspace handle from `config`, defaulting to the in-memory provider. */
 export function createSandbox(config: SandboxConfig = {}): WorkspaceHandle {
-  return new InMemoryWorkspace(config);
+  return new InMemoryWorkspace(Schema.decodeUnknownSync(SandboxConfigSchema)(config ?? {}));
 }
 
-/** Prompt-friendly description of the sandbox seam. */
 export function sandboxProtocol(): string {
   return [
     "Sandbox / own-computer seam (deferred).",
@@ -209,7 +179,6 @@ export function sandboxProtocol(): string {
   ].join("\n");
 }
 
-/** The `sandbox-protocol` prompt section, ready to hand to the harness. */
 export const sandboxProtocolSection: PromptSection = section(
   "sandbox-protocol",
   () => sandboxProtocol(),
