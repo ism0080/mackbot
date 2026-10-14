@@ -4,14 +4,10 @@
 
 import { Effect, Predicate, Schema } from "effect";
 
-type RawJson = string | number | boolean | null | readonly RawJson[] | RawObject;
+type SqlBinding = string | number | boolean | null;
 
-interface RawObject {
-  readonly [key: string]: RawJson;
-}
-
-type RawRow = {
-  readonly [key: string]: RawJson;
+type SqlRow = {
+  readonly [key: string]: SqlBinding;
 };
 
 export const AuditEventSchema = Schema.Struct({
@@ -19,22 +15,22 @@ export const AuditEventSchema = Schema.Struct({
   botId: Schema.String,
   kind: Schema.String,
   operationId: Schema.String,
-  detail: Schema.Unknown,
+  detail: Schema.Json,
 });
 
 export type AuditEvent = Schema.Schema.Type<typeof AuditEventSchema>;
 
 interface SqlCursor {
-  toArray(): readonly RawRow[];
+  toArray(): readonly SqlRow[];
 }
 
 interface SqlExecutor {
-  exec(query: string, ...bindings: RawJson[]): SqlCursor | void | Promise<SqlCursor | void>;
+  exec(query: string, ...bindings: SqlBinding[]): SqlCursor | void | Promise<SqlCursor | void>;
 }
 
 interface AuditStorage {
   readonly sql?: SqlExecutor;
-  exec?(query: string, ...bindings: RawJson[]): SqlCursor | void | Promise<SqlCursor | void>;
+  exec?(query: string, ...bindings: SqlBinding[]): SqlCursor | void | Promise<SqlCursor | void>;
 }
 
 const resolveExecutor = (storage: AuditStorage): SqlExecutor | undefined => {
@@ -49,7 +45,7 @@ const resolveExecutor = (storage: AuditStorage): SqlExecutor | undefined => {
   return undefined;
 };
 
-const runSql = async (executor: SqlExecutor, sql: string, ...bindings: RawJson[]): Promise<SqlCursor | void> => {
+const runSql = async (executor: SqlExecutor, sql: string, ...bindings: SqlBinding[]): Promise<SqlCursor | void> => {
   const result = executor.exec(sql, ...bindings);
   if (result instanceof Promise) {
     // SAFETY: `executor.exec` resolves to a cursor or void.
@@ -58,10 +54,10 @@ const runSql = async (executor: SqlExecutor, sql: string, ...bindings: RawJson[]
   return result;
 };
 
-const rowsFrom = (raw: SqlCursor | void | readonly RawRow[]): readonly RawRow[] => {
+const rowsFrom = (raw: SqlCursor | void | readonly SqlRow[]): readonly SqlRow[] => {
   if (Array.isArray(raw)) {
     // SAFETY: Array.isArray narrowed this runtime value to an array.
-    return raw as readonly RawRow[];
+    return raw as readonly SqlRow[];
   }
   // SAFETY: raw is not an array at this point, so it is only a cursor or void.
   const maybeCursor = raw as SqlCursor;
@@ -85,14 +81,16 @@ const AuditRowSchema = Schema.Struct({
   bot_id: Schema.Unknown,
   kind: Schema.Unknown,
   operation_id: Schema.Unknown,
-  detail: Schema.optional(Schema.Unknown),
+  detail: Schema.optional(Schema.Json),
 });
 
-const parseDetail = (raw: RawJson | undefined): RawJson | undefined => {
-  if (!Predicate.isString(raw)) return raw === undefined ? null : raw ?? null;
+type JsonValue = Schema.Schema.Type<typeof Schema.Json>;
+
+const parseDetail = (raw: SqlBinding | undefined): JsonValue => {
+  if (!Predicate.isString(raw)) return raw === undefined ? null : (raw ?? null);
   // SAFETY: JSON.parse runtime failure is handled by returning the stored text.
   try {
-    const parsed: RawJson = JSON.parse(raw);
+    const parsed: JsonValue = JSON.parse(raw);
     return parsed;
   } catch {
     /* keep the raw string when it is not valid JSON */
@@ -100,7 +98,7 @@ const parseDetail = (raw: RawJson | undefined): RawJson | undefined => {
   }
 };
 
-const rowToEvent = (row: RawRow): AuditEvent => {
+const rowToEvent = (row: SqlRow): AuditEvent => {
   const record = Schema.decodeUnknownSync(AuditRowSchema)(row);
   return {
     timestamp: Number(record.timestamp ?? 0),
@@ -108,7 +106,7 @@ const rowToEvent = (row: RawRow): AuditEvent => {
     kind: String(record.kind ?? ""),
     operationId: String(record.operation_id ?? ""),
     // SAFETY: AuditRowSchema marks detail as optional unknown; parseDetail narrows it at runtime.
-    detail: parseDetail(record.detail as RawJson | undefined),
+    detail: parseDetail(record.detail as SqlBinding | undefined),
   };
 };
 
