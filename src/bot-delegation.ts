@@ -53,6 +53,7 @@ import type { Extension, ToolExecutionResult } from "@earendil-works/pi-durable"
 import { loadBots } from "./bots.ts";
 import { maybeApprovalNotice } from "./executor-mcp.ts";
 import type { Env } from "./index.ts";
+import * as Effect from "effect/Effect";
 
 const LONG_POLL_TIMEOUT_MS = 55_000;
 
@@ -90,99 +91,112 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
           ),
         }),
         replay: "unsafe",
-        execute: async (args): Promise<ToolExecutionResult> => {
-          const bots = loadBots();
-          if (!Object.hasOwn(bots, args.target)) {
-            return {
-              output: [
-                {
-                  type: "text",
-                  text: `unknown bot "${args.target}". Declared bots: ${Object.keys(bots).join(", ")}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-          if (args.target === sourceBotId) {
-            return {
-              output: [{ type: "text", text: "a bot cannot delegate to itself" }],
-              isError: true,
-            };
-          }
-          const sourceBot = bots[sourceBotId];
-          if (
-            sourceBot?.delegatesTo !== undefined &&
-            !sourceBot.delegatesTo.includes(args.target)
-          ) {
-            return {
-              output: [
-                {
-                  type: "text",
-                  text: `bot "${sourceBotId}" is not allowed to delegate to "${args.target}" (not in delegatesTo: ${sourceBot.delegatesTo.join(", ") || "(none)"})`,
-                },
-              ],
-              isError: true,
-            };
-          }
-          const operationId = args.operationId
-            ? `delegate:${sourceBotId}:${args.operationId}`
-            : `delegate:${sourceBotId}:${crypto.randomUUID()}`;
-          const whenBusy = args.whenBusy ?? "followUp";
-          const stub = env.Bot.getByName(args.target);
-          try {
-            const receipt = await stub.submit(args.task, operationId, whenBusy);
-            if (args.wait === false) {
+        execute: (args): Promise<ToolExecutionResult> =>
+          Effect.runPromise(
+            // SAFETY: the Effect result is typed as ToolExecutionResult
+            Effect.gen(function* () {
+              const bots = loadBots();
+              if (!Object.hasOwn(bots, args.target)) {
+                return {
+                  output: [
+                    {
+                      type: "text",
+                      text: `unknown bot "${args.target}". Declared bots: ${Object.keys(bots).join(", ")}`,
+                    },
+                  ],
+                  isError: true,
+                }
+              }
+              if (args.target === sourceBotId) {
+                return {
+                  output: [{ type: "text", text: "a bot cannot delegate to itself" }],
+                  isError: true,
+                }
+              }
+              const sourceBot = bots[sourceBotId];
+              if (
+                sourceBot?.delegatesTo !== undefined &&
+                !sourceBot.delegatesTo.includes(args.target)
+              ) {
+                return {
+                  output: [
+                    {
+                      type: "text",
+                      text: `bot "${sourceBotId}" is not allowed to delegate to "${args.target}" (not in delegatesTo: ${sourceBot.delegatesTo.join(", ") || "(none)"})`,
+                    },
+                  ],
+                  isError: true,
+                }
+              }
+              const operationId = args.operationId
+                ? `delegate:${sourceBotId}:${args.operationId}`
+                : `delegate:${sourceBotId}:${crypto.randomUUID()}`;
+              const whenBusy = args.whenBusy ?? "followUp";
+              const stub = env.Bot.getByName(args.target);
+              const receipt = yield* Effect.tryPromise({
+                try: () => stub.submit(args.task, operationId, whenBusy),
+                catch: (cause) =>
+                  cause instanceof Error ? cause : new Error(String(cause)),
+              });
+              if (args.wait === false) {
+                return {
+                  output: [
+                    {
+                      type: "text",
+                      text: [
+                        `Delegated to "${args.target}" (operationId ${receipt.operationId}).`,
+                        "The task is now running. To wait for or fetch the result later, call",
+                        `delegate_to_bot again with the same target "${args.target}" and`,
+                        `operationId "${receipt.operationId}" (repeat the same task; the target`,
+                        "will not run it twice).",
+                      ].join(" "),
+                    },
+                  ],
+                }
+              }
+              const result = yield* Effect.tryPromise({
+                try: () => stub.wait(operationId, LONG_POLL_TIMEOUT_MS),
+                catch: (cause) =>
+                  cause instanceof Error ? cause : new Error(String(cause)),
+              });
+              if (result.status === "timeout") {
+                return {
+                  output: [
+                    {
+                      type: "text",
+                      text: [
+                        `Timed out waiting for "${args.target}" after ~55s; the task is still running`,
+                        `(operationId ${operationId}). Keep waiting by calling delegate_to_bot again`,
+                        `with the same target "${args.target}" and operationId "${operationId}".`,
+                        "Do NOT resubmit the task with a new operationId — that would",
+                        "double-submit the work and spend real money twice.",
+                      ].join(" "),
+                    },
+                  ],
+                }
+              }
+              let text = result.text ?? JSON.stringify(result, null, 2);
+              const notice = maybeApprovalNotice(text);
+              if (notice !== null) text = `${notice}\n\n${text}`;
               return {
-                output: [
-                  {
-                    type: "text",
-                    text: [
-                      `Delegated to "${args.target}" (operationId ${receipt.operationId}).`,
-                      "The task is now running. To wait for or fetch the result later, call",
-                      `delegate_to_bot again with the same target "${args.target}" and`,
-                      `operationId "${receipt.operationId}" (repeat the same task; the target`,
-                      "will not run it twice).",
-                    ].join(" "),
-                  },
-                ],
-              };
-            }
-            const result = await stub.wait(operationId, LONG_POLL_TIMEOUT_MS);
-            if (result.status === "timeout") {
-              return {
-                output: [
-                  {
-                    type: "text",
-                    text: [
-                      `Timed out waiting for "${args.target}" after ~55s; the task is still running`,
-                      `(operationId ${operationId}). Keep waiting by calling delegate_to_bot again`,
-                      `with the same target "${args.target}" and operationId "${operationId}".`,
-                      "Do NOT resubmit the task with a new operationId — that would",
-                      "double-submit the work and spend real money twice.",
-                    ].join(" "),
-                  },
-                ],
-              };
-            }
-            let text = result.text ?? JSON.stringify(result, null, 2);
-            const notice = maybeApprovalNotice(text);
-            if (notice !== null) text = `${notice}\n\n${text}`;
-            return {
-              output: [{ type: "text", text }],
-              isError: result.status === "unanswered",
-            };
-          } catch (cause) {
-            return {
-              output: [
-                {
-                  type: "text",
-                  text: `delegation to "${args.target}" failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-                },
-              ],
-              isError: true,
-            };
-          }
-        },
+                output: [{ type: "text", text }],
+                isError: result.status === "unanswered",
+              }
+            }).pipe(
+              Effect.catch((cause) =>
+                Effect.succeed({
+                  output: [
+                    {
+                      type: "text",
+                      text: `delegation to "${args.target}" failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+                    },
+                  ],
+                  isError: true,
+                }),
+              ),
+            // SAFETY: the Effect result is typed as ToolExecutionResult
+          ) as Effect.Effect<ToolExecutionResult>,
+          ),
       }),
     ],
   });
