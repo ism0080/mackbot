@@ -52,6 +52,7 @@ import { Type } from "@earendil-works/pi-ai";
 import type { TextContent } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionResult } from "@earendil-works/pi-durable";
+import * as Effect from "effect/Effect";
 
 /** Tool-call timeout: well above the SDK's 60s default and Executor's 5-min `execute`. */
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -93,44 +94,46 @@ const resolveConfig = (config: ExecutorMcpConfig): ResolvedConfig => ({
   connectTimeoutMs: config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
 });
 
-/** Open a fresh per-call MCP client. */
-const connect = async (config: ResolvedConfig): Promise<Client> => {
-  const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-    requestInit: {
-      headers: { Authorization: `Bearer ${config.token}` },
+/** Open a fresh per-call MCP client, wrapped in Effect. */
+const connect = (config: ResolvedConfig): Effect.Effect<Client, unknown> =>
+  Effect.tryPromise({
+    try: async () => {
+      const transport = new StreamableHTTPClientTransport(new URL(config.url), {
+        requestInit: {
+          headers: { Authorization: `Bearer ${config.token}` },
+        },
+      });
+      const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION }, { capabilities: {} });
+      await client.connect(transport, { timeout: config.connectTimeoutMs });
+      return client;
     },
+    catch: (cause) => cause,
   });
-  const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION }, { capabilities: {} });
-  await client.connect(transport, { timeout: config.connectTimeoutMs });
-  return client;
-};
 
 /** Close a per-call client; the transport may already be gone after an eviction. */
-const closeClient = async (client: Client): Promise<void> => {
-  try {
-    await client.close();
-  } catch {
-    /* best effort: a dropped transport needs no cleanup */
-  }
-};
+const closeClient = (client: Client): Effect.Effect<void> =>
+  Effect.tryPromise(() => client.close()).pipe(Effect.orElseSucceed(() => undefined));
 
 /** Call one Executor meta-tool over a fresh connection. */
-const callMetaTool = async (
+const callMetaTool = (
   config: ResolvedConfig,
   name: string,
   args: McpToolArguments,
-): Promise<CallToolResult> => {
-  const client = await connect(config);
-  try {
-    return await client.request(
-      { method: "tools/call", params: { name, arguments: args } },
-      CallToolResultSchema,
-      { timeout: config.timeoutMs },
-    );
-  } finally {
-    await closeClient(client);
-  }
-};
+): Effect.Effect<CallToolResult, unknown> =>
+  Effect.acquireUseRelease(
+    connect(config),
+    (client) =>
+      Effect.tryPromise({
+        try: () =>
+          client.request(
+            { method: "tools/call", params: { name, arguments: args } },
+            CallToolResultSchema,
+            { timeout: config.timeoutMs },
+          ),
+        catch: (cause) => cause,
+      }),
+    (client) => closeClient(client),
+  );
 
 const textItem = (text: string): TextContent => ({ type: "text", text });
 
@@ -214,17 +217,18 @@ const renderResult = (result: CallToolResult): ToolExecutionResult => {
 };
 
 /** Run a meta-tool, converting any thrown connection/protocol error to a result. */
-const runMetaTool = async (
+const runMetaTool = (
   config: ResolvedConfig,
   name: string,
   args: McpToolArguments,
-): Promise<ToolExecutionResult> => {
-  try {
-    return renderResult(await callMetaTool(config, name, args));
-  } catch (cause) {
-    return errorResult(`Executor MCP call failed (${name}): ${describeError(cause)}`);
-  }
-};
+): Effect.Effect<ToolExecutionResult> =>
+  callMetaTool(config, name, args).pipe(
+    Effect.match({
+      onSuccess: renderResult,
+      onFailure: (cause) =>
+        errorResult(`Executor MCP call failed (${name}): ${describeError(cause)}`),
+    }),
+  );
 
 const executorProtocol = [
   "All real tools live behind Executor; you reach them only through the executor_* tools.",
@@ -272,7 +276,7 @@ const searchTool = (config: ResolvedConfig) =>
       offset: Type.Optional(Type.Number({ description: "Number of results to skip." })),
     }),
     replay: "safe",
-    execute: async (args) => runMetaTool(config, "search", args),
+    execute: (args) => Effect.runPromise(runMetaTool(config, "search", args)),
   });
 
 const describeTool = (config: ResolvedConfig) =>
@@ -286,7 +290,7 @@ const describeTool = (config: ResolvedConfig) =>
       }),
     }),
     replay: "safe",
-    execute: async (args) => runMetaTool(config, "describe", args),
+    execute: (args) => Effect.runPromise(runMetaTool(config, "describe", args)),
   });
 
 const callTool = (config: ResolvedConfig) =>
@@ -314,7 +318,7 @@ const callTool = (config: ResolvedConfig) =>
       ),
     }),
     replay: "unsafe",
-    execute: async (args) => runMetaTool(config, "call", args),
+    execute: (args) => Effect.runPromise(runMetaTool(config, "call", args)),
   });
 
 const executeTool = (config: ResolvedConfig) =>
@@ -326,7 +330,7 @@ const executeTool = (config: ResolvedConfig) =>
       code: Type.String({ description: "JavaScript program source." }),
     }),
     replay: "unsafe",
-    execute: async (args) => runMetaTool(config, "execute", args),
+    execute: (args) => Effect.runPromise(runMetaTool(config, "execute", args)),
   });
 
 const skillsTool = (config: ResolvedConfig) =>
@@ -345,7 +349,7 @@ const skillsTool = (config: ResolvedConfig) =>
       ),
     }),
     replay: "safe",
-    execute: async (args) => runMetaTool(config, "skills", args),
+    execute: (args) => Effect.runPromise(runMetaTool(config, "skills", args)),
   });
 
 const resumeResponse = Type.Object(
@@ -378,7 +382,7 @@ const resumeTool = (config: ResolvedConfig) =>
       { additionalProperties: true },
     ),
     replay: "unsafe",
-    execute: async (args) => runMetaTool(config, "resume", args),
+    execute: (args) => Effect.runPromise(runMetaTool(config, "resume", args)),
   });
 
 /**
