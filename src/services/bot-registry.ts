@@ -11,8 +11,6 @@ import type { BotConfig } from "../bots.ts";
 export interface BotRegistry {
   readonly loadBots: () => Effect.Effect<Record<string, BotConfig>>;
   readonly getBot: (name: string) => Effect.Effect<BotConfig>;
-  readonly bots: () => Effect.Effect<Record<string, BotConfig>>;
-  readonly get: (name: string) => Effect.Effect<BotConfig>;
 }
 
 export class BotRegistryService extends Context.Service<BotRegistryService, BotRegistry>()(
@@ -23,10 +21,6 @@ export class BotRegistryService extends Context.Service<BotRegistryService, BotR
     BotRegistryService.of({
       loadBots: () => Effect.sync(loadBots),
       getBot: (name) => Effect.sync(() => getBot(name)),
-      bots: () => Effect.sync(loadBots),
-      get: (name) => Effect.sync(() => getBot(name)),
     }),
   );
 }
-
-export type BotRegistryServiceContract = BotRegistry;

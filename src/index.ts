@@ -20,19 +20,19 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
-import { resolveModelRef } from "./bots.ts";
+import { createSharedMemory } from "./memory.ts";
+import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
+import { loadBots, resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
 import type { ModelRef, ThinkingLevel } from "./bots.ts";
 
 import * as Effect from "effect/Effect";
-import * as Config from "effect/Config";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
 import { BotRegistryService } from "./services/bot-registry.ts";
-import { AppConfig, AppConfigLive } from "./config.ts";
 import { createAuditLog } from "./audit-log.ts";
+import type { AuditLog } from "./audit-log.ts";
 
 export interface Env {
   readonly Bot: DurableObjectNamespace<Bot>;
@@ -65,8 +65,6 @@ export interface WaitResult {
   readonly reason?: string;
 }
 
-const LONG_POLL_TIMEOUT_MS = 55_000;
-
 const HARNESS_SETTINGS: HarnessSettings = {
   progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
   compaction: { enabled: true, reserveTokens: 16_384 },
@@ -75,12 +73,42 @@ const HARNESS_SETTINGS: HarnessSettings = {
 const toThinkingLevel = (level: ThinkingLevel): ModelThinkingLevel =>
   level === "none" ? "off" : level;
 
+/** The model/instruction change applied to a bot's conversations. */
+const agentChange = (bot: BotConfig): AgentChange => {
+  const model = resolveModelRef(bot);
+  const target = { provider: model.provider, modelId: model.id };
+  return bot.thinkingLevel === undefined
+    ? { model: target, instructions: bot.systemPrompt }
+    : {
+        model: target,
+        thinkingLevel: toThinkingLevel(bot.thinkingLevel),
+        instructions: bot.systemPrompt,
+      };
+};
+
+/** Convert a pi session id (a numeric conversation id) to pi-durable's branded type. */
+const conversationIdOf = (sessionId: string): ConversationId => {
+  const id = Number(sessionId);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    throw new Error(`invalid pi session id ${JSON.stringify(sessionId)}`);
+  }
+  // SAFETY: pi session ids are numeric conversation ids; validated above.
+  return id as ConversationId;
+};
+
+const describeCause = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
+
 const makeHarnessFactory =
   (env: Env, botId: string): PiHarnessFactory =>
   async ({ storage, context }) => {
     const registry = createRegistry();
     registry.install(createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }));
     registry.install(createBotDelegation({ env, sourceBotId: botId }));
+    const bot = loadBots()[botId];
+    if (bot?.sharedMemory !== undefined) {
+      registry.install(createSharedMemory({ env, scopes: bot.sharedMemory }));
+    }
     const models = createModels();
     models.setProvider(opencodeGoProvider());
     models.setProvider(createAI({ binding: env.AI }).provider);
@@ -90,7 +118,8 @@ const makeHarnessFactory =
 export class Bot extends DurableObject<Env> {
   readonly lifecycle: Lifecycle<Env>;
   readonly harness: PiHarness;
-  readonly runtime: ManagedRuntime<BotRegistryService | AppConfig, Config.ConfigError>;
+  readonly runtime: ManagedRuntime<BotRegistryService, never>;
+  #auditSink: AuditLog | undefined;
   #botReady: Promise<void> | undefined;
 
   constructor(ctx: DurableObjectState, env: Env) {
@@ -98,7 +127,7 @@ export class Bot extends DurableObject<Env> {
     this.lifecycle = Lifecycle.install(this);
     this.harness = new PiHarness({ harness: makeHarnessFactory(env, this.lifecycle.name) });
     this.lifecycle.use(this.harness);
-    this.runtime = makeManagedRuntime(Layer.mergeAll(BotRegistryService.layer, AppConfigLive));
+    this.runtime = makeManagedRuntime(BotRegistryService.layer);
   }
 
   async submit(
@@ -120,8 +149,7 @@ export class Bot extends DurableObject<Env> {
     );
     if (receipt.accepted) {
       try {
-        // SAFETY: DurableObjectStorage exposes SQLite storage compatible with AuditStorage.
-        await createAuditLog(this.ctx.storage as Parameters<typeof createAuditLog>[0]).append({
+        await this.#audit().append({
           timestamp: Date.now(),
           botId: this.lifecycle.name,
           kind: "submission.accepted",
@@ -166,8 +194,7 @@ export class Bot extends DurableObject<Env> {
     const result = outcome.result;
     if (result.status === "done") {
       try {
-        // SAFETY: DurableObjectStorage exposes SQLite storage compatible with AuditStorage.
-        await createAuditLog(this.ctx.storage as Parameters<typeof createAuditLog>[0]).append({
+        await this.#audit().append({
           timestamp: Date.now(),
           botId: this.lifecycle.name,
           kind: "settlement",
@@ -191,13 +218,19 @@ export class Bot extends DurableObject<Env> {
     await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
     const id = this.lifecycle.name;
     const bot = await this.#botConfig();
-    const [busy, pending, usage] = await Effect.runPromise(
+    const [sessions, pending, usage] = await Effect.runPromise(
       Effect.all(
         [
-          Effect.tryPromise(() => this.harness.session(ROOT_SESSION).busy()),
+          Effect.tryPromise(() => this.harness.sessions.list()),
           Effect.tryPromise(() => this.harness.pending()),
           Effect.tryPromise(() => this.#usage()),
         ],
+        { concurrency: "unbounded" },
+      ),
+    );
+    const busyStates = await Effect.runPromise(
+      Effect.all(
+        sessions.map((session) => Effect.tryPromise(() => this.harness.session(session.id).busy())),
         { concurrency: "unbounded" },
       ),
     );
@@ -205,7 +238,7 @@ export class Bot extends DurableObject<Env> {
       id,
       model: resolveModelRef(bot),
       thinkingLevel: bot.thinkingLevel ?? null,
-      busy,
+      busy: busyStates.some((isBusy) => isBusy),
       pending: pending.map((operation) => ({
         operationId: operation.operationId,
         status: operation.status,
@@ -220,14 +253,18 @@ export class Bot extends DurableObject<Env> {
     );
   }
 
-  async #sessionForThread(thread: string): Promise<string> {
-    this.#ensureThreadsTable();
+  #sessionIdForThread(thread: string): string | undefined {
     const rows = this.ctx.storage.sql
       .exec("SELECT session_id FROM mackbot_threads WHERE thread = ?", thread)
       .toArray();
-    if (rows.length > 0) {
-      return String(rows[0].session_id);
-    }
+    return rows.length > 0 ? String(rows[0].session_id) : undefined;
+  }
+
+  async #sessionForThread(thread: string): Promise<string> {
+    this.#ensureThreadsTable();
+    const existing = this.#sessionIdForThread(thread);
+    if (existing !== undefined) return existing;
+
     await Effect.runPromise(Effect.tryPromise(() => this.#ensureBot()));
     const session = await Effect.runPromise(
       Effect.tryPromise(() => this.harness.sessions.create()),
@@ -235,40 +272,26 @@ export class Bot extends DurableObject<Env> {
     const sessionId = session.id;
     const bot = await this.#botConfig();
     await Effect.runPromise(Effect.tryPromise(() => this.#configureSession(sessionId, bot)));
+    // A concurrent request for the same new thread may have won the insert;
+    // IGNORE + re-read keeps the first session id instead of throwing.
     this.ctx.storage.sql.exec(
-      "INSERT INTO mackbot_threads (thread, session_id) VALUES (?, ?)",
+      "INSERT OR IGNORE INTO mackbot_threads (thread, session_id) VALUES (?, ?)",
       thread,
       sessionId,
     );
-    return sessionId;
+    return this.#sessionIdForThread(thread) ?? sessionId;
   }
 
   async #configureSession(sessionId: string, bot: BotConfig): Promise<void> {
-    const model = resolveModelRef(bot);
     const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
     const conversation = await Effect.runPromise(
-      // SAFETY: PiSession ids are numeric strings; cast to pi-durable's numeric ConversationId.
-      Effect.tryPromise(() =>
-        pi.conversation(Number(sessionId) as ConversationId, BACKGROUND_CONTEXT),
-      ),
+      Effect.tryPromise(() => pi.conversation(conversationIdOf(sessionId), BACKGROUND_CONTEXT)),
     );
     if (conversation === undefined) {
       throw new Error(`session ${sessionId} not found`);
     }
-    const thinkingLevel = bot.thinkingLevel;
-    const change: AgentChange =
-      thinkingLevel === undefined
-        ? {
-            model: { provider: model.provider, modelId: model.id },
-            instructions: bot.systemPrompt,
-          }
-        : {
-            model: { provider: model.provider, modelId: model.id },
-            thinkingLevel: toThinkingLevel(thinkingLevel),
-            instructions: bot.systemPrompt,
-          };
     await Effect.runPromise(
-      Effect.tryPromise(() => conversation.configure(change, BACKGROUND_CONTEXT)),
+      Effect.tryPromise(() => conversation.configure(agentChange(bot), BACKGROUND_CONTEXT)),
     );
   }
 
@@ -279,28 +302,29 @@ export class Bot extends DurableObject<Env> {
   }
 
   #ensureBot(): Promise<void> {
-    const ready = (this.#botReady ??= this.#applyBot());
-    return ready;
+    this.#botReady ??= this.#applyBot().catch((cause: unknown) => {
+      // Do not cache a rejected readiness promise: let the next call retry.
+      this.#botReady = undefined;
+      throw cause;
+    });
+    return this.#botReady;
   }
 
   async #applyBot(): Promise<void> {
     const bot = await this.#botConfig();
-    const model = resolveModelRef(bot);
     const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
     const root = await Effect.runPromise(Effect.tryPromise(() => pi.root(BACKGROUND_CONTEXT)));
-    const thinkingLevel = bot.thinkingLevel;
-    const change: AgentChange =
-      thinkingLevel === undefined
-        ? {
-            model: { provider: model.provider, modelId: model.id },
-            instructions: bot.systemPrompt,
-          }
-        : {
-            model: { provider: model.provider, modelId: model.id },
-            thinkingLevel: toThinkingLevel(thinkingLevel),
-            instructions: bot.systemPrompt,
-          };
-    await Effect.runPromise(Effect.tryPromise(() => root.configure(change, BACKGROUND_CONTEXT)));
+    await Effect.runPromise(
+      Effect.tryPromise(() => root.configure(agentChange(bot), BACKGROUND_CONTEXT)),
+    );
+  }
+
+  #audit(): AuditLog {
+    if (this.#auditSink === undefined) {
+      // SAFETY: DurableObjectStorage exposes SQLite storage compatible with AuditStorage.
+      this.#auditSink = createAuditLog(this.ctx.storage as Parameters<typeof createAuditLog>[0]);
+    }
+    return this.#auditSink;
   }
 
   async #usage(): Promise<UsageState> {
@@ -314,39 +338,45 @@ interface ChatRequest {
   readonly operationId?: string;
   readonly whenBusy?: PiWhenBusy;
   readonly wait?: boolean;
-  readonly conversation?: string;
   readonly thread?: string;
 }
 
-interface DraftChatRequest {
-  text: string;
-  operationId?: string;
-  whenBusy?: PiWhenBusy;
-  wait?: boolean;
-  conversation?: string;
-  thread?: string;
-}
+const MAX_TEXT_LENGTH = 16_384;
+const MAX_BODY_BYTES = 256 * 1024;
 
 const trimmedNonEmpty = Schema.String.check(
   Schema.makeFilter((input: string) => input.trim().length > 0),
 );
 
+const boundedText = Schema.String.check(
+  Schema.makeFilter((input: string) => input.trim().length > 0 && input.length <= MAX_TEXT_LENGTH),
+);
+
 const ChatRequestBodySchema = Schema.Struct({
-  text: trimmedNonEmpty,
+  text: boundedText,
   operationId: Schema.optional(Schema.NonEmptyString),
   whenBusy: Schema.optional(Schema.Literals(["followUp", "steer"])),
   wait: Schema.optional(Schema.Boolean),
-  conversation: Schema.optional(trimmedNonEmpty),
   thread: Schema.optional(trimmedNonEmpty),
 });
 
 const BEARER_PATTERN = /^Bearer\s+(.+)$/u;
 
+/** Constant-time string comparison for the bearer token. */
+const tokensMatch = (a: string, b: string): boolean => {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let index = 0; index < a.length; index += 1) {
+    diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  }
+  return diff === 0;
+};
+
 const isAuthorized = (request: Request, env: Env): boolean => {
   const header = request.headers.get("Authorization");
   if (header === null) return false;
   const token = BEARER_PATTERN.exec(header)?.[1];
-  return token !== undefined && token === env.CHAT_BEARER_TOKEN;
+  return token !== undefined && tokensMatch(token, env.CHAT_BEARER_TOKEN);
 };
 
 const CHAT_ROUTE = /^\/chat\/([^/]+)$/u;
@@ -354,24 +384,24 @@ const CHAT_ROUTE = /^\/chat\/([^/]+)$/u;
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
 
-const readChatRequest = async (request: Request): Promise<ChatRequest | undefined> => {
-  const effect = Effect.gen(function* () {
-    const raw = yield* Effect.tryPromise({ try: () => request.json(), catch: () => "bad json" });
-    const decoded = yield* Schema.decodeUnknownEffect(ChatRequestBodySchema)(raw).pipe(
-      Effect.mapError(() => "bad body"),
-    );
-    const body: DraftChatRequest = { text: decoded.text };
-    if (decoded.operationId !== undefined) body.operationId = decoded.operationId;
-    if (decoded.whenBusy !== undefined) body.whenBusy = decoded.whenBusy;
-    if (decoded.wait !== undefined) body.wait = decoded.wait;
-    if (decoded.conversation !== undefined) body.conversation = decoded.conversation;
-    if (decoded.thread !== undefined) body.thread = decoded.thread;
-    return body;
-  });
-  // SAFETY: the generator requires R=unknown, but Effect.runPromise needs R=never; the code uses no runtime services.
-  return Effect.runPromise(effect as Effect.Effect<DraftChatRequest, unknown, never>).catch(
-    () => undefined,
+const loadBotsEffect = (): Effect.Effect<Record<string, BotConfig>> =>
+  Effect.flatMap(BotRegistryService, (registry) => registry.loadBots()).pipe(
+    Effect.provide(BotRegistryService.layer),
   );
+
+const readChatRequest = async (request: Request): Promise<ChatRequest | undefined> => {
+  const declaredLength = request.headers.get("content-length");
+  if (declaredLength !== null && Number(declaredLength) > MAX_BODY_BYTES) return undefined;
+  const effect = Effect.gen(function* () {
+    const raw = yield* Effect.tryPromise({
+      try: () => request.json(),
+      catch: () => "bad json" as const,
+    });
+    return yield* Schema.decodeUnknownEffect(ChatRequestBodySchema)(raw).pipe(
+      Effect.mapError(() => "bad body" as const),
+    );
+  });
+  return Effect.runPromise(effect.pipe(Effect.orElseSucceed(() => undefined)));
 };
 
 const handleChat = async (
@@ -380,11 +410,7 @@ const handleChat = async (
   botId: string,
   immediate: boolean,
 ): Promise<Response> => {
-  const bots = await Effect.runPromise(
-    Effect.flatMap(BotRegistryService, (registry) => registry.loadBots()).pipe(
-      Effect.provide(BotRegistryService.layer),
-    ),
-  );
+  const bots = await Effect.runPromise(loadBotsEffect());
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
   }
@@ -393,13 +419,14 @@ const handleChat = async (
     return Response.json({ error: "invalid request body" }, { status: 400 });
   }
   const operationId = body.operationId ?? `http:${crypto.randomUUID()}`;
-  const thread = body.conversation ?? body.thread;
   const stub = env.Bot.getByName(botId);
   const receipt = await Effect.runPromise(
     Effect.tryPromise(() =>
-      stub.submit(body.text, operationId, body.whenBusy ?? "followUp", thread),
+      stub.submit(body.text, operationId, body.whenBusy ?? "followUp", body.thread),
     ),
   );
+  // `wait=false` returns here; to fetch the result later, POST the same
+  // operationId again (admission is at-most-once) and let it long-poll.
   if (immediate || body.wait === false) {
     return Response.json(
       { operationId: receipt.operationId, accepted: receipt.accepted },
@@ -418,24 +445,34 @@ const handleChat = async (
   return Response.json(result, { status: 200 });
 };
 
+interface BotStatusResult {
+  readonly id: string;
+  readonly status?: BotStatus;
+  readonly error?: string;
+}
+
 const handleStatus = async (env: Env): Promise<Response> => {
-  const bots = await Effect.runPromise(
-    Effect.flatMap(BotRegistryService, (registry) => registry.loadBots()).pipe(
-      Effect.provide(BotRegistryService.layer),
-    ),
-  );
-  const statuses = await Effect.runPromise(
-    Effect.all(
-      Object.keys(bots).map((id) =>
-        Effect.map(
-          Effect.tryPromise(() => env.Bot.getByName(id).status()),
-          (status) => [id, status] as const,
-        ),
+  const bots = await Effect.runPromise(loadBotsEffect());
+  const statusFor = (id: string): Effect.Effect<BotStatusResult> =>
+    Effect.tryPromise(() => env.Bot.getByName(id).status()).pipe(
+      Effect.map((status): BotStatusResult => ({ id, status })),
+      Effect.catch((cause): Effect.Effect<BotStatusResult> =>
+        Effect.succeed({ id, error: describeCause(cause) }),
       ),
-      { concurrency: "unbounded" },
-    ),
+    );
+  const results = await Effect.runPromise(
+    Effect.all(Object.keys(bots).map(statusFor), { concurrency: "unbounded" }),
   );
-  return Response.json({ bots: Object.fromEntries(statuses) });
+  const statuses: Record<string, BotStatus> = {};
+  const errors: Record<string, string> = {};
+  for (const entry of results) {
+    if (entry.status === undefined) {
+      errors[entry.id] = entry.error ?? "unknown error";
+    } else {
+      statuses[entry.id] = entry.status;
+    }
+  }
+  return Response.json({ bots: statuses, errors });
 };
 
 export default {
@@ -458,18 +495,20 @@ export default {
 
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const scheduledTime = controller.scheduledTime;
-    const bots = await Effect.runPromise(
-      Effect.flatMap(BotRegistryService, (registry) => registry.loadBots()).pipe(
-        Effect.provide(BotRegistryService.layer),
-      ),
-    );
-    const admissions: Effect.Effect<PiReceipt, unknown>[] = [];
+    const bots = await Effect.runPromise(loadBotsEffect());
+    const admissions: Effect.Effect<void>[] = [];
     for (const [id, bot] of Object.entries(bots)) {
       const brief = bot.brief;
       if (brief === undefined) continue;
       admissions.push(
         Effect.tryPromise(() =>
           env.Bot.getByName(id).submit(brief, `cron:${id}:${scheduledTime}`, "followUp"),
+        ).pipe(
+          // One failing bot must not stop the others' briefs.
+          Effect.catch((cause) => {
+            console.error(`mackbot: cron brief for "${id}" failed: ${describeCause(cause)}`);
+            return Effect.void;
+          }),
         ),
       );
     }

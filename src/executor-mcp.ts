@@ -103,7 +103,10 @@ const connect = (config: ResolvedConfig): Effect.Effect<Client, unknown> =>
           headers: { Authorization: `Bearer ${config.token}` },
         },
       });
-      const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION }, { capabilities: {} });
+      const client = new Client(
+        { name: CLIENT_NAME, version: CLIENT_VERSION },
+        { capabilities: {} },
+      );
       await client.connect(transport, { timeout: config.connectTimeoutMs });
       return client;
     },

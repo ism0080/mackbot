@@ -6,9 +6,10 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Durable bot registry config extensions: `delegatesTo`, `sharedMemory`, and
   `budgets`, with validation.
 - Delegation enforcement for the optional `delegatesTo` allowlist.
-- Shared-memory prompt/config seam (`src/memory.ts`).
-- Optional durable conversation/thread IDs in `POST /chat/:bot`, including
-  per-thread pi session creation and SQLite mapping.
+- Shared-memory prompt/config seam (`src/memory.ts`), installed per bot when
+  `bots.json` declares `sharedMemory` scopes.
+- Optional durable thread IDs in `POST /chat/:bot`, including per-thread pi
+  session creation and SQLite mapping.
 - Audit-log storage seam (`src/audit-log.ts`).
 - Sandbox/workspace abstraction scaffold (`src/sandbox.ts`).
 - Existing meta-tool bridge, cron briefs, approvals via browser links, and

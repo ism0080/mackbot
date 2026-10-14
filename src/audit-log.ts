@@ -45,7 +45,11 @@ const resolveExecutor = (storage: AuditStorage): SqlExecutor | undefined => {
   return undefined;
 };
 
-const runSql = async (executor: SqlExecutor, sql: string, ...bindings: SqlBinding[]): Promise<SqlCursor | void> => {
+const runSql = async (
+  executor: SqlExecutor,
+  sql: string,
+  ...bindings: SqlBinding[]
+): Promise<SqlCursor | void> => {
   const result = executor.exec(sql, ...bindings);
   if (result instanceof Promise) {
     // SAFETY: `executor.exec` resolves to a cursor or void.
@@ -61,7 +65,11 @@ const rowsFrom = (raw: SqlCursor | void | readonly SqlRow[]): readonly SqlRow[] 
   }
   // SAFETY: raw is not an array at this point, so it is only a cursor or void.
   const maybeCursor = raw as SqlCursor;
-  if (maybeCursor !== undefined && maybeCursor !== null && maybeCursor.toArray instanceof Function) {
+  if (
+    maybeCursor !== undefined &&
+    maybeCursor !== null &&
+    maybeCursor.toArray instanceof Function
+  ) {
     return maybeCursor.toArray();
   }
   return [];
@@ -70,8 +78,11 @@ const rowsFrom = (raw: SqlCursor | void | readonly SqlRow[]): readonly SqlRow[] 
 const CREATE_TABLE_SQL =
   "CREATE TABLE IF NOT EXISTS mackbot_audit (timestamp INTEGER NOT NULL, bot_id TEXT NOT NULL, kind TEXT NOT NULL, operation_id TEXT NOT NULL, detail TEXT)";
 
-const SELECT_SQL =
-  "SELECT timestamp, bot_id, kind, operation_id, detail FROM mackbot_audit ORDER BY timestamp ASC";
+const SELECT_COLUMNS = "timestamp, bot_id, kind, operation_id, detail";
+/** Full history, oldest first. */
+const SELECT_ALL_SQL = `SELECT ${SELECT_COLUMNS} FROM mackbot_audit ORDER BY timestamp ASC`;
+/** The newest `limit` events, returned oldest first. */
+const SELECT_RECENT_SQL = `SELECT ${SELECT_COLUMNS} FROM (SELECT ${SELECT_COLUMNS} FROM mackbot_audit ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC`;
 
 const INSERT_SQL =
   "INSERT INTO mackbot_audit (timestamp, bot_id, kind, operation_id, detail) VALUES (?, ?, ?, ?, ?)";
@@ -126,9 +137,19 @@ export function createAuditLog(storage: AuditStorage): AuditLog {
     await runSql(executor, CREATE_TABLE_SQL);
   };
 
+  let migration: Promise<void> | undefined;
+  const ensureMigrated = (): Promise<void> => {
+    migration ??= migrate().catch((cause: unknown) => {
+      // Let the next caller retry instead of caching a rejected migration.
+      migration = undefined;
+      throw cause;
+    });
+    return migration;
+  };
+
   const append = async (event: AuditEvent): Promise<void> => {
     const validated = Schema.decodeUnknownSync(AuditEventSchema)(event);
-    await migrate();
+    await ensureMigrated();
     await Effect.runPromise(
       Effect.tryPromise({
         try: async () =>
@@ -147,15 +168,16 @@ export function createAuditLog(storage: AuditStorage): AuditLog {
   };
 
   const list = async (limit?: number): Promise<readonly AuditEvent[]> => {
-    await migrate();
-    const raw = await runSql(executor, SELECT_SQL);
-    const rows = rowsFrom(raw);
-    const events = rows.map(rowToEvent);
-    return limit === undefined ? events : events.slice(0, limit);
+    await ensureMigrated();
+    const raw =
+      limit === undefined
+        ? await runSql(executor, SELECT_ALL_SQL)
+        : await runSql(executor, SELECT_RECENT_SQL, limit);
+    return rowsFrom(raw).map(rowToEvent);
   };
 
   // Best-effort table creation up front; harmless if the storage is lazy.
-  void migrate();
+  void ensureMigrated().catch(() => undefined);
 
   return { append, list, migrate };
 }

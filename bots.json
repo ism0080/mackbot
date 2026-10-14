@@ -7,16 +7,10 @@
     "thinkingLevel": "high",
     "systemPrompt": "You are Hermes, my chief of staff. You keep track of my open commitments and priorities, turn vague requests into concrete next actions, and carry them out with the tools available to you. Be brief and decisive, confirm anything ambiguous or irreversible before acting, and always report what you did and what still needs me.",
     "brief": "Hourly check-in. Review my open threads and commitments, advance anything you can do without me, and note anything that needs my attention. Keep it short: what moved, and what still needs me.",
-    "delegatesTo": [
-      "scribe"
-    ],
+    "delegatesTo": ["scribe"],
     "sharedMemory": {
-      "read": [
-        "shared"
-      ],
-      "write": [
-        "shared"
-      ]
+      "read": ["shared"],
+      "write": ["shared"]
     },
     "budgets": {
       "tokens": 100000,

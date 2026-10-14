@@ -51,11 +51,11 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionResult } from "@earendil-works/pi-durable";
 import { loadBots } from "./bots.ts";
+import { createDelegationPolicy } from "./services/delegation.ts";
+import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { maybeApprovalNotice } from "./executor-mcp.ts";
 import type { Env } from "./index.ts";
 import * as Effect from "effect/Effect";
-
-const LONG_POLL_TIMEOUT_MS = 55_000;
 
 export type BotDelegationConfig = {
   readonly env: Env;
@@ -105,28 +105,26 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
                     },
                   ],
                   isError: true,
-                }
+                };
               }
               if (args.target === sourceBotId) {
                 return {
                   output: [{ type: "text", text: "a bot cannot delegate to itself" }],
                   isError: true,
-                }
+                };
               }
-              const sourceBot = bots[sourceBotId];
-              if (
-                sourceBot?.delegatesTo !== undefined &&
-                !sourceBot.delegatesTo.includes(args.target)
-              ) {
+              const policy = createDelegationPolicy(bots);
+              if (!policy.canDelegate(sourceBotId, args.target)) {
+                const allowed = policy.allowedTargets(sourceBotId);
                 return {
                   output: [
                     {
                       type: "text",
-                      text: `bot "${sourceBotId}" is not allowed to delegate to "${args.target}" (not in delegatesTo: ${sourceBot.delegatesTo.join(", ") || "(none)"})`,
+                      text: `bot "${sourceBotId}" is not allowed to delegate to "${args.target}" (not in delegatesTo: ${allowed.join(", ") || "(none)"})`,
                     },
                   ],
                   isError: true,
-                }
+                };
               }
               const operationId = args.operationId
                 ? `delegate:${sourceBotId}:${args.operationId}`
@@ -135,8 +133,7 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
               const stub = env.Bot.getByName(args.target);
               const receipt = yield* Effect.tryPromise({
                 try: () => stub.submit(args.task, operationId, whenBusy),
-                catch: (cause) =>
-                  cause instanceof Error ? cause : new Error(String(cause)),
+                catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
               });
               if (args.wait === false) {
                 return {
@@ -152,12 +149,11 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
                       ].join(" "),
                     },
                   ],
-                }
+                };
               }
               const result = yield* Effect.tryPromise({
                 try: () => stub.wait(operationId, LONG_POLL_TIMEOUT_MS),
-                catch: (cause) =>
-                  cause instanceof Error ? cause : new Error(String(cause)),
+                catch: (cause) => (cause instanceof Error ? cause : new Error(String(cause))),
               });
               if (result.status === "timeout") {
                 return {
@@ -173,7 +169,7 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
                       ].join(" "),
                     },
                   ],
-                }
+                };
               }
               let text = result.text ?? JSON.stringify(result, null, 2);
               const notice = maybeApprovalNotice(text);
@@ -181,7 +177,7 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
               return {
                 output: [{ type: "text", text }],
                 isError: result.status === "unanswered",
-              }
+              };
             }).pipe(
               Effect.catch((cause) =>
                 Effect.succeed({
@@ -194,8 +190,8 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
                   isError: true,
                 }),
               ),
-            // SAFETY: the Effect result is typed as ToolExecutionResult
-          ) as Effect.Effect<ToolExecutionResult>,
+              // SAFETY: the Effect result is typed as ToolExecutionResult
+            ) as Effect.Effect<ToolExecutionResult>,
           ),
       }),
     ],

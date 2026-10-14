@@ -17,9 +17,10 @@ const storage = {
         return { toArray: () => [] };
       }
       if (/SELECT/i.test(sql)) {
+        const selected = /LIMIT/i.test(sql) ? rows.slice(-Number(bindings[0])) : rows;
         return {
           toArray: () =>
-            rows.map(([timestamp, botId, kind, operationId, detail]) => ({
+            selected.map(([timestamp, botId, kind, operationId, detail]) => ({
               timestamp,
               bot_id: botId,
               kind,
@@ -36,8 +37,6 @@ const storage = {
 const audit = createAuditLog(storage);
 const failures = [];
 
-// Table created.
-if (!rows.length && rows.length !== 0) failures.push("unexpected");
 const createCalls = [];
 const wrapped = {
   sql: {
@@ -69,6 +68,18 @@ if (events.length !== 1) failures.push(`expected 1 event, got ${events.length}`)
 if (events[0]?.botId !== "hermes") failures.push("botId mismatch");
 if (events[0]?.detail?.tool !== "delegate_to_bot") failures.push("detail mismatch");
 
+// list(limit) returns the newest events, oldest first.
+await audit.append({
+  timestamp: 124,
+  botId: "hermes",
+  kind: "tool.call",
+  operationId: "op-2",
+  detail: { tool: "executor_search" },
+});
+const recent = await audit.list(1);
+if (recent.length !== 1) failures.push(`list(1) expected 1 event, got ${recent.length}`);
+if (recent[0]?.operationId !== "op-2") failures.push(`list(1) returned ${recent[0]?.operationId}`);
+
 // direct executor form
 const directRows = [];
 const direct = createAuditLog({
@@ -93,7 +104,8 @@ const direct = createAuditLog({
 await direct.append({ timestamp: 1, botId: "x", kind: "k", operationId: "o", detail: "d" });
 const directEvents = await direct.list();
 if (directEvents.length !== 1) failures.push(`direct: expected 1, got ${directEvents.length}`);
-if (directEvents[0]?.detail !== "d") failures.push(`direct: detail mismatch ${directEvents[0]?.detail}`);
+if (directEvents[0]?.detail !== "d")
+  failures.push(`direct: detail mismatch ${directEvents[0]?.detail}`);
 
 if (failures.length > 0) {
   console.error("audit-log smoke FAILED:");

@@ -49,9 +49,7 @@ export interface WorkspaceHandle {
   ): Promise<RunResult>;
 }
 
-export type SandboxFactory = (
-  config: SandboxConfig,
-) => WorkspaceHandle | Promise<WorkspaceHandle>;
+export type SandboxFactory = (config: SandboxConfig) => WorkspaceHandle | Promise<WorkspaceHandle>;
 
 // rest same...
 const DEFAULT_ROOT = "/workspace";
@@ -84,9 +82,10 @@ class InMemoryWorkspace implements WorkspaceHandle {
 
   constructor(config: SandboxConfig) {
     const parsed = Schema.decodeUnknownSync(SandboxConfigSchema)(config ?? {});
-    this.path = parsed.rootPath !== undefined && parsed.rootPath.trim().length > 0
-      ? normalizePath(parsed.rootPath)
-      : DEFAULT_ROOT;
+    this.path =
+      parsed.rootPath !== undefined && parsed.rootPath.trim().length > 0
+        ? normalizePath(parsed.rootPath)
+        : DEFAULT_ROOT;
     this.#readOnly = parsed.readOnly === true;
   }
 
@@ -179,7 +178,6 @@ export function sandboxProtocol(): string {
   ].join("\n");
 }
 
-export const sandboxProtocolSection: PromptSection = section(
-  "sandbox-protocol",
-  () => sandboxProtocol(),
+export const sandboxProtocolSection: PromptSection = section("sandbox-protocol", () =>
+  sandboxProtocol(),
 );

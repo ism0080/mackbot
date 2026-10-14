@@ -53,6 +53,16 @@ try {
   failures.push(`self delegation threw: ${error?.message ?? error}`);
 }
 
+// Allowlisted target (hermes -> scribe) passes the policy and reaches the stub.
+try {
+  const r = await tool.execute({ target: "scribe", task: "hi" }, {}, {});
+  if (r.isError) failures.push(`allowlisted delegation errored: ${textOf(r)}`);
+  const t = textOf(r);
+  if (!t.includes("ok")) failures.push(`allowlisted delegation text off: ${t}`);
+} catch (error) {
+  failures.push(`allowlisted delegation threw: ${error?.message ?? error}`);
+}
+
 // Missing required args should surface as a throw from the tool? The schema is
 // declared; pi enforces. We simply ensure the tool object exists.
 

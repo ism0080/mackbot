@@ -65,7 +65,6 @@ export interface BotConfig {
 const VARIANT_INDEX = new Map<string, readonly ThinkingLevel[]>(Object.entries(MODEL_VARIANTS));
 const ALL_THINKING_LEVELS = new Set<string>(Object.values(MODEL_VARIANTS).flat());
 const KNOWN_MODEL_IDS = Object.keys(MODEL_VARIANTS).join(", ");
-const ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 
 const isString = Schema.is(Schema.String);
 const isNumber = Schema.is(Schema.Number);
@@ -81,7 +80,11 @@ const field = (raw: RawObject, key: string): RawJson | undefined =>
 const fail = (message: string): Effect.Effect<never, Error> =>
   Effect.fail(new Error(`bots.json: ${message}`));
 
-const requireField = (botId: string, raw: RawObject, key: string): Effect.Effect<RawJson, Error> => {
+const requireField = (
+  botId: string,
+  raw: RawObject,
+  key: string,
+): Effect.Effect<RawJson, Error> => {
   const value = field(raw, key);
   return value === undefined ? fail(`bot "${botId}" is missing "${key}"`) : Effect.succeed(value);
 };
@@ -93,19 +96,12 @@ const decodeText = (botId: string, key: string, value: RawJson): Effect.Effect<s
   return Effect.succeed(value);
 };
 
-const decodeEnvName = (botId: string, key: string, value: RawJson): Effect.Effect<string, Error> => {
-  if (!isString(value) || !ENV_NAME_PATTERN.test(value)) {
-    return fail(
-      `bot "${botId}" field "${key}" must be an environment variable name like EXECUTOR_TOKEN`,
-    );
-  }
-  return Effect.succeed(value);
-};
-
 const assertKnownOpenCodeModel = (botId: string, modelId: string): Effect.Effect<void, Error> =>
   VARIANT_INDEX.has(modelId)
     ? Effect.void
-    : fail(`bot "${botId}" model "${modelId}" is not in the OpenCode Go catalog. Known ids: ${KNOWN_MODEL_IDS}`);
+    : fail(
+        `bot "${botId}" model "${modelId}" is not in the OpenCode Go catalog. Known ids: ${KNOWN_MODEL_IDS}`,
+      );
 
 const openCodeModelId = (model: ModelDecl): string | undefined => {
   if (isString(model)) {
@@ -117,9 +113,10 @@ const openCodeModelId = (model: ModelDecl): string | undefined => {
 const decodeModel = (botId: string, value: RawJson): Effect.Effect<ModelDecl, Error> =>
   Effect.gen(function* () {
     if (isString(value)) {
-      if (value.startsWith(WORKERS_AI_PREFIX)) return value;
-      yield* assertKnownOpenCodeModel(botId, value);
-      return value;
+      const trimmed = value.trim();
+      if (trimmed.startsWith(WORKERS_AI_PREFIX)) return trimmed;
+      yield* assertKnownOpenCodeModel(botId, trimmed);
+      return trimmed;
     }
     if (isObject(value)) {
       const provider = field(value, "provider");
@@ -135,7 +132,8 @@ const decodeModel = (botId: string, value: RawJson): Effect.Effect<ModelDecl, Er
         );
       }
       const trimmed = modelId.trim();
-      if (trimmed.length === 0) return yield* fail(`bot "${botId}" model.modelId must be a non-empty string`);
+      if (trimmed.length === 0)
+        return yield* fail(`bot "${botId}" model.modelId must be a non-empty string`);
       yield* assertKnownOpenCodeModel(botId, trimmed);
       return { provider: OPENCODE_GO_PROVIDER_ID, modelId: trimmed };
     }
@@ -162,7 +160,9 @@ const decodeThinkingLevel = (
       return yield* fail(`bot "${botId}" model "${modelId}" is not in the OpenCode Go catalog`);
     }
     if (variants.length === 0) {
-      return yield* fail(`bot "${botId}" model "${modelId}" has no thinking variants; omit "thinkingLevel"`);
+      return yield* fail(
+        `bot "${botId}" model "${modelId}" has no thinking variants; omit "thinkingLevel"`,
+      );
     }
     if (!variants.includes(value)) {
       return yield* fail(
@@ -172,7 +172,11 @@ const decodeThinkingLevel = (
     return value;
   });
 
-const decodeStringArray = (botId: string, key: string, value: RawJson): Effect.Effect<string[], Error> => {
+const decodeStringArray = (
+  botId: string,
+  key: string,
+  value: RawJson,
+): Effect.Effect<string[], Error> => {
   if (!Array.isArray(value)) {
     return fail(`bot "${botId}" field "${key}" must be an array of strings`);
   }
@@ -191,11 +195,14 @@ const decodeSharedMemory = (
   value: RawJson,
 ): Effect.Effect<SharedMemoryConfig, Error> =>
   Effect.gen(function* () {
-    if (!isObject(value)) return yield* fail(`bot "${botId}" field "sharedMemory" must be an object`);
+    if (!isObject(value))
+      return yield* fail(`bot "${botId}" field "sharedMemory" must be an object`);
     const read = field(value, "read");
-    if (read === undefined) return yield* fail(`bot "${botId}" field "sharedMemory.read" is required`);
+    if (read === undefined)
+      return yield* fail(`bot "${botId}" field "sharedMemory.read" is required`);
     const write = field(value, "write");
-    if (write === undefined) return yield* fail(`bot "${botId}" field "sharedMemory.write" is required`);
+    if (write === undefined)
+      return yield* fail(`bot "${botId}" field "sharedMemory.write" is required`);
     return {
       read: yield* decodeStringArray(botId, "sharedMemory.read", read),
       write: yield* decodeStringArray(botId, "sharedMemory.write", write),
@@ -238,7 +245,11 @@ const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error>
     if (!isObject(raw)) return yield* fail(`bot "${botId}" must be an object`);
     const config: DraftBotConfig = {
       model: yield* decodeModel(botId, yield* requireField(botId, raw, "model")),
-      systemPrompt: yield* decodeText(botId, "systemPrompt", yield* requireField(botId, raw, "systemPrompt")),
+      systemPrompt: yield* decodeText(
+        botId,
+        "systemPrompt",
+        yield* requireField(botId, raw, "systemPrompt"),
+      ),
     };
     const thinkingLevel = field(raw, "thinkingLevel");
     if (thinkingLevel !== undefined) {
@@ -271,7 +282,20 @@ const decodeRegistry = (raw: RawJson): Effect.Effect<Record<string, BotConfig>, 
       if (botId.trim().length === 0) return yield* fail("bot ids must be non-empty strings");
       bots[botId] = yield* decodeBot(botId, rawBot);
     }
-    if (Object.keys(bots).length === 0) return yield* fail("the registry is empty; declare at least one bot");
+    if (Object.keys(bots).length === 0)
+      return yield* fail("the registry is empty; declare at least one bot");
+    for (const [botId, bot] of Object.entries(bots)) {
+      for (const target of bot.delegatesTo ?? []) {
+        if (!Object.hasOwn(bots, target)) {
+          return yield* fail(
+            `bot "${botId}" delegatesTo "${target}", which is not a declared bot (declared: ${Object.keys(bots).join(", ")})`,
+          );
+        }
+        if (target === botId) {
+          return yield* fail(`bot "${botId}" delegatesTo itself`);
+        }
+      }
+    }
     return bots;
   });
 
