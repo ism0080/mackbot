@@ -72,8 +72,8 @@ foundation pieces are already implemented and are intentionally omitted here:
 
 ## Channels and integration
 
-- **Telegram adapter.** Add optional Telegram support as an adapter over the same
-  submit, wait, resume, and status primitives. It should remain last/optional.
+- **Custom UI channel.** The first-party webapp is the only channel; build it as an
+  adapter over the same submit, wait, resume, and status primitives.
 - **Additional channel adapters.** Reuse proven implementations for Discord,
   Slack, or other platforms instead of hand-rolling each one.
 - **Service binding access.** Allow private Workers or applications to reach bots
@@ -100,5 +100,5 @@ foundation pieces are already implemented and are intentionally omitted here:
 2. Real sandbox graduation and dynamic code execution.
 3. Async delegation and thread lineage.
 4. Bot presets and saved routines.
-5. Telegram adapter and additional channels.
+5. Custom UI channel and additional channels.
 6. Spend controls, tracing, and audit-runtime integration.

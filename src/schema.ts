@@ -60,8 +60,6 @@ export const BotConfigSchema = Schema.Struct({
   delegatesTo: Schema.optional(Schema.Array(Schema.String)),
   sharedMemory: Schema.optional(SharedMemoryConfigSchema),
   budgets: Schema.optional(BudgetConfigSchema),
-  telegramTokenEnv: Schema.optional(Schema.String),
-  telegramSecretTokenEnv: Schema.optional(Schema.String),
 });
 
 export type BotConfig = Schema.Schema.Type<typeof BotConfigSchema>;

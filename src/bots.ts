@@ -60,8 +60,6 @@ export interface BotConfig {
   readonly delegatesTo?: string[];
   readonly sharedMemory?: SharedMemoryConfig;
   readonly budgets?: BudgetConfig;
-  readonly telegramTokenEnv?: string;
-  readonly telegramSecretTokenEnv?: string;
 }
 
 const VARIANT_INDEX = new Map<string, readonly ThinkingLevel[]>(Object.entries(MODEL_VARIANTS));
@@ -98,7 +96,7 @@ const decodeText = (botId: string, key: string, value: RawJson): Effect.Effect<s
 const decodeEnvName = (botId: string, key: string, value: RawJson): Effect.Effect<string, Error> => {
   if (!isString(value) || !ENV_NAME_PATTERN.test(value)) {
     return fail(
-      `bot "${botId}" field "${key}" must be an environment variable name like TELEGRAM_TOKEN_HERMES`,
+      `bot "${botId}" field "${key}" must be an environment variable name like EXECUTOR_TOKEN`,
     );
   }
   return Effect.succeed(value);
@@ -233,8 +231,6 @@ interface DraftBotConfig {
   delegatesTo?: string[];
   sharedMemory?: SharedMemoryConfig;
   budgets?: BudgetConfig;
-  telegramTokenEnv?: string;
-  telegramSecretTokenEnv?: string;
 }
 
 const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error> =>
@@ -263,18 +259,6 @@ const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error>
     const budgets = field(raw, "budgets");
     if (budgets !== undefined) {
       config.budgets = yield* decodeBudgets(botId, budgets);
-    }
-    const telegramTokenEnv = field(raw, "telegramTokenEnv");
-    if (telegramTokenEnv !== undefined) {
-      config.telegramTokenEnv = yield* decodeEnvName(botId, "telegramTokenEnv", telegramTokenEnv);
-    }
-    const telegramSecretTokenEnv = field(raw, "telegramSecretTokenEnv");
-    if (telegramSecretTokenEnv !== undefined) {
-      config.telegramSecretTokenEnv = yield* decodeEnvName(
-        botId,
-        "telegramSecretTokenEnv",
-        telegramSecretTokenEnv,
-      );
     }
     return config;
   });

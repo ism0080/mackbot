@@ -92,8 +92,7 @@ Lint tooling (vendored from the forge repo, already in place): `tools/oxlint/` h
     // (deepseek-v4-pro supports only "high"/"max"; glm-5.3 has "low"/"high"/"max")
     "thinkingLevel": "high",
     "systemPrompt": "You are … (job description + executor protocol) …",
-    "telegramTokenEnv": "TELEGRAM_TOKEN_HERMES",        // Telegram fields optional —
-    "telegramSecretTokenEnv": "TELEGRAM_SECRET_HERMES"  // that channel is added last
+    // Custom UI is the only channel; no channel-specific credential fields.
   }
 }
 ```
