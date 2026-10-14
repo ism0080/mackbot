@@ -2,7 +2,7 @@
  * audit-log — append-only helper ...
  */
 
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 
 type RawJson = string | number | boolean | null | readonly RawJson[] | RawObject;
 
@@ -71,9 +71,6 @@ const rowsFrom = (raw: SqlCursor | void | readonly RawRow[]): readonly RawRow[] 
   return [];
 };
 
-const isStringObject = (value: RawJson | undefined): value is string =>
-  Object.prototype.toString.call(value) === "[object String]";
-
 const CREATE_TABLE_SQL =
   "CREATE TABLE IF NOT EXISTS mackbot_audit (timestamp INTEGER NOT NULL, bot_id TEXT NOT NULL, kind TEXT NOT NULL, operation_id TEXT NOT NULL, detail TEXT)";
 
@@ -83,25 +80,36 @@ const SELECT_SQL =
 const INSERT_SQL =
   "INSERT INTO mackbot_audit (timestamp, bot_id, kind, operation_id, detail) VALUES (?, ?, ?, ?, ?)";
 
-const rowToEvent = (row: RawRow): AuditEvent => {
-  const record = row;
-  const timestamp = Number(record.timestamp ?? 0);
-  const botId = String(record.bot_id ?? "");
-  const kind = String(record.kind ?? "");
-  const operationId = String(record.operation_id ?? "");
-  let detail: unknown = record.detail ?? null;
-  // SAFETY: detail originates from a parsed storage row.
-  const detailCandidate = detail as RawJson | undefined;
-  if (isStringObject(detailCandidate)) {
-    // SAFETY: isStringObject returned true, so detail is a string here.
-    const detailText = detail as string;
-    try {
-      detail = JSON.parse(detailText);
-    } catch {
-      /* keep the raw string when it is not JSON */
-    }
+const AuditRowSchema = Schema.Struct({
+  timestamp: Schema.Unknown,
+  bot_id: Schema.Unknown,
+  kind: Schema.Unknown,
+  operation_id: Schema.Unknown,
+  detail: Schema.optional(Schema.Unknown),
+});
+
+const parseDetail = (raw: RawJson | undefined): RawJson | undefined => {
+  if (!Predicate.isString(raw)) return raw === undefined ? null : raw ?? null;
+  // SAFETY: JSON.parse runtime failure is handled by returning the stored text.
+  try {
+    const parsed: RawJson = JSON.parse(raw);
+    return parsed;
+  } catch {
+    /* keep the raw string when it is not valid JSON */
+    return raw;
   }
-  return { timestamp, botId, kind, operationId, detail };
+};
+
+const rowToEvent = (row: RawRow): AuditEvent => {
+  const record = Schema.decodeUnknownSync(AuditRowSchema)(row);
+  return {
+    timestamp: Number(record.timestamp ?? 0),
+    botId: String(record.bot_id ?? ""),
+    kind: String(record.kind ?? ""),
+    operationId: String(record.operation_id ?? ""),
+    // SAFETY: AuditRowSchema marks detail as optional unknown; parseDetail narrows it at runtime.
+    detail: parseDetail(record.detail as RawJson | undefined),
+  };
 };
 
 export type AuditLog = {
