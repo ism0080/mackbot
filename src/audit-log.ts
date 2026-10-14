@@ -122,12 +122,8 @@ export function createAuditLog(storage: AuditStorage): AuditLog {
     throw new Error("createAuditLog requires Durable Object SQLite storage");
   }
 
-  // Lift the storage migration into Effect so the boundary stays idiomatic.
-  const migrateEffect = (sql: string) =>
-    Effect.tryPromise({ try: async () => runSql(executor, sql), catch: (cause) => cause });
-
   const migrate = async (): Promise<void> => {
-    await Effect.runPromise(migrateEffect(CREATE_TABLE_SQL));
+    await runSql(executor, CREATE_TABLE_SQL);
   };
 
   const append = async (event: AuditEvent): Promise<void> => {
