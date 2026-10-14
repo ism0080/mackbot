@@ -30,7 +30,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
-import { BotRegistryService } from "./services/bot-registry-service.ts";
+import { BotRegistryService } from "./services/bot-registry.ts";
 import { AppConfig, AppConfigLive } from "./config.ts";
 import { createAuditLog } from "./audit-log.ts";
 
