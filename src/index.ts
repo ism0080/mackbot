@@ -52,7 +52,7 @@ import { PiHarness, ROOT_SESSION } from "agents/harness/pi";
 import type { PiHarnessFactory, PiReceipt, PiWhenBusy } from "agents/harness/pi";
 import { createAI } from "agents/models/pi-ai";
 import { Harness, createRegistry } from "@earendil-works/pi-durable";
-import type { AgentChange, HarnessSettings, UsageState } from "@earendil-works/pi-durable";
+import type { AgentChange, ConversationId, HarnessSettings, UsageState } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
@@ -167,22 +167,29 @@ export class Bot extends DurableObject<Env> {
    * Durably admit one message. Resolves once it is admitted, before the model
    * runs; `operationId` makes it at-most-once across retries and evictions.
    */
-  async submit(text: string, operationId: string, whenBusy: PiWhenBusy): Promise<PiReceipt> {
+  async submit(
+    text: string,
+    operationId: string,
+    whenBusy: PiWhenBusy,
+    thread?: string,
+  ): Promise<PiReceipt> {
     await this.lifecycle.start();
-    await this.#ensureBot();
-    return this.harness.submit(text, { operationId, whenBusy });
+    const sessionId =
+      thread === undefined ? ROOT_SESSION : await this.#sessionForThread(thread);
+    if (thread === undefined) await this.#ensureBot();
+    return this.harness.submit(text, { operationId, whenBusy, session: sessionId });
   }
 
   /**
    * Wait for an admitted operation to settle, bounded by `timeoutMs`. A timeout
    * leaves the run untouched; the caller retries with the same `operationId`.
    */
-  async wait(operationId: string, timeoutMs: number): Promise<WaitResult> {
+  async wait(operationId: string, timeoutMs: number, session: string = ROOT_SESSION): Promise<WaitResult> {
     await this.lifecycle.start();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const result = await this.harness.wait(operationId, { signal: controller.signal });
+      const result = await this.harness.wait(operationId, { session, signal: controller.signal });
       return {
         operationId: result.operationId,
         session: result.session,
@@ -192,7 +199,7 @@ export class Bot extends DurableObject<Env> {
       };
     } catch (cause) {
       if (controller.signal.aborted) {
-        return { operationId, session: ROOT_SESSION, status: "timeout" };
+        return { operationId, session, status: "timeout" };
       }
       throw cause;
     } finally {
@@ -221,6 +228,56 @@ export class Bot extends DurableObject<Env> {
       })),
       usage,
     };
+  }
+
+  #ensureThreadsTable(): void {
+    this.ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS mackbot_threads (thread TEXT PRIMARY KEY, session_id TEXT NOT NULL)",
+    );
+  }
+
+  async #sessionForThread(thread: string): Promise<string> {
+    this.#ensureThreadsTable();
+    const rows = this.ctx.storage.sql
+      .exec("SELECT session_id FROM mackbot_threads WHERE thread = ?", thread)
+      .toArray();
+    if (rows.length > 0) {
+      return String(rows[0].session_id);
+    }
+    await this.#ensureBot();
+    const session = await this.harness.sessions.create();
+    const sessionId = session.id;
+    const bot = getBot(this.lifecycle.name);
+    await this.#configureSession(sessionId, bot);
+    this.ctx.storage.sql.exec(
+      "INSERT INTO mackbot_threads (thread, session_id) VALUES (?, ?)",
+      thread,
+      sessionId,
+    );
+    return sessionId;
+  }
+
+  async #configureSession(sessionId: string, bot: ReturnType<typeof getBot>): Promise<void> {
+    const model = resolveModelRef(bot);
+    const pi = await this.harness.pi();
+    // SAFETY: PiSession ids are numeric strings; cast to pi-durable's numeric ConversationId.
+    const conversation = await pi.conversation(Number(sessionId) as ConversationId, BACKGROUND_CONTEXT);
+    if (conversation === undefined) {
+      throw new Error(`session ${sessionId} not found`);
+    }
+    const thinkingLevel = bot.thinkingLevel;
+    const change: AgentChange =
+      thinkingLevel === undefined
+        ? {
+            model: { provider: model.provider, modelId: model.id },
+            instructions: bot.systemPrompt,
+          }
+        : {
+            model: { provider: model.provider, modelId: model.id },
+            thinkingLevel: toThinkingLevel(thinkingLevel),
+            instructions: bot.systemPrompt,
+          };
+    await conversation.configure(change, BACKGROUND_CONTEXT);
   }
 
   /**
@@ -271,6 +328,8 @@ interface ChatRequest {
   readonly operationId?: string;
   readonly whenBusy?: PiWhenBusy;
   readonly wait?: boolean;
+  readonly conversation?: string;
+  readonly thread?: string;
 }
 
 interface DraftChatRequest {
@@ -278,6 +337,8 @@ interface DraftChatRequest {
   operationId?: string;
   whenBusy?: PiWhenBusy;
   wait?: boolean;
+  conversation?: string;
+  thread?: string;
 }
 
 const isString = (value: RawJson | undefined): value is string =>
@@ -296,6 +357,7 @@ const field = (raw: RawObject, key: string): RawJson | undefined =>
   Object.hasOwn(raw, key) ? raw[key] : undefined;
 
 /** Decode and validate a `/chat/:bot` body, or `undefined` when malformed. */
+// eslint-disable-next-line complexity
 const readChatRequest = async (request: Request): Promise<ChatRequest | undefined> => {
   let raw: RawJson;
   try {
@@ -314,10 +376,20 @@ const readChatRequest = async (request: Request): Promise<ChatRequest | undefine
   if (whenBusy !== undefined && !isWhenBusy(whenBusy)) return undefined;
   const wait = field(raw, "wait");
   if (wait !== undefined && !isBoolean(wait)) return undefined;
+  const conversation = field(raw, "conversation");
+  if (conversation !== undefined && (!isString(conversation) || conversation.trim().length === 0)) {
+    return undefined;
+  }
+  const thread = field(raw, "thread");
+  if (thread !== undefined && (!isString(thread) || thread.trim().length === 0)) {
+    return undefined;
+  }
   const body: DraftChatRequest = { text };
   if (operationId !== undefined) body.operationId = operationId;
   if (whenBusy !== undefined) body.whenBusy = whenBusy;
   if (wait !== undefined) body.wait = wait;
+  if (conversation !== undefined) body.conversation = conversation;
+  if (thread !== undefined) body.thread = thread;
   return body;
 };
 
@@ -351,15 +423,16 @@ const handleChat = async (
     return Response.json({ error: "invalid request body" }, { status: 400 });
   }
   const operationId = body.operationId ?? `http:${crypto.randomUUID()}`;
+  const thread = body.conversation ?? body.thread;
   const stub = env.Bot.getByName(botId);
-  const receipt = await stub.submit(body.text, operationId, body.whenBusy ?? "followUp");
+  const receipt = await stub.submit(body.text, operationId, body.whenBusy ?? "followUp", thread);
   if (immediate || body.wait === false) {
     return Response.json(
       { operationId: receipt.operationId, accepted: receipt.accepted },
       { status: 202 },
     );
   }
-  const result = await stub.wait(operationId, LONG_POLL_TIMEOUT_MS);
+  const result = await stub.wait(operationId, LONG_POLL_TIMEOUT_MS, receipt.session);
   if (result.status === "timeout") {
     // Still running: hand back the receipt + status so the caller can retry
     // with the same operationId (idempotent).
