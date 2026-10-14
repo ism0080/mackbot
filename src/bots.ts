@@ -118,6 +118,12 @@ export interface BotConfig {
    * a bot without one is skipped by the cron handler.
    */
   readonly brief?: string;
+  /** Optional allowlist of bot ids this bot may delegate work to. */
+  readonly delegatesTo?: string[];
+  /** Optional shared-memory scopes this bot may read from / write to. */
+  readonly sharedMemory?: { read: string[]; write: string[] };
+  /** Optional soft caps on this bot's resource usage. */
+  readonly budgets?: { tokens?: number; usd?: number };
   /** Name of the env var holding this bot's Telegram bot token. */
   readonly telegramTokenEnv?: string;
   /** Name of the env var holding this bot's Telegram webhook secret token. */
@@ -240,9 +246,61 @@ interface DraftBotConfig {
   systemPrompt: string;
   thinkingLevel?: ThinkingLevel;
   brief?: string;
+  delegatesTo?: string[];
+  sharedMemory?: { read: string[]; write: string[] };
+  budgets?: { tokens?: number; usd?: number };
   telegramTokenEnv?: string;
   telegramSecretTokenEnv?: string;
 }
+
+const decodeStringArray = (botId: string, key: string, value: RawJson): string[] => {
+  if (!Array.isArray(value)) {
+    fail(`bot "${botId}" field "${key}" must be an array of strings`);
+  }
+  const out: string[] = [];
+  for (const entry of value) {
+    if (!isString(entry) || entry.trim().length === 0) {
+      fail(`bot "${botId}" field "${key}" must contain non-empty strings`);
+    }
+    out.push(entry);
+  }
+  return out;
+};
+
+const decodeSharedMemory = (
+  botId: string,
+  value: RawJson,
+): { read: string[]; write: string[] } => {
+  if (!isObject(value)) fail(`bot "${botId}" field "sharedMemory" must be an object`);
+  const read = field(value, "read");
+  if (read === undefined) fail(`bot "${botId}" field "sharedMemory.read" is required`);
+  const write = field(value, "write");
+  if (write === undefined) fail(`bot "${botId}" field "sharedMemory.write" is required`);
+  return {
+    read: decodeStringArray(botId, "sharedMemory.read", read),
+    write: decodeStringArray(botId, "sharedMemory.write", write),
+  };
+};
+
+const decodeBudgets = (botId: string, value: RawJson): { tokens?: number; usd?: number } => {
+  if (!isObject(value)) fail(`bot "${botId}" field "budgets" must be an object`);
+  const result: { tokens?: number; usd?: number } = {};
+  const tokens = field(value, "tokens");
+  if (tokens !== undefined) {
+    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0) {
+      fail(`bot "${botId}" field "budgets.tokens" must be a non-negative number`);
+    }
+    result.tokens = tokens;
+  }
+  const usd = field(value, "usd");
+  if (usd !== undefined) {
+    if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) {
+      fail(`bot "${botId}" field "budgets.usd" must be a non-negative number`);
+    }
+    result.usd = usd;
+  }
+  return result;
+};
 
 const decodeBot = (botId: string, raw: RawJson): BotConfig => {
   if (!isObject(raw)) fail(`bot "${botId}" must be an object`);
@@ -257,6 +315,18 @@ const decodeBot = (botId: string, raw: RawJson): BotConfig => {
   const brief = field(raw, "brief");
   if (brief !== undefined) {
     config.brief = decodeText(botId, "brief", brief);
+  }
+  const delegatesTo = field(raw, "delegatesTo");
+  if (delegatesTo !== undefined) {
+    config.delegatesTo = decodeStringArray(botId, "delegatesTo", delegatesTo);
+  }
+  const sharedMemory = field(raw, "sharedMemory");
+  if (sharedMemory !== undefined) {
+    config.sharedMemory = decodeSharedMemory(botId, sharedMemory);
+  }
+  const budgets = field(raw, "budgets");
+  if (budgets !== undefined) {
+    config.budgets = decodeBudgets(botId, budgets);
   }
   const telegramTokenEnv = field(raw, "telegramTokenEnv");
   if (telegramTokenEnv !== undefined) {

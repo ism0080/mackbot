@@ -109,6 +109,21 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
               isError: true,
             };
           }
+          const sourceBot = bots[sourceBotId];
+          if (
+            sourceBot?.delegatesTo !== undefined &&
+            !sourceBot.delegatesTo.includes(args.target)
+          ) {
+            return {
+              output: [
+                {
+                  type: "text",
+                  text: `bot "${sourceBotId}" is not allowed to delegate to "${args.target}" (not in delegatesTo: ${sourceBot.delegatesTo.join(", ") || "(none)"})`,
+                },
+              ],
+              isError: true,
+            };
+          }
           const operationId = args.operationId
             ? `delegate:${sourceBotId}:${args.operationId}`
             : `delegate:${sourceBotId}:${crypto.randomUUID()}`;
