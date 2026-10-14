@@ -21,35 +21,33 @@ export function makeManagedRuntime<R, ER>(
 }
 
 export function runPromise<R, ER, A, E>(
-  runtime: ManagedRuntime<R, ER>,
-  effect: Effect.Effect<A, E, R>,
-  options?: { readonly signal?: AbortSignal | undefined },
-): Promise<A>;
-export function runPromise<R, ER, A, E>(
-  layer: Layer.Layer<R, ER, never>,
-  effect: Effect.Effect<A, E, R>,
-  options?: { readonly signal?: AbortSignal | undefined },
-): Promise<A>;
-export function runPromise<R, ER>(
   runtimeOrLayer: ManagedRuntime<R, ER> | Layer.Layer<R, ER, never>,
-): <A, E>(
   effect: Effect.Effect<A, E, R>,
   options?: { readonly signal?: AbortSignal | undefined },
-) => Promise<A>;
-export function runPromise(...args: readonly unknown[]): unknown {
-  const [first, second, third] = args;
+): Promise<A> {
+  // SAFETY: isManagedRuntime narrows the union before this point.
+  const runtime = isManagedRuntime(runtimeOrLayer)
+    ? runtimeOrLayer
+    : makeManagedRuntime(
+        // SAFETY: isManagedRuntime was false, so the value is a layer with matching R/ER.
+        runtimeOrLayer as Layer.Layer<R, ER, never>,
+      );
 
-  const toRuntime = (value: unknown): ManagedRuntime<any, any> =>
-    isManagedRuntime(value)
-      ? (value as ManagedRuntime<any, any>)
-      : makeManagedRuntime(value as Layer.Layer<any, any, never>);
+  return runtime.runPromise(effect, options);
+}
 
-  if (args.length === 1) {
-    const runtime = toRuntime(first);
-    return (effect: Effect.Effect<any, any, any>, options?: { readonly signal?: AbortSignal | undefined }) =>
-      runtime.runPromise(effect, options);
-  }
+export function makeRunner<R, ER>(
+  runtimeOrLayer: ManagedRuntime<R, ER> | Layer.Layer<R, ER, never>,
+) {
+  const runtime = isManagedRuntime(runtimeOrLayer)
+    ? runtimeOrLayer
+    : makeManagedRuntime(
+        // SAFETY: isManagedRuntime was false, so the value is a layer with matching R/ER.
+        runtimeOrLayer as Layer.Layer<R, ER, never>,
+      );
 
-  const runtime = toRuntime(first);
-  return runtime.runPromise(second as Effect.Effect<any, any, any>, third as { readonly signal?: AbortSignal | undefined } | undefined);
+  return <A, E>(
+    effect: Effect.Effect<A, E, R>,
+    options?: { readonly signal?: AbortSignal | undefined },
+  ) => runtime.runPromise(effect, options);
 }

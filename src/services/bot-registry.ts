@@ -29,4 +29,4 @@ export class BotRegistryService extends Context.Service<BotRegistryService, BotR
   );
 }
 
-export type BotRegistryServiceShape = BotRegistry;
+export type BotRegistryServiceContract = BotRegistry;
