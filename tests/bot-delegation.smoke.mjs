@@ -10,7 +10,7 @@ const { createBotDelegation } = await import("../src/bot-delegation.ts");
 
 const fakeEnv = {
   Bot: {
-    getByName: (name) => ({
+    getByName: (_name) => ({
       submit: async () => ({ operationId: "x", accepted: true }),
       wait: async () => ({ status: "done", text: "ok" }),
     }),

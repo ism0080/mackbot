@@ -109,6 +109,17 @@ export const MODEL_VARIANTS = {
 export type ThinkingLevel = (typeof MODEL_VARIANTS)[keyof typeof MODEL_VARIANTS][number];
 
 /** A validated bot declaration. */
+/** Per-bot shared-memory access scopes. */
+export interface SharedMemoryConfig {
+  readonly read: readonly string[];
+  readonly write: readonly string[];
+}
+/** Optional per-bot spend ceilings. */
+export interface BudgetConfig {
+  tokens?: number;
+  usd?: number;
+}
+
 export interface BotConfig {
   readonly model: ModelDecl;
   readonly thinkingLevel?: ThinkingLevel;
@@ -121,9 +132,9 @@ export interface BotConfig {
   /** Optional allowlist of bot ids this bot may delegate work to. */
   readonly delegatesTo?: string[];
   /** Optional shared-memory scopes this bot may read from / write to. */
-  readonly sharedMemory?: { read: string[]; write: string[] };
+  readonly sharedMemory?: SharedMemoryConfig;
   /** Optional soft caps on this bot's resource usage. */
-  readonly budgets?: { tokens?: number; usd?: number };
+  readonly budgets?: BudgetConfig;
   /** Name of the env var holding this bot's Telegram bot token. */
   readonly telegramTokenEnv?: string;
   /** Name of the env var holding this bot's Telegram webhook secret token. */
@@ -140,6 +151,8 @@ const isString = (value: RawJson | undefined): value is string =>
 
 const isObject = (value: RawJson | undefined): value is RawObject =>
   Object.prototype.toString.call(value) === "[object Object]";
+const isNumber = (value: RawJson | undefined): value is number =>
+  Object.prototype.toString.call(value) === "[object Number]";
 
 const isThinkingLevel = (value: RawJson | undefined): value is ThinkingLevel =>
   isString(value) && ALL_THINKING_LEVELS.has(value);
@@ -247,8 +260,8 @@ interface DraftBotConfig {
   thinkingLevel?: ThinkingLevel;
   brief?: string;
   delegatesTo?: string[];
-  sharedMemory?: { read: string[]; write: string[] };
-  budgets?: { tokens?: number; usd?: number };
+  sharedMemory?: SharedMemoryConfig;
+  budgets?: BudgetConfig;
   telegramTokenEnv?: string;
   telegramSecretTokenEnv?: string;
 }
@@ -270,7 +283,7 @@ const decodeStringArray = (botId: string, key: string, value: RawJson): string[]
 const decodeSharedMemory = (
   botId: string,
   value: RawJson,
-): { read: string[]; write: string[] } => {
+): SharedMemoryConfig => {
   if (!isObject(value)) fail(`bot "${botId}" field "sharedMemory" must be an object`);
   const read = field(value, "read");
   if (read === undefined) fail(`bot "${botId}" field "sharedMemory.read" is required`);
@@ -282,19 +295,19 @@ const decodeSharedMemory = (
   };
 };
 
-const decodeBudgets = (botId: string, value: RawJson): { tokens?: number; usd?: number } => {
+const decodeBudgets = (botId: string, value: RawJson): BudgetConfig => {
   if (!isObject(value)) fail(`bot "${botId}" field "budgets" must be an object`);
-  const result: { tokens?: number; usd?: number } = {};
+  const result: BudgetConfig = {};
   const tokens = field(value, "tokens");
   if (tokens !== undefined) {
-    if (typeof tokens !== "number" || !Number.isFinite(tokens) || tokens < 0) {
+    if (!isNumber(tokens) || !Number.isFinite(tokens) || tokens < 0) {
       fail(`bot "${botId}" field "budgets.tokens" must be a non-negative number`);
     }
     result.tokens = tokens;
   }
   const usd = field(value, "usd");
   if (usd !== undefined) {
-    if (typeof usd !== "number" || !Number.isFinite(usd) || usd < 0) {
+    if (!isNumber(usd) || !Number.isFinite(usd) || usd < 0) {
       fail(`bot "${botId}" field "budgets.usd" must be a non-negative number`);
     }
     result.usd = usd;
