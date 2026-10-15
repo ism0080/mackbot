@@ -48,14 +48,12 @@ const wrapped = {
 };
 const _audit2 = createAuditLog(wrapped);
 
-// wait for best-effort migration
 await new Promise((r) => setTimeout(r, 10));
 
 if (!createCalls.some((s) => /CREATE TABLE IF NOT EXISTS mackbot_audit/i.test(s))) {
   failures.push("CREATE TABLE not issued");
 }
 
-// append + list round trip
 await audit.append({
   timestamp: 123,
   botId: "hermes",
@@ -68,7 +66,6 @@ if (events.length !== 1) failures.push(`expected 1 event, got ${events.length}`)
 if (events[0]?.botId !== "hermes") failures.push("botId mismatch");
 if (events[0]?.detail?.tool !== "delegate_to_bot") failures.push("detail mismatch");
 
-// list(limit) returns the newest events, oldest first.
 await audit.append({
   timestamp: 124,
   botId: "hermes",
@@ -80,7 +77,6 @@ const recent = await audit.list(1);
 if (recent.length !== 1) failures.push(`list(1) expected 1 event, got ${recent.length}`);
 if (recent[0]?.operationId !== "op-2") failures.push(`list(1) returned ${recent[0]?.operationId}`);
 
-// direct executor form
 const directRows = [];
 const direct = createAuditLog({
   exec: (sql, ...bindings) => {

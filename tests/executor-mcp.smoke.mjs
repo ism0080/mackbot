@@ -35,7 +35,6 @@ const invoke = async (toolName, args) => {
   if (!tool) {
     throw new Error(`tool ${toolName} is not registered on the extension`);
   }
-  // The bridge tools ignore api/context; pass empty stand-ins.
   return tool.execute(args, {}, {});
 };
 

@@ -1,6 +1,3 @@
-/**
- * sandbox — additive seam ...
- */
 
 import { section } from "@earendil-works/pi-durable";
 import type { PromptSection } from "@earendil-works/pi-durable";

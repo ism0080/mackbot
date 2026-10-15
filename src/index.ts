@@ -1,6 +1,3 @@
-/**
- * mackbot — the front door Worker and the `Bot` Durable Object.
- */
 
 import { DurableObject } from "cloudflare:workers";
 import { Lifecycle } from "agents/lifecycle";
@@ -73,7 +70,6 @@ const HARNESS_SETTINGS: HarnessSettings = {
 const toThinkingLevel = (level: ThinkingLevel): ModelThinkingLevel =>
   level === "none" ? "off" : level;
 
-/** The model/instruction change applied to a bot's conversations. */
 const agentChange = (bot: BotConfig): AgentChange => {
   const model = resolveModelRef(bot);
   const target = { provider: model.provider, modelId: model.id };
@@ -86,7 +82,6 @@ const agentChange = (bot: BotConfig): AgentChange => {
       };
 };
 
-/** Convert a pi session id (a numeric conversation id) to pi-durable's branded type. */
 const conversationIdOf = (sessionId: string): ConversationId => {
   const id = Number(sessionId);
   if (!Number.isSafeInteger(id) || id < 1) {
@@ -375,7 +370,6 @@ const ChatRequestBodySchema = Schema.Struct({
 
 const BEARER_PATTERN = /^Bearer\s+(.+)$/u;
 
-/** Constant-time string comparison for the bearer token. */
 const tokensMatch = (a: string, b: string): boolean => {
   if (a.length !== b.length) return false;
   let diff = 0;

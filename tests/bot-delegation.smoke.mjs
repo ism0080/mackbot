@@ -32,7 +32,6 @@ const textOf = (result) =>
 
 const failures = [];
 
-// Unknown target -> error, mentions declared bots.
 try {
   const r = await tool.execute({ target: "nope", task: "hi" }, {}, {});
   if (!r.isError) failures.push("unknown target did not set isError");
@@ -43,7 +42,6 @@ try {
   failures.push(`unknown target threw: ${error?.message ?? error}`);
 }
 
-// Self-delegation -> error.
 try {
   const r = await tool.execute({ target: "hermes", task: "hi" }, {}, {});
   if (!r.isError) failures.push("self delegation did not set isError");
@@ -53,7 +51,6 @@ try {
   failures.push(`self delegation threw: ${error?.message ?? error}`);
 }
 
-// Allowlisted target (hermes -> scribe) passes the policy and reaches the stub.
 try {
   const r = await tool.execute({ target: "scribe", task: "hi" }, {}, {});
   if (r.isError) failures.push(`allowlisted delegation errored: ${textOf(r)}`);
@@ -63,8 +60,6 @@ try {
   failures.push(`allowlisted delegation threw: ${error?.message ?? error}`);
 }
 
-// Missing required args should surface as a throw from the tool? The schema is
-// declared; pi enforces. We simply ensure the tool object exists.
 
 if (failures.length > 0) {
   console.error("bot-delegation smoke FAILED:");

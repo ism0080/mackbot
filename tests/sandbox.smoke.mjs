@@ -39,7 +39,6 @@ if (matches.length !== 1 || matches[0].line !== 2) {
   process.exit(1);
 }
 
-// run is not supported in-memory; ensure it rejects rather than crashing raw.
 try {
   await ws.run("echo hi");
   console.error("run unexpectedly succeeded");

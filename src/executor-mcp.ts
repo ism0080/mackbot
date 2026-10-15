@@ -61,16 +61,11 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 const CLIENT_NAME = "mackbot";
 const CLIENT_VERSION = "0.1.0";
 
-/** Configuration for {@link createExecutorMcp}. */
 export type ExecutorMcpConfig = {
-  /** Executor MCP endpoint, e.g. `https://mcp.executor.sh/org/<org>/mcp?elicitation_mode=browser`. */
-  readonly url: string;
-  /** Org-scoped personal access token, sent as a bearer token. */
-  readonly token: string;
-  /** Tool-call timeout in milliseconds. Defaults to 600_000 (10 minutes). */
-  readonly timeoutMs?: number;
-  /** MCP handshake timeout in milliseconds. Defaults to 60_000 (1 minute). */
-  readonly connectTimeoutMs?: number;
+    readonly url: string;
+    readonly token: string;
+    readonly timeoutMs?: number;
+    readonly connectTimeoutMs?: number;
 };
 
 type ResolvedConfig = {
@@ -94,7 +89,6 @@ const resolveConfig = (config: ExecutorMcpConfig): ResolvedConfig => ({
   connectTimeoutMs: config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
 });
 
-/** Open a fresh per-call MCP client, wrapped in Effect. */
 const connect = (config: ResolvedConfig): Effect.Effect<Client, unknown> =>
   Effect.tryPromise({
     try: async () => {
@@ -113,11 +107,9 @@ const connect = (config: ResolvedConfig): Effect.Effect<Client, unknown> =>
     catch: (cause) => cause,
   });
 
-/** Close a per-call client; the transport may already be gone after an eviction. */
 const closeClient = (client: Client): Effect.Effect<void> =>
   Effect.tryPromise(() => client.close()).pipe(Effect.orElseSucceed(() => undefined));
 
-/** Call one Executor meta-tool over a fresh connection. */
 const callMetaTool = (
   config: ResolvedConfig,
   name: string,
@@ -148,7 +140,6 @@ const errorResult = (text: string): ToolExecutionResult => ({
 const describeError = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-/** Join an MCP result's content items into readable text. */
 const renderContent = (content: CallToolResult["content"]): string => {
   const parts: string[] = [];
   for (const item of content) {
@@ -184,7 +175,6 @@ export const approvalNotice = (haystack: string): string => {
   return lines.join("\n");
 };
 
-/** Return an approval notice if `haystack` looks like a paused approval, else null. */
 export const maybeApprovalNotice = (haystack: string): string | null => {
   const looksPaused =
     APPROVAL_KEY_PATTERN.test(haystack) ||
@@ -192,7 +182,6 @@ export const maybeApprovalNotice = (haystack: string): string | null => {
   return looksPaused ? approvalNotice(haystack) : null;
 };
 
-/** Assemble the model-facing body from content text and structured content. */
 const renderBody = (text: string, structured: string): string => {
   const parts: string[] = [];
   if (text.length > 0) parts.push(text);
@@ -225,7 +214,6 @@ const renderResult = (result: CallToolResult): ToolExecutionResult => {
   };
 };
 
-/** Run a meta-tool, converting any thrown connection/protocol error to a result. */
 const runMetaTool = (
   config: ResolvedConfig,
   name: string,

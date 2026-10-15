@@ -1,9 +1,4 @@
 /**
- * constants — values shared across the front door, the Bot Durable Object, and
- * the delegation bridge.
- */
-
-/**
  * Upper bound on a single blocking wait for a bot operation. It stays under the
  * ~60s harness tool-call timeout (so a `delegate_to_bot` wait settles before the
  * tool is cut off) and well under Cloudflare's ~100s edge request timeout (so a

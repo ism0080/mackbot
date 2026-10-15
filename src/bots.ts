@@ -1,16 +1,11 @@
-/**
- * Typed loader for the `bots.json` bot registry.
- */
 import botsJson from "../bots.json";
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-/** A parsed JSON object, as `JSON.parse` (and a JSON module import) yields one. */
 export interface RawObject {
   readonly [key: string]: RawJson;
 }
-/** A parsed JSON value, as `JSON.parse` yields it. */
 export type RawJson = string | number | boolean | null | readonly RawJson[] | RawObject;
 
 const OPENCODE_GO_PROVIDER_ID = "opencode-go";
@@ -299,17 +294,10 @@ const decodeRegistry = (raw: RawJson): Effect.Effect<Record<string, BotConfig>, 
     return bots;
   });
 
-/** Outcome of parsing a registry document; failures come back as data, not thrown. */
 export type BotRegistryParse =
   | { readonly ok: true; readonly bots: Record<string, BotConfig> }
   | { readonly ok: false; readonly error: string };
 
-/**
- * Parse a `bots.json`-shaped document into bot configs without throwing, so a
- * caller (or a test) can handle a bad registry as data. {@link loadBots} wraps
- * this and throws. Kept separate so the decoding rules stay unit-testable
- * without a crafted `bots.json` on disk.
- */
 export function parseBotRegistry(raw: RawJson): BotRegistryParse {
   return Effect.runSync(
     decodeRegistry(raw).pipe(

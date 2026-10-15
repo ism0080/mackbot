@@ -62,10 +62,6 @@ export type BotDelegationConfig = {
   readonly sourceBotId: string;
 };
 
-/**
- * Build the `delegate_to_bot` extension for one source bot. The source id is
- * baked into the closure so self-delegation and mutual-delegation guards work.
- */
 export function createBotDelegation(config: BotDelegationConfig): Extension {
   const { env, sourceBotId } = config;
   return defineExtension({

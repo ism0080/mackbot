@@ -1,7 +1,3 @@
-/**
- * runtime — bridge for running Effect programs from non-Effect
- * Cloudflare/Pi callbacks.
- */
 
 import * as Layer from "effect/Layer";
 import * as ManagedRuntimeModule from "effect/ManagedRuntime";

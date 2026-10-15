@@ -1,7 +1,3 @@
-/**
- * memory — shared cross-bot memory as a pi extension.
- */
-
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import type { Extension } from "@earendil-works/pi-durable";
 import { Schema } from "effect";

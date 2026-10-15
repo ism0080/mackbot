@@ -1,11 +1,3 @@
-/**
- * DelegationPolicy — gatekeeper for bot-to-bot delegation.
- *
- * A bot with an explicit `delegatesTo` allowlist may only reach those targets.
- * A bot without one may reach any other declared bot (the v1 any→any default),
- * but never itself. The policy is built from the loaded roster so the rule
- * lives in one place instead of inline in the tool.
- */
 import type { BotConfig } from "../bots.ts";
 
 export interface DelegationPolicy {

@@ -1,7 +1,3 @@
-/**
- * audit-log — append-only helper ...
- */
-
 import { Effect, Option, Predicate, Schema } from "effect";
 
 type SqlBinding = string | number | boolean | null;
@@ -79,9 +75,7 @@ const CREATE_TABLE_SQL =
   "CREATE TABLE IF NOT EXISTS mackbot_audit (timestamp INTEGER NOT NULL, bot_id TEXT NOT NULL, kind TEXT NOT NULL, operation_id TEXT NOT NULL, detail TEXT)";
 
 const SELECT_COLUMNS = "timestamp, bot_id, kind, operation_id, detail";
-/** Full history, oldest first. */
 const SELECT_ALL_SQL = `SELECT ${SELECT_COLUMNS} FROM mackbot_audit ORDER BY timestamp ASC`;
-/** The newest `limit` events, returned oldest first. */
 const SELECT_RECENT_SQL = `SELECT ${SELECT_COLUMNS} FROM (SELECT ${SELECT_COLUMNS} FROM mackbot_audit ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC`;
 
 const INSERT_SQL =
@@ -97,7 +91,6 @@ const AuditRowSchema = Schema.Struct({
 
 type JsonValue = Schema.Schema.Type<typeof Schema.Json>;
 
-/** Decodes a stored `detail` cell (JSON text) back into a JSON value. */
 const JsonFromText = Schema.fromJsonString(Schema.Json);
 
 const parseDetail = (raw: SqlBinding | undefined): JsonValue => {

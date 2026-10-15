@@ -28,11 +28,9 @@ const err = (label, raw, needle) => {
   }
 };
 
-// Registry shape.
 err("non-object registry", [], "keyed by bot id");
 err("empty registry", {}, "the registry is empty");
 
-// Required fields and model decoding.
 err("missing systemPrompt", { a: { model: "deepseek-v4-pro" } }, 'missing "systemPrompt"');
 err("missing model", { a: { systemPrompt: "x" } }, 'missing "model"');
 err(
@@ -50,7 +48,6 @@ ok("object model ok", {
 });
 ok("workers-ai model ok", { a: { model: "@cf/meta/llama-3.1-8b-instruct", systemPrompt: "x" } });
 
-// Thinking levels are per-model.
 ok("valid thinking level", {
   a: { model: "deepseek-v4-pro", thinkingLevel: "high", systemPrompt: "x" },
 });
@@ -70,7 +67,6 @@ err(
   "has no thinking variants",
 );
 
-// Delegation referential integrity.
 err(
   "delegatesTo unknown target",
   { a: { model: "glm-5.3", systemPrompt: "x", delegatesTo: ["ghost"] } },
@@ -86,7 +82,6 @@ ok("delegatesTo declared", {
   b: { model: "glm-5.3", systemPrompt: "y" },
 });
 
-// Shared memory and budgets.
 err(
   "sharedMemory missing write",
   { a: { model: "glm-5.3", systemPrompt: "x", sharedMemory: { read: ["s"] } } },
@@ -106,7 +101,6 @@ ok("sharedMemory and budgets ok", {
   },
 });
 
-// modelRef resolution.
 const opencodeRef = resolveModelRef({ model: "deepseek-v4-pro", systemPrompt: "x" });
 if (opencodeRef.provider !== "opencode-go" || opencodeRef.id !== "deepseek-v4-pro") {
   failures.push(`resolveModelRef opencode: ${JSON.stringify(opencodeRef)}`);
@@ -116,7 +110,6 @@ if (workersRef.provider !== "cloudflare" || workersRef.id !== "@cf/meta/llama") 
   failures.push(`resolveModelRef workers-ai: ${JSON.stringify(workersRef)}`);
 }
 
-// The real registry still loads and resolves.
 try {
   const bots = loadBots();
   for (const id of ["hermes", "scribe"]) {
