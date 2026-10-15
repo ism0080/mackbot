@@ -32,7 +32,8 @@ are not set; see [`.env.example`](./.env.example) for the required secrets.
 
 ## HTTP surface
 
-Both routes require `Authorization: Bearer <CHAT_BEARER_TOKEN>`.
+Both routes require `Authorization: Bearer <CHAT_BEARER_TOKEN>`. The scheme name
+is case-insensitive.
 
 - `POST /chat/:bot` — submit text to a bot. Returns the answer, or `202` with an
   `operationId` when the wait times out or `wait=false` (resubmit the same

@@ -47,7 +47,7 @@ const ChatRequestBodySchema = Schema.Struct({
   thread: Schema.optional(trimmedNonEmpty),
 });
 
-const BEARER_PATTERN = /^Bearer\s+(.+)$/u;
+const BEARER_PATTERN = /^Bearer\s+(.+)$/iu;
 
 const tokensMatch = (a: string, b: string): boolean => {
   if (a.length !== b.length) return false;

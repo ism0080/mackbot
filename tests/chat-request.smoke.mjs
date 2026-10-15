@@ -77,6 +77,26 @@ authorized(
 authorized("wrong token that is longer", authHeader(`Bearer ${TOKEN}extra`), false);
 authorized("exact expected token", authHeader(`Bearer ${TOKEN}`), true);
 
+// RFC 7235 makes the authorization scheme case-insensitive, unlike the token.
+authorized("lowercase bearer scheme", authHeader(`bearer ${TOKEN}`), true);
+authorized("uppercase BEARER scheme", authHeader(`BEARER ${TOKEN}`), true);
+authorized("mixed-case BeArEr scheme", authHeader(`BeArEr ${TOKEN}`), true);
+
+const upperCasedToken = TOKEN.toUpperCase();
+if (upperCasedToken !== TOKEN) {
+  authorized(
+    "uppercased token rejected (proves the token stays case-sensitive, so only the scheme is insensitive)",
+    authHeader(`Bearer ${upperCasedToken}`),
+    false,
+  );
+}
+
+authorized(
+  "scheme with a trailing character rejected (BearerX is not Bearer)",
+  authHeader(`BearerX ${TOKEN}`),
+  false,
+);
+
 // --- Body decoding ---------------------------------------------------------
 
 accepted("minimal valid body", post('{"text":"hi"}'), (body) => {
