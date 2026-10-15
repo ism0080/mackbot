@@ -74,12 +74,21 @@ const rowsFrom = (raw: SqlCursor | void | readonly SqlRow[]): readonly SqlRow[] 
 const CREATE_TABLE_SQL =
   "CREATE TABLE IF NOT EXISTS mackbot_audit (timestamp INTEGER NOT NULL, bot_id TEXT NOT NULL, kind TEXT NOT NULL, operation_id TEXT NOT NULL, detail TEXT)";
 
+/**
+ * One settlement per operation. An operation settles once, but `wait` can have
+ * several observers, so two clients long-polling the same operation would
+ * otherwise record the same settlement twice. The index covers settled rows only,
+ * so replays stay a count of how often a client retried.
+ */
+const CREATE_SETTLEMENT_INDEX_SQL =
+  "CREATE UNIQUE INDEX IF NOT EXISTS mackbot_audit_settlement ON mackbot_audit (operation_id, kind) WHERE kind LIKE 'settlement.%'";
+
 const SELECT_COLUMNS = "timestamp, bot_id, kind, operation_id, detail";
 const SELECT_ALL_SQL = `SELECT ${SELECT_COLUMNS} FROM mackbot_audit ORDER BY timestamp ASC`;
 const SELECT_RECENT_SQL = `SELECT ${SELECT_COLUMNS} FROM (SELECT ${SELECT_COLUMNS} FROM mackbot_audit ORDER BY timestamp DESC LIMIT ?) ORDER BY timestamp ASC`;
 
 const INSERT_SQL =
-  "INSERT INTO mackbot_audit (timestamp, bot_id, kind, operation_id, detail) VALUES (?, ?, ?, ?, ?)";
+  "INSERT INTO mackbot_audit (timestamp, bot_id, kind, operation_id, detail) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING";
 
 const AuditRowSchema = Schema.Struct({
   timestamp: Schema.Unknown,
@@ -125,6 +134,7 @@ export function createAuditLog(storage: AuditStorage): AuditLog {
 
   const migrate = async (): Promise<void> => {
     await runSql(executor, CREATE_TABLE_SQL);
+    await runSql(executor, CREATE_SETTLEMENT_INDEX_SQL);
   };
 
   let migration: Promise<void> | undefined;
