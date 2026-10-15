@@ -17,6 +17,7 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
+import { isAuthorized, readChatRequest } from "./chat-request.ts";
 import { createSharedMemory } from "./memory.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { loadBots, resolveModelRef } from "./bots.ts";
@@ -24,7 +25,6 @@ import type { BotConfig } from "./bots.ts";
 import type { ModelRef, ThinkingLevel } from "./bots.ts";
 
 import * as Effect from "effect/Effect";
-import * as Schema from "effect/Schema";
 
 import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
 import { BotRegistryService } from "./services/bot-registry.ts";
@@ -341,51 +341,6 @@ export class Bot extends DurableObject<Env> {
   }
 }
 
-interface ChatRequest {
-  readonly text: string;
-  readonly operationId?: string;
-  readonly whenBusy?: PiWhenBusy;
-  readonly wait?: boolean;
-  readonly thread?: string;
-}
-
-const MAX_TEXT_LENGTH = 16_384;
-const MAX_BODY_BYTES = 256 * 1024;
-
-const trimmedNonEmpty = Schema.String.check(
-  Schema.makeFilter((input: string) => input.trim().length > 0),
-);
-
-const boundedText = Schema.String.check(
-  Schema.makeFilter((input: string) => input.trim().length > 0 && input.length <= MAX_TEXT_LENGTH),
-);
-
-const ChatRequestBodySchema = Schema.Struct({
-  text: boundedText,
-  operationId: Schema.optional(Schema.NonEmptyString),
-  whenBusy: Schema.optional(Schema.Literals(["followUp", "steer"])),
-  wait: Schema.optional(Schema.Boolean),
-  thread: Schema.optional(trimmedNonEmpty),
-});
-
-const BEARER_PATTERN = /^Bearer\s+(.+)$/u;
-
-const tokensMatch = (a: string, b: string): boolean => {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
-  }
-  return diff === 0;
-};
-
-const isAuthorized = (request: Request, env: Env): boolean => {
-  const header = request.headers.get("Authorization");
-  if (header === null) return false;
-  const token = BEARER_PATTERN.exec(header)?.[1];
-  return token !== undefined && tokensMatch(token, env.CHAT_BEARER_TOKEN);
-};
-
 const CHAT_ROUTE = /^\/chat\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
@@ -395,46 +350,6 @@ const loadBotsEffect = (): Effect.Effect<Record<string, BotConfig>> =>
   Effect.flatMap(BotRegistryService, (registry) => registry.loadBots()).pipe(
     Effect.provide(BotRegistryService.layer),
   );
-
-/**
- * Read at most `maxBytes` of the request body. The cap is enforced against the
- * stream, not only `content-length`, so a chunked request cannot bypass it.
- */
-const readBoundedBody = async (request: Request, maxBytes: number): Promise<string | undefined> => {
-  const declaredLength = request.headers.get("content-length");
-  if (declaredLength !== null && Number(declaredLength) > maxBytes) return undefined;
-  const body = request.body;
-  if (body === null) return "";
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const result = await reader.read();
-    if (result.done) break;
-    total += result.value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      return undefined;
-    }
-    chunks.push(result.value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(merged);
-};
-
-const readChatRequest = async (request: Request): Promise<ChatRequest | undefined> => {
-  const rawText = await readBoundedBody(request, MAX_BODY_BYTES);
-  if (rawText === undefined) return undefined;
-  const effect = Schema.decodeUnknownEffect(Schema.fromJsonString(ChatRequestBodySchema))(
-    rawText,
-  ).pipe(Effect.mapError(() => "bad body" as const));
-  return Effect.runPromise(effect.pipe(Effect.orElseSucceed(() => undefined)));
-};
 
 const handleChat = async (
   request: Request,
@@ -513,7 +428,7 @@ const handleStatus = async (env: Env): Promise<Response> => {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
-      if (!isAuthorized(request, env)) {
+      if (!isAuthorized(request, env.CHAT_BEARER_TOKEN)) {
         return Response.json({ error: "unauthorized" }, { status: 401 });
       }
       const url = new URL(request.url);
