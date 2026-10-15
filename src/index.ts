@@ -29,7 +29,7 @@ import * as Effect from "effect/Effect";
 import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
 import { BotRegistryService } from "./services/bot-registry.ts";
 import { createAuditLog } from "./audit-log.ts";
-import type { AuditLog } from "./audit-log.ts";
+import type { AuditEvent, AuditLog } from "./audit-log.ts";
 
 export interface Env {
   readonly Bot: DurableObjectNamespace<Bot>;
@@ -144,21 +144,17 @@ export class Bot extends DurableObject<Env> {
         this.harness.submit(text, { operationId, whenBusy, session: sessionId }),
       ),
     );
-    if (receipt.accepted) {
-      try {
-        await this.#audit().append({
-          timestamp: Date.now(),
-          botId: this.lifecycle.name,
-          kind: "submission.accepted",
-          operationId,
-          // Store a length, not the prompt text: the audit trail should not
-          // become a second copy of everything a user sends.
-          detail: { sessionId, textLength: text.length },
-        });
-      } catch {
-        // Best-effort audit seam.
-      }
-    }
+    await this.#appendAudit({
+      timestamp: Date.now(),
+      botId: this.lifecycle.name,
+      // An admitted replay is the only evidence that admission is at-most-once,
+      // so it gets a row of its own instead of being dropped.
+      kind: receipt.accepted ? "submission.accepted" : "submission.replayed",
+      operationId,
+      // Store a length, not the prompt text: the audit trail should not become
+      // a second copy of everything a user sends.
+      detail: { sessionId, textLength: text.length },
+    });
     return receipt;
   }
 
@@ -192,17 +188,13 @@ export class Bot extends DurableObject<Env> {
     }
     const result = outcome.result;
     if (result.status === "done") {
-      try {
-        await this.#audit().append({
-          timestamp: Date.now(),
-          botId: this.lifecycle.name,
-          kind: "settlement",
-          operationId: result.operationId,
-          detail: { session: result.session, status: result.status },
-        });
-      } catch {
-        // Best-effort audit seam.
-      }
+      await this.#appendAudit({
+        timestamp: Date.now(),
+        botId: this.lifecycle.name,
+        kind: "settlement",
+        operationId: result.operationId,
+        detail: { session: result.session, status: result.status },
+      });
     }
     return {
       operationId: result.operationId,
@@ -325,6 +317,21 @@ export class Bot extends DurableObject<Env> {
     await Effect.runPromise(
       Effect.tryPromise(() => root.configure(agentChange(bot), BACKGROUND_CONTEXT)),
     );
+  }
+
+  /**
+   * Audit write that never fails its caller. An unwritable audit trail must not
+   * take down the operation it describes, but it must stay visible, so the cause
+   * is logged the way `handleStatus` logs a failed bot status.
+   */
+  async #appendAudit(event: AuditEvent): Promise<void> {
+    try {
+      await this.#audit().append(event);
+    } catch (cause) {
+      console.error(
+        `mackbot: audit write for "${this.lifecycle.name}" failed (${event.kind} ${event.operationId}): ${describeCause(cause)}`,
+      );
+    }
   }
 
   #audit(): AuditLog {
