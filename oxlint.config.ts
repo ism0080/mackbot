@@ -21,8 +21,10 @@ export default defineConfig({
   },
   overrides: [
     {
-      // Effect-idiom rules for the Effect surface (alchemy.run.ts);
-      // src/ is Pi-based plain TS, so the effect profile stays off there
+      // Effect-idiom rules for the Effect surface (alchemy.run.ts). src/ wraps
+      // the Pi/Cloudflare promise+callback SDKs at its boundaries, where rules
+      // such as no-try-catch would fight deliberate boundary code, so the effect
+      // profile stays off there.
       files: ["alchemy.run.ts"],
       rules: profiles.effect,
     },

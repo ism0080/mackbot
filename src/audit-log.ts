@@ -2,7 +2,7 @@
  * audit-log — append-only helper ...
  */
 
-import { Effect, Predicate, Schema } from "effect";
+import { Effect, Option, Predicate, Schema } from "effect";
 
 type SqlBinding = string | number | boolean | null;
 
@@ -97,16 +97,13 @@ const AuditRowSchema = Schema.Struct({
 
 type JsonValue = Schema.Schema.Type<typeof Schema.Json>;
 
+/** Decodes a stored `detail` cell (JSON text) back into a JSON value. */
+const JsonFromText = Schema.fromJsonString(Schema.Json);
+
 const parseDetail = (raw: SqlBinding | undefined): JsonValue => {
-  if (!Predicate.isString(raw)) return raw === undefined ? null : (raw ?? null);
-  // SAFETY: JSON.parse runtime failure is handled by returning the stored text.
-  try {
-    const parsed: JsonValue = JSON.parse(raw);
-    return parsed;
-  } catch {
-    /* keep the raw string when it is not valid JSON */
-    return raw;
-  }
+  if (!Predicate.isString(raw)) return raw ?? null;
+  // Keep the stored text when it is not valid JSON instead of throwing.
+  return Option.getOrElse(Schema.decodeUnknownOption(JsonFromText)(raw), () => raw);
 };
 
 const rowToEvent = (row: SqlRow): AuditEvent => {

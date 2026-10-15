@@ -68,19 +68,30 @@ POST /chat/:bot (v1 interface)  ·  cron (hourly)  ·  Telegram webhooks (option
 mackbot/
 ├── alchemy.run.ts       # Worker, Bot DO binding, AI binding, crons, secrets (Config.Redacted)
 ├── bots.json            # bot registry (typed loader in src/bots.ts)
-├── oxlint.config.ts     # lint config — core profile on everything, effect profile on alchemy.run.ts only (src/ is Pi-based plain TS)
-├── package.json         # lint/format/tools:oxlint scripts + lint tooling deps (grows at scaffold time)
-├── .env                 # EXECUTOR_URL (org URL + ?elicitation_mode=browser) / EXECUTOR_TOKEN (org-scoped PAT), per-bot Telegram tokens, OPENCODE_API_KEY
-├── tools/oxlint/        # vendored @ism0080/oxlint-plugin-forge (copied from the forge repo; self-contained, builds + tests green)
+├── oxlint.config.ts     # lint config — core profile on everything, effect profile on alchemy.run.ts only
+├── package.json         # lint/format/test/tools:oxlint scripts + deps
+├── .env.example         # documented secret names (copy to .env; never commit .env)
+├── tools/oxlint/        # vendored @ism0080/oxlint-plugin-forge (self-contained, builds + tests green)
+├── tests/               # smoke tests + runner (bots, audit-log, bot-delegation, executor-mcp, sandbox)
 └── src/
     ├── index.ts         # Bot class (PiHarness + ensureBot) + front door fetch + scheduled
-    ├── bots.ts          # typed bots.json loader + modelRef resolution
-    └── executor-mcp.ts  # Executor v2 bridge (6 meta-tools, MCP TS SDK streamable HTTP)
+    ├── bots.ts          # typed bots.json loader (parseBotRegistry) + modelRef resolution
+    ├── constants.ts     # shared values (LONG_POLL_TIMEOUT_MS)
+    ├── executor-mcp.ts  # Executor v2 bridge (6 meta-tools, MCP TS SDK streamable HTTP)
+    ├── bot-delegation.ts# delegate_to_bot pi tool (guards + long-poll)
+    ├── memory.ts        # shared-memory prompt section (Executor memory app)
+    ├── sandbox.ts       # workspace/sandbox seam + protocol section
+    ├── audit-log.ts     # append-only SQLite audit seam
+    ├── runtime.ts       # ManagedRuntime bridge for Pi/Cloudflare callbacks
+    └── services/        # BotRegistryService, DelegationPolicy
+        ├── bot-registry.ts
+        ├── delegation.ts
+        └── index.ts
 ```
 
 Dependencies (all pinned): `alchemy`, `effect`, `agents`, `@earendil-works/pi-durable`, `@earendil-works/pi-ai`, `@earendil-works/chord`, `@modelcontextprotocol/sdk`. No hono/grammy — plain `fetch` handlers.
 
-Lint tooling (vendored from the forge repo, already in place): `tools/oxlint/` holds the `@ism0080/oxlint-plugin-forge` rule set (anti-slop / effect / react / xstate profiles). Root `oxlint.config.ts` enables the core profile on everything and the effect profile on `alchemy.run.ts` only (src/ is Pi-based plain TS — Effect-idiom rules like `no-direct-fetch`/`no-try-catch` would fight Pi's design); the plugin's own source is ignored by the root config and verifies itself via `bun run tools:oxlint` (tsc build + vitest + smoke). The react/xstate profiles come into play if the first-party webapp lands. Scripts: `lint` / `format` (oxfmt) / `tools:oxlint`.
+Lint tooling (vendored from the forge repo, already in place): `tools/oxlint/` holds the `@ism0080/oxlint-plugin-forge` rule set (anti-slop / effect / react / xstate profiles). Root `oxlint.config.ts` enables the core profile on everything and the effect profile on `alchemy.run.ts` only (src/ wraps the Pi/Cloudflare promise+callback SDKs at its boundaries, where Effect-idiom rules like `no-direct-fetch`/`no-try-catch` would fight deliberate boundary code); the plugin's own source is ignored by the root config and verifies itself via `bun run tools:oxlint` (tsc build + vitest + smoke). The react/xstate profiles come into play if the first-party webapp lands. Scripts: `lint` / `format` (oxfmt) / `tools:oxlint`.
 
 `bots.json` sketch:
 

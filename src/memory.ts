@@ -2,7 +2,6 @@
  * memory — shared cross-bot memory as a pi extension.
  */
 
-import type { Env } from "./index.ts";
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import type { Extension } from "@earendil-works/pi-durable";
 import { Schema } from "effect";
@@ -16,7 +15,6 @@ export const MemoryScopesSchema = Schema.Struct({
 export type MemoryScopes = Schema.Schema.Type<typeof MemoryScopesSchema>;
 
 export type MemoryConfig = {
-  readonly env: Env;
   readonly scopes: MemoryScopes;
 };
 

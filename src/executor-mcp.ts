@@ -163,13 +163,16 @@ const renderContent = (content: CallToolResult["content"]): string => {
 
 /** Executor's browser-mode pause envelope (and the pre-`requestId` `executionId` variant). */
 export const APPROVAL_URL_PATTERN = /https?:\/\/[^\s"'<>]+/u;
+/** The `approvalUrl` value itself, preferred over the first URL anywhere in the text. */
+export const APPROVAL_URL_VALUE_PATTERN = /"approvalUrl"\s*:\s*"([^"]+)"/u;
 export const APPROVAL_KEY_PATTERN = /"approvalUrl"\s*:/u;
 export const APPROVAL_TEXT_PATTERN =
   /(approval (?:is )?required|user_approval_required|approve (?:the|this))/iu;
 const REQUEST_ID_PATTERN = /"(?:requestId|executionId)"\s*:\s*"([^"]+)"/u;
 
 export const approvalNotice = (haystack: string): string => {
-  const url = APPROVAL_URL_PATTERN.exec(haystack)?.[0];
+  const url =
+    APPROVAL_URL_VALUE_PATTERN.exec(haystack)?.[1] ?? APPROVAL_URL_PATTERN.exec(haystack)?.[0];
   const requestId = REQUEST_ID_PATTERN.exec(haystack)?.[1];
   const lines = ["APPROVAL REQUIRED — this call paused and needs the user to act."];
   if (url !== undefined) lines.push(`Open this link to approve: ${url}`);
@@ -212,7 +215,10 @@ const renderResult = (result: CallToolResult): ToolExecutionResult => {
     (APPROVAL_TEXT_PATTERN.test(haystack) && APPROVAL_URL_PATTERN.test(haystack));
   const body = renderBody(text, structured);
   const output = looksPaused ? `${approvalNotice(haystack)}\n\n${body}` : body;
-  const structuredFailure = /"status"\s*:\s*"error"|"errorCode"\s*:/u.test(structured);
+  // Executor already sets `isError` on real tool failures; this backstop only
+  // fires on an explicit error status, so an unrelated `errorCode` key cannot
+  // flip a successful result into an error.
+  const structuredFailure = /"status"\s*:\s*"error"/u.test(structured);
   return {
     output: [textItem(output)],
     isError: result.isError === true || structuredFailure,

@@ -7,7 +7,7 @@
     "lint": "oxlint --config oxlint.config.ts",
     "format": "oxfmt",
     "typecheck": "tsc --noEmit",
-    "test": "bun tests/audit-log.smoke.mjs && bun tests/bot-delegation.smoke.mjs && bun tests/executor-mcp.smoke.mjs && bun tests/sandbox.smoke.mjs",
+    "test": "bun tests/run.mjs",
     "tools:oxlint": "cd tools/oxlint && tsc -b --clean && tsc -b && vitest run --config vitest.config.ts && node tests/smoke.mjs"
   },
   "dependencies": {

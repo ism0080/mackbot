@@ -107,7 +107,7 @@ const makeHarnessFactory =
     registry.install(createBotDelegation({ env, sourceBotId: botId }));
     const bot = loadBots()[botId];
     if (bot?.sharedMemory !== undefined) {
-      registry.install(createSharedMemory({ env, scopes: bot.sharedMemory }));
+      registry.install(createSharedMemory({ scopes: bot.sharedMemory }));
     }
     const models = createModels();
     models.setProvider(opencodeGoProvider());
@@ -121,6 +121,8 @@ export class Bot extends DurableObject<Env> {
   readonly runtime: ManagedRuntime<BotRegistryService, never>;
   #auditSink: AuditLog | undefined;
   #botReady: Promise<void> | undefined;
+  /** In-flight thread→session creations, so concurrent requests share one. */
+  readonly #threadSessions = new Map<string, Promise<string>>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -154,7 +156,9 @@ export class Bot extends DurableObject<Env> {
           botId: this.lifecycle.name,
           kind: "submission.accepted",
           operationId,
-          detail: { text, sessionId },
+          // Store a length, not the prompt text: the audit trail should not
+          // become a second copy of everything a user sends.
+          detail: { sessionId, textLength: text.length },
         });
       } catch {
         // Best-effort audit seam.
@@ -228,17 +232,13 @@ export class Bot extends DurableObject<Env> {
         { concurrency: "unbounded" },
       ),
     );
-    const busyStates = await Effect.runPromise(
-      Effect.all(
-        sessions.map((session) => Effect.tryPromise(() => this.harness.session(session.id).busy())),
-        { concurrency: "unbounded" },
-      ),
-    );
     return {
       id,
       model: resolveModelRef(bot),
       thinkingLevel: bot.thinkingLevel ?? null,
-      busy: busyStates.some((isBusy) => isBusy),
+      // `sessions.list()` already reports each session's busy flag, so no
+      // extra per-session `busy()` round trips are needed here.
+      busy: sessions.some((session) => session.busy),
       pending: pending.map((operation) => ({
         operationId: operation.operationId,
         status: operation.status,
@@ -261,6 +261,19 @@ export class Bot extends DurableObject<Env> {
   }
 
   async #sessionForThread(thread: string): Promise<string> {
+    // Serialize creation per thread: without this, two concurrent requests for
+    // the same new thread both call `sessions.create()`, and the loser's
+    // conversation is orphaned (pi conversations cannot be deleted yet).
+    const inFlight = this.#threadSessions.get(thread);
+    if (inFlight !== undefined) return inFlight;
+    const task = this.#createSessionForThread(thread).finally(() => {
+      this.#threadSessions.delete(thread);
+    });
+    this.#threadSessions.set(thread, task);
+    return task;
+  }
+
+  async #createSessionForThread(thread: string): Promise<string> {
     this.#ensureThreadsTable();
     const existing = this.#sessionIdForThread(thread);
     if (existing !== undefined) return existing;
@@ -272,7 +285,7 @@ export class Bot extends DurableObject<Env> {
     const sessionId = session.id;
     const bot = await this.#botConfig();
     await Effect.runPromise(Effect.tryPromise(() => this.#configureSession(sessionId, bot)));
-    // A concurrent request for the same new thread may have won the insert;
+    // Defense in depth: if a row already exists (for example across isolates),
     // IGNORE + re-read keeps the first session id instead of throwing.
     this.ctx.storage.sql.exec(
       "INSERT OR IGNORE INTO mackbot_threads (thread, session_id) VALUES (?, ?)",
@@ -389,18 +402,43 @@ const loadBotsEffect = (): Effect.Effect<Record<string, BotConfig>> =>
     Effect.provide(BotRegistryService.layer),
   );
 
-const readChatRequest = async (request: Request): Promise<ChatRequest | undefined> => {
+/**
+ * Read at most `maxBytes` of the request body. The cap is enforced against the
+ * stream, not only `content-length`, so a chunked request cannot bypass it.
+ */
+const readBoundedBody = async (request: Request, maxBytes: number): Promise<string | undefined> => {
   const declaredLength = request.headers.get("content-length");
-  if (declaredLength !== null && Number(declaredLength) > MAX_BODY_BYTES) return undefined;
-  const effect = Effect.gen(function* () {
-    const raw = yield* Effect.tryPromise({
-      try: () => request.json(),
-      catch: () => "bad json" as const,
-    });
-    return yield* Schema.decodeUnknownEffect(ChatRequestBodySchema)(raw).pipe(
-      Effect.mapError(() => "bad body" as const),
-    );
-  });
+  if (declaredLength !== null && Number(declaredLength) > maxBytes) return undefined;
+  const body = request.body;
+  if (body === null) return "";
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const result = await reader.read();
+    if (result.done) break;
+    total += result.value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(result.value);
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(merged);
+};
+
+const readChatRequest = async (request: Request): Promise<ChatRequest | undefined> => {
+  const rawText = await readBoundedBody(request, MAX_BODY_BYTES);
+  if (rawText === undefined) return undefined;
+  const effect = Schema.decodeUnknownEffect(Schema.fromJsonString(ChatRequestBodySchema))(
+    rawText,
+  ).pipe(Effect.mapError(() => "bad body" as const));
   return Effect.runPromise(effect.pipe(Effect.orElseSucceed(() => undefined)));
 };
 
@@ -456,9 +494,12 @@ const handleStatus = async (env: Env): Promise<Response> => {
   const statusFor = (id: string): Effect.Effect<BotStatusResult> =>
     Effect.tryPromise(() => env.Bot.getByName(id).status()).pipe(
       Effect.map((status): BotStatusResult => ({ id, status })),
-      Effect.catch((cause): Effect.Effect<BotStatusResult> =>
-        Effect.succeed({ id, error: describeCause(cause) }),
-      ),
+      Effect.catch((cause): Effect.Effect<BotStatusResult> => {
+        // Log the real cause; return a generic message so internal error
+        // strings (URLs, RPC details) never reach the client.
+        console.error(`mackbot: status for "${id}" failed: ${describeCause(cause)}`);
+        return Effect.succeed({ id, error: "status unavailable" });
+      }),
     );
   const results = await Effect.runPromise(
     Effect.all(Object.keys(bots).map(statusFor), { concurrency: "unbounded" }),
@@ -477,20 +518,26 @@ const handleStatus = async (env: Env): Promise<Response> => {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (!isAuthorized(request, env)) {
-      return Response.json({ error: "unauthorized" }, { status: 401 });
+    try {
+      if (!isAuthorized(request, env)) {
+        return Response.json({ error: "unauthorized" }, { status: 401 });
+      }
+      const url = new URL(request.url);
+      if (url.pathname === "/status") {
+        return request.method === "GET" ? await handleStatus(env) : methodNotAllowed();
+      }
+      const match = CHAT_ROUTE.exec(url.pathname);
+      if (match !== null) {
+        return request.method === "POST"
+          ? await handleChat(request, env, match[1]!, url.searchParams.get("wait") === "0")
+          : methodNotAllowed();
+      }
+      return Response.json({ error: "not found" }, { status: 404 });
+    } catch (cause) {
+      // Never leak a stack or internal detail: log the cause, return JSON.
+      console.error(`mackbot: request failed: ${describeCause(cause)}`);
+      return Response.json({ error: "internal error" }, { status: 500 });
     }
-    const url = new URL(request.url);
-    if (url.pathname === "/status") {
-      return request.method === "GET" ? handleStatus(env) : methodNotAllowed();
-    }
-    const match = CHAT_ROUTE.exec(url.pathname);
-    if (match !== null) {
-      return request.method === "POST"
-        ? handleChat(request, env, match[1]!, url.searchParams.get("wait") === "0")
-        : methodNotAllowed();
-    }
-    return Response.json({ error: "not found" }, { status: 404 });
   },
 
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {

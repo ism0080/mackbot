@@ -51,7 +51,6 @@ export interface WorkspaceHandle {
 
 export type SandboxFactory = (config: SandboxConfig) => WorkspaceHandle | Promise<WorkspaceHandle>;
 
-// rest same...
 const DEFAULT_ROOT = "/workspace";
 
 const normalizePath = (input: string): string => {
@@ -158,14 +157,12 @@ class InMemoryWorkspace implements WorkspaceHandle {
   }
 }
 
+/** Decode once, in the constructor's `Schema.decodeUnknownSync`, so factories stay thin. */
 export const inMemorySandbox: SandboxFactory = (config: SandboxConfig) =>
-  new InMemoryWorkspace(Schema.decodeUnknownSync(SandboxConfigSchema)(config ?? {}));
-
-export const noopSandboxFactory: SandboxFactory = (config: SandboxConfig) =>
-  inMemorySandbox(config);
+  new InMemoryWorkspace(config);
 
 export function createSandbox(config: SandboxConfig = {}): WorkspaceHandle {
-  return new InMemoryWorkspace(Schema.decodeUnknownSync(SandboxConfigSchema)(config ?? {}));
+  return new InMemoryWorkspace(config);
 }
 
 export function sandboxProtocol(): string {
