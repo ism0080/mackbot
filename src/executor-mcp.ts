@@ -268,9 +268,9 @@ const executorProtocol = [
   "",
   "Protocol:",
   "1. Discover with executor_search. Pass words (query) or an app namespace. Each result",
-  "   carries an exact callable path, e.g. tools.<app>.<tool>. Account-backed apps are",
-  '   called through a profile, so their path is tools.<app>.profiles["<profile-id>"]... —',
-  "   always use the exact path search returns, profile id included.",
+  '   carries an exact callable path, and a slug with a hyphen appears as tools["<app>"].<tool>,',
+  "   so use the path exactly as it comes back. Executor picks which linked account a call",
+  "   uses, so there is no account or profile segment to add.",
   "2. Read the full signature with executor_describe({ paths }) before the first call to an",
   "   unfamiliar tool.",
   "3. Call directly with executor_call({ calls }) for one or a few tools: { path, input }, or",
@@ -316,10 +316,11 @@ const describeTool = (config: ResolvedConfig) =>
   defineTool({
     name: "executor_describe",
     description:
-      "Return the full description and signature of Executor tools at exact paths returned by executor_search. Call before invoking an unfamiliar tool.",
+      "Return the full description and signature of Executor tools at exact paths returned by executor_search. Accepts at most 20 paths per call, so describe the few tools a task actually needs. Call before invoking an unfamiliar tool.",
     parameters: Type.Object({
       paths: Type.Array(Type.String(), {
-        description: "Exact tool paths from executor_search.",
+        description: "Exact tool paths from executor_search, at most 20.",
+        maxItems: 20,
       }),
     }),
     replay: "safe",
@@ -358,9 +359,12 @@ const executeTool = (config: ResolvedConfig) =>
   defineTool({
     name: "executor_execute",
     description:
-      "Run a short JavaScript program over Executor apps. App tools are async functions; return only what you need. Use when one result feeds another call or a large result should be reduced before it reaches you.",
+      "Run a short JavaScript program over Executor apps. App tools are async functions; return only what you need. Use when one result feeds another call or a large result should be reduced before it reaches you. Executor caps a program at 65536 characters, 100 tool calls, 100000 bytes of output, and 5 minutes, not counting time spent waiting for an approval.",
     parameters: Type.Object({
-      code: Type.String({ description: "JavaScript program source." }),
+      code: Type.String({
+        description: "JavaScript program source, at most 65536 characters.",
+        maxLength: 65_536,
+      }),
     }),
     replay: "unsafe",
     execute: (args) => Effect.runPromise(runMetaTool(config, "execute", args)),
@@ -372,11 +376,18 @@ const skillsTool = (config: ResolvedConfig) =>
     description:
       "Read the instructions an Executor app ships. Call with no arguments to list what is visible, or with an app to read that app's skills. Read-only; connects no account and runs no code.",
     parameters: Type.Object({
-      app: Type.Optional(Type.String({ description: "App slug." })),
+      app: Type.Optional(Type.String({ description: "App slug, such as akahu-accounts." })),
       name: Type.Optional(Type.String({ description: "Skill name within the app." })),
       file: Type.Optional(Type.String({ description: "A skill file to read." })),
-      deployment: Type.Optional(Type.String({ description: "Deployment identifier." })),
-      revision: Type.Optional(Type.String({ description: "Skill revision identifier." })),
+      version: Type.Optional(
+        Type.String({
+          description:
+            "Version to read instead of the app's active one, in the dpl_... form from a skills listing or an invocation envelope.",
+        }),
+      ),
+      revision: Type.Optional(
+        Type.String({ description: "Skill revision identifier, a 64-character hex digest." }),
+      ),
       accounts: Type.Optional(
         Type.Any({ description: "Accounts to describe, when the skill needs them." }),
       ),
