@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Lifecycle } from "agents/lifecycle";
 import { PiHarness, ROOT_SESSION } from "agents/harness/pi";
 import type { PiHarnessFactory, PiReceipt, PiWhenBusy } from "agents/harness/pi";
+import { Streams } from "agents/streams";
 import { createAI } from "agents/models/pi-ai";
 import { Harness, createRegistry } from "@earendil-works/pi-durable";
 import type {
@@ -17,6 +18,7 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
+import { serveEvents } from "./feed.ts";
 import { cronOperationId, httpOperationId, originOf } from "./operation.ts";
 import type { OperationOrigin } from "./operation.ts";
 import { isAuthorized, readChatRequest } from "./chat-request.ts";
@@ -116,6 +118,7 @@ const makeHarnessFactory =
 export class Bot extends DurableObject<Env> {
   readonly lifecycle: Lifecycle<Env>;
   readonly harness: PiHarness;
+  readonly streams: Streams;
   readonly runtime: ManagedRuntime<BotRegistryService, never>;
   #auditSink: AuditLog | undefined;
   #botReady: Promise<void> | undefined;
@@ -126,8 +129,19 @@ export class Bot extends DurableObject<Env> {
     super(ctx, env);
     this.lifecycle = Lifecycle.install(this);
     this.harness = new PiHarness({ harness: makeHarnessFactory(env, this.lifecycle.name) });
+    this.streams = new Streams();
     this.lifecycle.use(this.harness);
+    this.lifecycle.use(this.streams);
     this.runtime = makeManagedRuntime(BotRegistryService.layer);
+  }
+
+  /**
+   * The lifecycle's `fetch` offers the request to its capabilities and then
+   * falls through here, so this is where the DO's HTTP surface lives. RPC
+   * methods (`submit`, `wait`, `status`) do not pass through it.
+   */
+  onRequest(request: Request): Promise<Response> {
+    return serveEvents(this.streams, request);
   }
 
   async submit(
@@ -357,6 +371,7 @@ export class Bot extends DurableObject<Env> {
 }
 
 const CHAT_ROUTE = /^\/chat\/([^/]+)$/u;
+const EVENTS_ROUTE = /^\/events\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
@@ -454,6 +469,14 @@ export default {
       if (match !== null) {
         return request.method === "POST"
           ? await handleChat(request, env, match[1]!, url.searchParams.get("wait") === "0")
+          : methodNotAllowed();
+      }
+      const events = EVENTS_ROUTE.exec(url.pathname);
+      if (events !== null) {
+        // The stream's resume cursor lives in `Last-Event-ID` / `?from=`, so the
+        // request reaches `sseResponse` intact through the DO's own `fetch`.
+        return request.method === "GET"
+          ? await env.Bot.getByName(events[1]!).fetch(request)
           : methodNotAllowed();
       }
       return Response.json({ error: "not found" }, { status: 404 });
