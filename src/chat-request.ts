@@ -31,7 +31,7 @@ export interface ChatRequest {
 export const MAX_TEXT_LENGTH = 16_384;
 export const MAX_BODY_BYTES = 256 * 1024;
 
-const trimmedNonEmpty = Schema.String.check(
+export const trimmedNonEmpty = Schema.String.check(
   Schema.makeFilter((input: string) => input.trim().length > 0),
 );
 
