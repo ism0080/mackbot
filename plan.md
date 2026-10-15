@@ -59,7 +59,7 @@ POST /chat/:bot (v1 interface)  ·  cron (hourly)  ·  Telegram webhooks (option
 | Idempotency               | `operationId` = `tg:<chatId>:<messageId>` / `cron:<scheduledTime>` — at-most-once admission across retries/evictions                                                                                                                                              |
 | Ingress auth              | Bearer secret on the `POST /chat/:bot` route (the v1 surface — anyone who finds the URL could otherwise drive the bots and their Executor spend); when Telegram lands: per-bot webhook `secret_token`, validate `X-Telegram-Bot-Api-Secret-Token` on every update |
 | Cost posture              | Free tier first: `progress: { partialIntervalMs: 1000, outputIntervalMs: 1000 }` (~10x fewer SQLite row writes); Workers Paid ($5) only if limits trip                                                                                                            |
-| Sandboxing (Daytona etc.) | **Deferred** — seam preserved (`ExecutionEnv` / Executor app); revisit when a bot needs to build/run things (Grok Bot's "own computer" phase)                                                                                                                     |
+| Sandboxing (Daytona etc.) | **Deferred** — no code seam today; the route stays an `ExecutionEnv` / Executor app; revisit when a bot needs to build/run things (Grok Bot's "own computer" phase)                                                                                                                     |
 | Executor hosting          | Free tier (solo, $0) or self-host — both work; `EXECUTOR_URL` = org MCP URL + `?elicitation_mode=browser`, `EXECUTOR_TOKEN` = org-scoped PAT                                                                                                                      |
 
 ## Project layout
@@ -72,21 +72,20 @@ mackbot/
 ├── package.json         # lint/format/test/tools:oxlint scripts + deps
 ├── .env.example         # documented secret names (copy to .env; never commit .env)
 ├── tools/oxlint/        # vendored @ism0080/oxlint-plugin-forge (self-contained, builds + tests green)
-├── tests/               # smoke tests + runner (bots, audit-log, bot-delegation, executor-mcp, sandbox)
+├── tests/               # smoke tests + runner (bots, chat-request, audit-log, bot-delegation, executor-mcp)
 └── src/
     ├── index.ts         # Bot class (PiHarness + ensureBot) + front door fetch + scheduled
     ├── bots.ts          # typed bots.json loader (parseBotRegistry) + modelRef resolution
     ├── constants.ts     # shared values (LONG_POLL_TIMEOUT_MS)
     ├── executor-mcp.ts  # Executor v2 bridge (6 meta-tools, MCP TS SDK streamable HTTP)
     ├── bot-delegation.ts# delegate_to_bot pi tool (guards + long-poll)
+    ├── chat-request.ts  # front-door request contract (bearer, byte cap, body schema)
     ├── memory.ts        # shared-memory prompt section (Executor memory app)
-    ├── sandbox.ts       # workspace/sandbox seam + protocol section
     ├── audit-log.ts     # append-only SQLite audit seam
     ├── runtime.ts       # ManagedRuntime bridge for Pi/Cloudflare callbacks
     └── services/        # BotRegistryService, DelegationPolicy
         ├── bot-registry.ts
-        ├── delegation.ts
-        └── index.ts
+        └── delegation.ts
 ```
 
 Dependencies (all pinned): `alchemy`, `effect`, `agents`, `@earendil-works/pi-durable`, `@earendil-works/pi-ai`, `@earendil-works/chord`, `@modelcontextprotocol/sdk`. No hono/grammy — plain `fetch` handlers.

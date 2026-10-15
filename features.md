@@ -11,7 +11,6 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Optional durable thread IDs in `POST /chat/:bot`, including per-thread pi
   session creation and SQLite mapping.
 - Audit-log storage seam (`src/audit-log.ts`).
-- Sandbox/workspace abstraction scaffold (`src/sandbox.ts`).
 - Existing meta-tool bridge, cron briefs, approvals via browser links, and
   compaction configuration.
 
@@ -29,9 +28,9 @@ foundation pieces are already implemented and are intentionally omitted here:
 - **Bot presets / marketplace config.** Evolve `bots.json` into versioned presets
   with model, prompt, delegates, memory scopes, approved tools, and channel
   bindings.
-- **Shared workspaces across bots.** Move beyond the scaffold to a real shared
-  file/workspace capability with provenance fields identifying the bot that
-  created or changed each artifact.
+- **Shared workspaces across bots.** Add a real shared file/workspace capability
+  with provenance fields identifying the bot that created or changed each
+  artifact.
 - **Attachment/media support.** Add durable storage for files, screenshots,
   reports, and artifacts produced by bot work.
 - **Richer task lifecycle labels.** Distinguish chat inputs, cron briefs,
@@ -56,9 +55,9 @@ foundation pieces are already implemented and are intentionally omitted here:
   durable cross-bot facts into the shared memory app, as already designed.
 - **Audit-runtime integration.** Wire the audit-log seam into chat, delegation,
   approval, memory, and sandbox flows instead of leaving it standalone.
-- **Full sandbox graduation.** Replace the scaffold with durable virtual
-  filesystem and dynamic code execution, reserving containers for native tools,
-  git, package installation, or compilers.
+- **Sandbox and workspace.** Add a durable virtual filesystem and dynamic code
+  execution, reserving containers for native tools, git, package installation,
+  or compilers.
 
 ## Tooling and sandbox
 
@@ -98,7 +97,7 @@ foundation pieces are already implemented and are intentionally omitted here:
 ## Suggested priority
 
 1. Durable stream resumption and approval buttons.
-2. Real sandbox graduation and dynamic code execution.
+2. Sandbox and workspace graduation and dynamic code execution.
 3. Async delegation and thread lineage.
 4. Bot presets and saved routines.
 5. Custom UI channel and additional channels.

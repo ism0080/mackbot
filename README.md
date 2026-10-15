@@ -12,7 +12,7 @@ real tooling routed through one Executor v2 MCP endpoint.
 - `alchemy.run.ts` — Worker + `Bot` Durable Object binding, `AI` binding, crons, secrets.
 - `bots.json` — the bot registry (model, thinking level, system prompt, delegates, memory scopes).
 - `src/` — the front-door Worker, the `Bot` Durable Object, the Executor bridge, and the seams
-  (delegation, memory, sandbox, audit).
+  (delegation, memory, audit).
 - `tests/` — smoke tests plus a runner.
 
 ## Development
