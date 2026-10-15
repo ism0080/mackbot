@@ -25,7 +25,11 @@
  *   import { createExecutorMcp } from "./executor-mcp.ts";
  *   const extension = createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN });
  *
- * `url` is the org/connection MCP URL (already carrying `?elicitation_mode=browser`),
+ * `url` is the org/connection MCP URL. Its `elicitation_mode` decides how
+ * approvals arrive: the bare URL uses `model`, where the paused result carries a
+ * `requestId` for the model to put to the user; `?elicitation_mode=browser`
+ * additionally carries an `approvalUrl`, which is a link signed for the org
+ * connection and therefore one to relay rather than to log or store.
  * `token` is the org-scoped PAT sent as `Authorization: Bearer <token>`.
  * Register the returned `Extension` in the harness registry (or select it on the
  * conversation's agent). Optional `timeoutMs` (tool calls, default 600_000) and
@@ -53,6 +57,8 @@ import type { TextContent } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionResult } from "@earendil-works/pi-durable";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 
 /** Tool-call timeout: well above the SDK's 60s default and Executor's 5-min `execute`. */
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -152,13 +158,19 @@ const renderContent = (content: CallToolResult["content"]): string => {
   return parts.join("\n");
 };
 
-/** Executor's browser-mode pause envelope (and the pre-`requestId` `executionId` variant). */
+/** Executor's pause envelope (and the pre-`requestId` `executionId` variant). */
 export const APPROVAL_URL_PATTERN = /https?:\/\/[^\s"'<>]+/u;
 /** The `approvalUrl` value itself, preferred over the first URL anywhere in the text. */
 export const APPROVAL_URL_VALUE_PATTERN = /"approvalUrl"\s*:\s*"([^"]+)"/u;
 export const APPROVAL_KEY_PATTERN = /"approvalUrl"\s*:/u;
 export const APPROVAL_TEXT_PATTERN =
   /(approval (?:is )?required|user_approval_required|approve (?:the|this))/iu;
+/**
+ * The `status` a paused envelope carries. Both elicitation modes set it, and it
+ * is the only pause signal model mode has, because that mode returns no
+ * `approvalUrl` to match on.
+ */
+export const APPROVAL_STATUS_PATTERN = /"status"\s*:\s*"approval-required"/u;
 const REQUEST_ID_PATTERN = /"(?:requestId|executionId)"\s*:\s*"([^"]+)"/u;
 
 export const approvalNotice = (haystack: string): string => {
@@ -175,11 +187,26 @@ export const approvalNotice = (haystack: string): string => {
   return lines.join("\n");
 };
 
-export const maybeApprovalNotice = (haystack: string): string | null => {
-  const looksPaused =
-    APPROVAL_KEY_PATTERN.test(haystack) ||
-    (APPROVAL_TEXT_PATTERN.test(haystack) && APPROVAL_URL_PATTERN.test(haystack));
-  return looksPaused ? approvalNotice(haystack) : null;
+/** Whether a result body is a call paused for the user. */
+export const looksPaused = (haystack: string): boolean =>
+  APPROVAL_STATUS_PATTERN.test(haystack) ||
+  APPROVAL_KEY_PATTERN.test(haystack) ||
+  (APPROVAL_TEXT_PATTERN.test(haystack) && APPROVAL_URL_PATTERN.test(haystack));
+
+export const maybeApprovalNotice = (haystack: string): string | null =>
+  looksPaused(haystack) ? approvalNotice(haystack) : null;
+
+const JsonFromText = Schema.fromJsonString(Schema.Unknown);
+
+/** Whether the text section already is the structured payload, serialized. */
+const repeatsStructured = (text: string, structured: string): boolean => {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  const parsed = Option.getOrElse(
+    Schema.decodeUnknownOption(JsonFromText)(trimmed),
+    () => undefined,
+  );
+  return parsed !== undefined && JSON.stringify(parsed) === structured;
 };
 
 const renderBody = (text: string, structured: string): string => {
@@ -192,22 +219,30 @@ const renderBody = (text: string, structured: string): string => {
 /**
  * Map an MCP `CallToolResult` onto a pi tool result. A paused approval gets a
  * prominent header; failures come back as `isError` results so the model can
- * react instead of the harness throwing.
+ * react instead of the harness throwing. Exported so the rendering can be
+ * checked against synthetic envelopes without a live Executor.
  */
-const renderResult = (result: CallToolResult): ToolExecutionResult => {
+export const renderResult = (result: CallToolResult): ToolExecutionResult => {
   const text = renderContent(result.content);
+  const structuredContent = result.structuredContent;
+  const compact = structuredContent === undefined ? "" : JSON.stringify(structuredContent);
+  // Executor answers most tools with the same payload in `content` and in
+  // `structuredContent`. Rendering both charges the model twice for one result,
+  // so the structured section is dropped when it only repeats the text. A text
+  // section that is not that same JSON still keeps it.
   const structured =
-    result.structuredContent === undefined ? "" : JSON.stringify(result.structuredContent, null, 2);
+    structuredContent === undefined || repeatsStructured(text, compact)
+      ? ""
+      : JSON.stringify(structuredContent, null, 2);
   const haystack = structured.length > 0 ? `${text}\n${structured}` : text;
-  const looksPaused =
-    APPROVAL_KEY_PATTERN.test(structured) ||
-    (APPROVAL_TEXT_PATTERN.test(haystack) && APPROVAL_URL_PATTERN.test(haystack));
   const body = renderBody(text, structured);
-  const output = looksPaused ? `${approvalNotice(haystack)}\n\n${body}` : body;
+  const output = looksPaused(haystack) ? `${approvalNotice(haystack)}\n\n${body}` : body;
   // Executor already sets `isError` on real tool failures; this backstop only
   // fires on an explicit error status, so an unrelated `errorCode` key cannot
-  // flip a successful result into an error.
-  const structuredFailure = /"status"\s*:\s*"error"/u.test(structured);
+  // flip a successful result into an error. It reads the whole structured
+  // payload even when that payload was not rendered, so dropping a repeat cannot
+  // hide one.
+  const structuredFailure = /"status"\s*:\s*"error"/u.test(compact);
   return {
     output: [textItem(output)],
     isError: result.isError === true || structuredFailure,
@@ -246,10 +281,11 @@ const executorProtocol = [
   "5. Read an app's instructions with executor_skills({ app }) before the first real use of",
   "   that app.",
   "",
-  "Approvals: an approval-gated call pauses. In browser mode the paused result carries a",
-  "requestId and an approvalUrl. Relay the link to the user in the channel you are talking",
-  "to them on, say what is waiting, and only after they act call executor_resume with that",
-  "requestId (plus the answer when the request asks for input). Never invent an approval.",
+  "Approvals: an approval-gated call pauses. Say what is waiting, and only after the user",
+  "answers call executor_resume with the requestId from the paused result, plus the answer",
+  "when the request asks for input. If that paused result carries an approvalUrl, relay the",
+  "link in the channel you are talking to them on and resume once they have acted. Never",
+  "invent an approval.",
   "",
   "Interruptions and restarts: after an eviction or restart an interrupted unsafe call",
   'surfaces as "interrupted" — decide what to do; never blindly re-run it. A lost Executor',
