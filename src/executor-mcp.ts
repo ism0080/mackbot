@@ -254,6 +254,30 @@ export const maybeApprovalNotice = (haystack: string): string | null =>
 
 const JsonFromText = Schema.fromJsonString(Schema.Unknown);
 
+const ExecutionOutcomeSchema = Schema.Struct({
+  execution: Schema.optional(Schema.Struct({ ok: Schema.Boolean })),
+});
+const ExecutionOutcomeFromText = Schema.fromJsonString(ExecutionOutcomeSchema);
+
+/**
+ * Whether the envelope reports a failed program. Executor sets `isError` on a
+ * refusal at the MCP layer, but a program that fails inside an otherwise
+ * successful call comes back as a normal result, with `execution.ok` false and
+ * `execution.error` naming the failure. That flag is the only place the failure
+ * is recorded, so without reading it the result looks answered.
+ *
+ * A failed individual call is not this. It is reported per call, inside
+ * `execution.value`, and an array of calls can mix successes with failures, so
+ * marking the whole result as an error would misstate it.
+ */
+const programFailed = (json: string): boolean => {
+  const decoded = Option.getOrElse(
+    Schema.decodeUnknownOption(ExecutionOutcomeFromText)(json),
+    () => undefined,
+  );
+  return decoded?.execution?.ok === false;
+};
+
 /** Whether the text section already is the structured payload, serialized. */
 const repeatsStructured = (text: string, structured: string): boolean => {
   const trimmed = text.trim();
@@ -293,15 +317,12 @@ export const renderResult = (result: CallToolResult): ToolExecutionResult => {
   const haystack = structured.length > 0 ? `${text}\n${structured}` : text;
   const body = renderBody(text, structured);
   const output = looksPaused(haystack) ? `${approvalNotice(haystack)}\n\n${body}` : body;
-  // Executor already sets `isError` on real tool failures; this backstop only
-  // fires on an explicit error status, so an unrelated `errorCode` key cannot
-  // flip a successful result into an error. It reads the whole structured
-  // payload even when that payload was not rendered, so dropping a repeat cannot
-  // hide one.
-  const structuredFailure = /"status"\s*:\s*"error"/u.test(compact);
+  // Reads the whole payload even when it was not rendered, so dropping a repeat
+  // cannot hide a failure.
+  const failed = programFailed(compact);
   return {
     output: [textItem(output)],
-    isError: result.isError === true || structuredFailure,
+    isError: result.isError === true || failed,
   };
 };
 

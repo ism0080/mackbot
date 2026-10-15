@@ -5,8 +5,8 @@
  *
  * Drives `renderResult` with synthetic `CallToolResult` values shaped like the
  * ones live Executor returns, so the pause header, the pause detection for both
- * elicitation modes, and the payload de-duplication are all checked without
- * credentials and without a skipped test.
+ * elicitation modes, the payload de-duplication, and which failure shapes count
+ * as errors are all checked without credentials and without a skipped test.
  */
 const { renderResult } = await import("../src/executor-mcp.ts");
 
@@ -113,20 +113,120 @@ const settled = {
   check("prose text", text.includes("structuredContent:"), "dropped the structured data");
 }
 
-// An error status has to survive de-duplication, since the backstop reads the
-// structured payload to decide `isError`.
+// A failed program is the one in-envelope failure only `execution.ok` records.
+// Payloads below are the real envelopes, verbatim in shape.
 {
-  const errorPayload = { status: "error", message: "Tool input did not match its schema." };
-  const result = render(errorPayload, JSON.stringify(errorPayload));
-  check("error status", result.isError === true, "error status was hidden");
-  check("error status", !outputOf(result).includes("structuredContent:"), "not de-duplicated");
+  const parseError = {
+    status: "completed",
+    execution: { ok: false, error: { kind: "ParseError", message: "Unexpected token (2:5)" }, toolCalls: [] },
+  };
+  const result = render(parseError, JSON.stringify(parseError));
+  check("failed program", result.isError === true, "a failed program was not marked");
+  check("failed program", !outputOf(result).includes("structuredContent:"), "not de-duplicated");
+}
+
+// A program that succeeded is not an error, whatever its return value looks like.
+{
+  const returned = { status: "completed", execution: { ok: true, value: 2, toolCalls: [] } };
+  check("program returned a value", render(returned, JSON.stringify(returned)).isError === false, "flagged");
+  const looksFailed = { status: "completed", execution: { ok: true, value: { ok: false }, toolCalls: [] } };
+  check(
+    "program returned {ok:false}",
+    render(looksFailed, JSON.stringify(looksFailed)).isError === false,
+    "a program's own return value was read as a failure",
+  );
+}
+
+// A failed individual call keeps its own error in the payload rather than
+// becoming a blanket error, because an array of calls can mix both.
+{
+  const unknownTool = {
+    status: "completed",
+    execution: {
+      ok: true,
+      value: {
+        path: "tools.does-not-exist.whatever",
+        ok: false,
+        error: {
+          kind: "UnknownTool",
+          message: "No tool at tools.does-not-exist.whatever. Use search to find exact paths.",
+        },
+        matches: [],
+      },
+      toolCalls: [],
+    },
+  };
+  const result = render(unknownTool, JSON.stringify(unknownTool));
+  check("unknown tool path", result.isError === false, "marked the whole result as an error");
+  check("unknown tool path", outputOf(result).includes("Use search to find exact paths"), "lost the error");
+}
+
+// A denied approval is the same shape, and the denial has to stay readable.
+{
+  const denied = {
+    status: "completed",
+    execution: {
+      ok: true,
+      value: {
+        path: 'tools["akahu-accounts"].listAccounts',
+        ok: false,
+        error: { kind: "ToolFailure", message: "ApprovalDenied" },
+      },
+      toolCalls: [{ name: 'tools["akahu-accounts"].listAccounts', outcome: "failure", durationMs: 1963 }],
+    },
+  };
+  const result = render(denied, JSON.stringify(denied));
+  check("denied approval", outputOf(result).includes("ApprovalDenied"), "the denial was lost");
+  check(
+    "denied approval",
+    result.isError === false,
+    "a per-call denial was marked as a whole-result error",
+  );
+}
+
+// An array of calls can mix a failure with a success, which is why a failed
+// individual call must not become a blanket error.
+{
+  const mixed = {
+    status: "completed",
+    execution: {
+      ok: true,
+      value: [
+        {
+          path: "tools.does-not-exist.whatever",
+          ok: false,
+          error: { kind: "UnknownTool", message: "No tool at tools.does-not-exist.whatever." },
+          matches: [],
+        },
+        { path: "tools.executor.context.get", ok: true, value: { slug: "isaac-mackle" } },
+      ],
+      toolCalls: [{ name: "tools.executor.context.get", outcome: "success", durationMs: 1232 }],
+    },
+  };
+  const result = render(mixed, JSON.stringify(mixed));
+  const text = outputOf(result);
+  check("array, one failed", result.isError === false, "one failed call marked every call failed");
+  check("array, one failed", text.includes("isaac-mackle"), "lost the successful call");
+  check("array, one failed", text.includes("No tool at tools.does-not-exist.whatever"), "lost the failed call");
+}
+
+// describe reports an unknown path as a success carrying `missing`, not as an
+// error, and it must not be read as one.
+{
+  const missing = {
+    items: [],
+    namespaces: [],
+    missing: [{ path: "tools.does-not-exist.whatever", matches: [] }],
+  };
+  const result = render(missing, JSON.stringify(missing));
+  check("describe missing path", result.isError === false, "a not-found answer was marked an error");
 }
 
 // Executor's own isError flag passes through untouched.
 {
-  const result = render(undefined, "Executor MCP call failed (call): boom", true);
+  const result = render(undefined, "Invalid parameters for tool 'resume': Missing key at [\"response\"]", true);
   check("isError passthrough", result.isError === true, "isError lost");
-  check("isError passthrough", outputOf(result).includes("boom"), "message lost");
+  check("isError passthrough", outputOf(result).includes("Missing key"), "message lost");
 }
 
 // Nothing at all still says so.
