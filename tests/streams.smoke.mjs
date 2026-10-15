@@ -39,6 +39,7 @@ const { serveEvents } = await import("../src/feed.ts");
 const failures = [];
 const check = (label, condition, detail = "") => {
   if (!condition) failures.push(`${label}${detail === "" ? "" : `: ${detail}`}`);
+  console.log(`  ${condition ? "ok  " : "FAIL"} ${label}${detail === "" ? "" : ` (${detail})`}`);
 };
 
 // ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ check("response is SSE", first.headers.get("content-type")?.startsWith("text/eve
 check("stream exists", first.status === 200, `${first.status}`);
 
 const firstText = await readUntilUpToDate(first);
-check("three frames arrive in order", JSON.stringify(idsOf(firstText)) === "[0,1,2]", firstText.trim());
+check("three frames arrive in order", JSON.stringify(idsOf(firstText)) === "[0,1,2]", JSON.stringify(idsOf(firstText)));
 check("the durable tail signals up-to-date", firstText.includes("event: up-to-date"));
 check("no control frame precedes the chunks", firstText.indexOf("event: up-to-date") > firstText.indexOf("id: 2"));
 
@@ -155,12 +156,12 @@ writer.append({ kind: "done" });
 
 const resumed = await get(`${EVENTS}?stream=${STREAM}`, { "Last-Event-ID": "1" });
 const resumedText = await readUntilUpToDate(resumed);
-check("Last-Event-ID resumes after the cursor", JSON.stringify(idsOf(resumedText)) === "[2,3]", resumedText.trim());
+check("Last-Event-ID resumes after the cursor", JSON.stringify(idsOf(resumedText)) === "[2,3]", JSON.stringify(idsOf(resumedText)));
 check("Last-Event-ID does not replay chunk 0", !resumedText.includes("id: 0"));
 
 const fromParam = await get(`${EVENTS}?stream=${STREAM}&from=2`);
 const fromText = await readUntilUpToDate(fromParam);
-check("?from= resumes from the cursor", JSON.stringify(idsOf(fromText)) === "[2,3]", fromText.trim());
+check("?from= resumes from the cursor", JSON.stringify(idsOf(fromText)) === "[2,3]", JSON.stringify(idsOf(fromText)));
 check("?from= does not replay chunk 0", !fromText.includes("id: 0"));
 
 const missing = await get(`${EVENTS}?stream=feed:does-not-exist`);
