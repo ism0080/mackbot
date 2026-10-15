@@ -17,6 +17,8 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
+import { cronOperationId, httpOperationId, originOf } from "./operation.ts";
+import type { OperationOrigin } from "./operation.ts";
 import { isAuthorized, readChatRequest } from "./chat-request.ts";
 import { createSharedMemory } from "./memory.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
@@ -42,6 +44,7 @@ export interface Env {
 
 export interface PendingOperation {
   readonly operationId: string;
+  readonly origin: OperationOrigin;
   readonly status: "queued" | "running";
 }
 
@@ -153,7 +156,7 @@ export class Bot extends DurableObject<Env> {
       operationId,
       // Store a length, not the prompt text: the audit trail should not become
       // a second copy of everything a user sends.
-      detail: { sessionId, textLength: text.length },
+      detail: { sessionId, textLength: text.length, origin: originOf(operationId) },
     });
     return receipt;
   }
@@ -187,15 +190,19 @@ export class Bot extends DurableObject<Env> {
       throw outcome.cause;
     }
     const result = outcome.result;
-    if (result.status === "done") {
-      await this.#appendAudit({
-        timestamp: Date.now(),
-        botId: this.lifecycle.name,
-        kind: "settlement",
-        operationId: result.operationId,
-        detail: { session: result.session, status: result.status },
-      });
-    }
+    // `unanswered` means the target failed, aborted, or withdrew the operation,
+    // so the settled outcome is worth recording whether or not it answered.
+    await this.#appendAudit({
+      timestamp: Date.now(),
+      botId: this.lifecycle.name,
+      kind: `settlement.${result.status}`,
+      operationId: result.operationId,
+      detail: {
+        session: result.session,
+        origin: originOf(result.operationId),
+        reason: result.reason ?? null,
+      },
+    });
     return {
       operationId: result.operationId,
       session: result.session,
@@ -228,6 +235,7 @@ export class Bot extends DurableObject<Env> {
       busy: sessions.some((session) => session.busy),
       pending: pending.map((operation) => ({
         operationId: operation.operationId,
+        origin: originOf(operation.operationId),
         status: operation.status,
       })),
       usage,
@@ -372,7 +380,7 @@ const handleChat = async (
   if (body === undefined) {
     return Response.json({ error: "invalid request body" }, { status: 400 });
   }
-  const operationId = body.operationId ?? `http:${crypto.randomUUID()}`;
+  const operationId = httpOperationId(body.operationId);
   const stub = env.Bot.getByName(botId);
   const receipt = await Effect.runPromise(
     Effect.tryPromise(() =>
@@ -465,7 +473,7 @@ export default {
       if (brief === undefined) continue;
       admissions.push(
         Effect.tryPromise(() =>
-          env.Bot.getByName(id).submit(brief, `cron:${id}:${scheduledTime}`, "followUp"),
+          env.Bot.getByName(id).submit(brief, cronOperationId(id, scheduledTime), "followUp"),
         ).pipe(
           // One failing bot must not stop the others' briefs.
           Effect.catch((cause) => {

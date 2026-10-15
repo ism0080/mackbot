@@ -49,8 +49,12 @@ foundation pieces are already implemented and are intentionally omitted here:
 - **Per-bot budget enforcement.** Add optional token, time, or spend soft caps
   with visibility in `/status`. Config fields exist; runtime enforcement does
   not yet.
-- **Operation taxonomy.** Label submitted work by origin (`http`, `cron`,
-  `delegate`, `approval`, `thread`) in status, usage, and audit records.
+- **Remaining operation taxonomy.** Origin labelling covers `http`, `cron`, and
+  `delegate` in `/status` and in audit records. Still open: a queryable `origin`
+  column on the audit table (the value lives in `detail`, and the operation id
+  prefix already carries it), approval turns labelled as their own origin, and
+  per-origin spend, which `pi.usage` does not track because it belongs to the
+  harness.
 - **Memory compaction automation.** Use compaction as a trigger for distilling
   durable cross-bot facts into the shared memory app, as already designed.
 - **Audit-runtime integration.** Wire the audit-log seam into chat, delegation,

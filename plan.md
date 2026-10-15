@@ -56,7 +56,7 @@ POST /chat/:bot (v1 interface)  ·  cron (hourly)  ·  Telegram webhooks (option
 | Models                    | **OpenCode Go** (`opencode-go` provider, `OPENCODE_API_KEY`); cheap tier: Workers AI (`@cf/...`) or free catalog models (`longcat-2.5-preview-free`, `step-5-preview-free`)                                                                                       |
 | Tooling                   | **Executor v2 meta-tools only** — bots never talk to apps directly                                                                                                                                                                                                |
 | Channels                  | **HTTP API first** (`POST /chat/:bot` + bearer auth); first-party webapp later (SSE events); **Telegram last, optional**                                                                                                                                          |
-| Idempotency               | `operationId` = `tg:<chatId>:<messageId>` / `cron:<scheduledTime>` — at-most-once admission across retries/evictions                                                                                                                                              |
+| Idempotency               | `operationId` carries its origin in a prefix, built only in `src/operation.ts` — `http:<uuid-or-client-id>`, `cron:<botId>:<scheduledTime>`, `delegate:<source>:<id>`; at-most-once admission across retries/evictions, and prefixing is idempotent so an id the fleet returned rejoins the same operation                                                                                       |
 | Ingress auth              | Bearer secret on the `POST /chat/:bot` route (the v1 surface — anyone who finds the URL could otherwise drive the bots and their Executor spend); when Telegram lands: per-bot webhook `secret_token`, validate `X-Telegram-Bot-Api-Secret-Token` on every update |
 | Cost posture              | Free tier first: `progress: { partialIntervalMs: 1000, outputIntervalMs: 1000 }` (~10x fewer SQLite row writes); Workers Paid ($5) only if limits trip                                                                                                            |
 | Sandboxing (Daytona etc.) | **Deferred** — no code seam today; the route stays an `ExecutionEnv` / Executor app; revisit when a bot needs to build/run things (Grok Bot's "own computer" phase)                                                                                                                     |
@@ -72,7 +72,7 @@ mackbot/
 ├── package.json         # lint/format/test/tools:oxlint scripts + deps
 ├── .env.example         # documented secret names (copy to .env; never commit .env)
 ├── tools/oxlint/        # vendored @ism0080/oxlint-plugin-forge (self-contained, builds + tests green)
-├── tests/               # smoke tests + runner (bots, chat-request, audit-log, bot-delegation, executor-mcp)
+├── tests/               # smoke tests + runner (bots, chat-request, operation, audit-log, bot-delegation, executor-mcp)
 └── src/
     ├── index.ts         # Bot class (PiHarness + ensureBot) + front door fetch + scheduled
     ├── bots.ts          # typed bots.json loader (parseBotRegistry) + modelRef resolution
@@ -80,6 +80,7 @@ mackbot/
     ├── executor-mcp.ts  # Executor v2 bridge (6 meta-tools, MCP TS SDK streamable HTTP)
     ├── bot-delegation.ts# delegate_to_bot pi tool (guards + long-poll)
     ├── chat-request.ts  # front-door request contract (bearer, byte cap, body schema)
+    ├── operation.ts     # operation ids and the origin they encode
     ├── memory.ts        # shared-memory prompt section (Executor memory app)
     ├── audit-log.ts     # append-only SQLite audit seam
     ├── runtime.ts       # ManagedRuntime bridge for Pi/Cloudflare callbacks

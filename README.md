@@ -38,7 +38,8 @@ is case-insensitive.
 - `POST /chat/:bot` — submit text to a bot. Returns the answer, or `202` with an
   `operationId` when the wait times out or `wait=false` (resubmit the same
   `operationId` to keep waiting; admission is at-most-once).
-- `GET /status` — per-bot model, busy state, pending operations, and usage.
+- `GET /status` — per-bot model, busy state, pending operations with their origin
+  (`http`, `cron`, or `delegate`), and usage.
 
 ## Deploy
 
