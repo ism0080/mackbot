@@ -60,6 +60,63 @@ try {
   failures.push(`allowlisted delegation threw: ${error?.message ?? error}`);
 }
 
+// The target bot observes exactly the id passed to `submit`, so a recording env
+// is what proves which operation a retry actually joins.
+const submitted = [];
+const recordingEnv = {
+  Bot: {
+    getByName: (_name) => ({
+      submit: async (_task, operationId) => {
+        submitted.push(operationId);
+        return { operationId, accepted: true };
+      },
+      wait: async () => ({ status: "timeout" }),
+    }),
+  },
+};
+
+const recordingExtension = createBotDelegation({ env: recordingEnv, sourceBotId: "hermes" });
+const recordingTool = new Map(
+  (recordingExtension.tools ?? []).map((entry) => [entry.name, entry]),
+).get("delegate_to_bot");
+
+try {
+  await recordingTool.execute({ target: "scribe", task: "hi", operationId: "abc" }, {}, {});
+  await recordingTool.execute({ target: "scribe", task: "hi", operationId: "abc" }, {}, {});
+  if (submitted[0] !== "delegate:hermes:abc") {
+    failures.push(`caller id not namespaced: ${submitted[0]}`);
+  }
+  if (submitted[1] !== submitted[0]) {
+    failures.push(`same caller id resubmitted differently: ${submitted[1]} vs ${submitted[0]}`);
+  }
+} catch (error) {
+  failures.push(`caller id delegation threw: ${error?.message ?? error}`);
+}
+
+try {
+  const timedOut = await recordingTool.execute(
+    { target: "scribe", task: "hi", operationId: "retry-me" },
+    {},
+    {},
+  );
+  const match = /\(operationId ([^)]+)\)/.exec(textOf(timedOut));
+  if (match === null) {
+    failures.push(`timeout text missing operationId: ${textOf(timedOut)}`);
+  } else {
+    const returned = match[1];
+    await recordingTool.execute({ target: "scribe", task: "hi", operationId: returned }, {}, {});
+    const resubmitted = submitted[submitted.length - 1];
+    if (resubmitted !== returned) {
+      failures.push(`retry double-namespaced: ${resubmitted} vs ${returned}`);
+    }
+    if (returned !== "delegate:hermes:retry-me") {
+      failures.push(`timeout returned an unexpected id: ${returned}`);
+    }
+  }
+} catch (error) {
+  failures.push(`retry with returned id threw: ${error?.message ?? error}`);
+}
+
 
 if (failures.length > 0) {
   console.error("bot-delegation smoke FAILED:");

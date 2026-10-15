@@ -28,9 +28,11 @@
  * ## Namespacing
  *
  * Model-supplied `operationId`s are namespaced as `delegate:<source>:<id>` so
- * they cannot collide with the target's own `http:`/`cron:`/`delegate:` ids or
- * reuse a remembered id for an unrelated task (which would silently return the
- * old settled answer).
+ * they cannot collide with the target's own `http:`/`cron:`/`delegate:` ids. An
+ * id the tool has already returned is honored verbatim, so a retry after a
+ * timeout joins the same operation instead of double-submitting the task. The
+ * cost of honoring it is that reusing a returned id for a different task returns
+ * the earlier settled answer instead of running the new task.
  *
  * ## Approvals
  *
@@ -51,6 +53,7 @@ import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionResult } from "@earendil-works/pi-durable";
 import { loadBots } from "./bots.ts";
+import { delegateOperationId } from "./operation.ts";
 import { createDelegationPolicy } from "./services/delegation.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { maybeApprovalNotice } from "./executor-mcp.ts";
@@ -122,9 +125,7 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
                   isError: true,
                 };
               }
-              const operationId = args.operationId
-                ? `delegate:${sourceBotId}:${args.operationId}`
-                : `delegate:${sourceBotId}:${crypto.randomUUID()}`;
+              const operationId = delegateOperationId(sourceBotId, args.operationId);
               const whenBusy = args.whenBusy ?? "followUp";
               const stub = env.Bot.getByName(args.target);
               const receipt = yield* Effect.tryPromise({
