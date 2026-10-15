@@ -35,9 +35,12 @@
  * conversation's agent). Optional `timeoutMs` (tool calls, default 600_000) and
  * `connectTimeoutMs` (handshake, default 60_000) override the defaults.
  *
- * Every call opens its own MCP client/transport and closes it again, so an
- * evicted or restarted Executor Durable Object never leaves a stale cached
- * connection behind ("eviction-proof").
+ * The read-only tools share one MCP client across calls and the others open one
+ * each and close it again. Opening per call is eviction-proof but pays a full
+ * handshake on every tool call, measured at roughly 2.4s, which is most of a
+ * discovery round trip. An unsafe tool keeps a fresh connection because a
+ * connection gone stale fails at the transport layer, and from there a caller
+ * cannot tell whether the effect it asked for already happened.
  *
  * MCP mechanics deliberately match the pinned @modelcontextprotocol/sdk@1.32.1:
  * the transport is StreamableHTTPClientTransport with bearer auth in
@@ -95,46 +98,99 @@ const resolveConfig = (config: ExecutorMcpConfig): ResolvedConfig => ({
   connectTimeoutMs: config.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
 });
 
-const connect = (config: ResolvedConfig): Effect.Effect<Client, unknown> =>
-  Effect.tryPromise({
-    try: async () => {
-      const transport = new StreamableHTTPClientTransport(new URL(config.url), {
-        requestInit: {
-          headers: { Authorization: `Bearer ${config.token}` },
-        },
-      });
-      const client = new Client(
-        { name: CLIENT_NAME, version: CLIENT_VERSION },
-        { capabilities: {} },
-      );
-      await client.connect(transport, { timeout: config.connectTimeoutMs });
-      return client;
+/** Opens one MCP client for one connection. */
+type Connector = (config: ResolvedConfig) => Promise<Client>;
+
+const openClient: Connector = async (config) => {
+  const transport = new StreamableHTTPClientTransport(new URL(config.url), {
+    requestInit: {
+      headers: { Authorization: `Bearer ${config.token}` },
     },
-    catch: (cause) => cause,
   });
+  const client = new Client(
+    { name: CLIENT_NAME, version: CLIENT_VERSION },
+    { capabilities: {} },
+  );
+  await client.connect(transport, { timeout: config.connectTimeoutMs });
+  return client;
+};
 
 const closeClient = (client: Client): Effect.Effect<void> =>
   Effect.tryPromise(() => client.close()).pipe(Effect.orElseSucceed(() => undefined));
 
-const callMetaTool = (
+/**
+ * How a tool call reaches Executor. `open` gives one call a fresh client,
+ * `acquireShared` hands out a client shared across calls, and `dropShared`
+ * retires that one once it has failed so the next call opens another.
+ */
+type Bridge = {
+  readonly config: ResolvedConfig;
+  readonly open: () => Effect.Effect<Client, unknown>;
+  readonly acquireShared: () => Effect.Effect<Client, unknown>;
+  readonly dropShared: (client: Client) => Effect.Effect<void>;
+};
+
+const makeBridge = (config: ExecutorMcpConfig, connector: Connector): Bridge => {
+  const resolved = resolveConfig(config);
+  let shared: Promise<Client> | undefined;
+  return {
+    config: resolved,
+    open: () => Effect.tryPromise({ try: () => connector(resolved), catch: (cause) => cause }),
+    acquireShared: () =>
+      Effect.tryPromise({
+        try: () => {
+          shared ??= connector(resolved).catch((cause: unknown) => {
+            // Let the next call try again instead of reusing a rejected promise.
+            shared = undefined;
+            throw cause;
+          });
+          return shared;
+        },
+        catch: (cause) => cause,
+      }),
+    dropShared: (client) =>
+      Effect.sync(() => {
+        shared = undefined;
+        void client.close().catch(() => undefined);
+      }),
+  };
+};
+
+const requestOnce = (
+  client: Client,
   config: ResolvedConfig,
   name: string,
   args: McpToolArguments,
 ): Effect.Effect<CallToolResult, unknown> =>
-  Effect.acquireUseRelease(
-    connect(config),
-    (client) =>
-      Effect.tryPromise({
-        try: () =>
-          client.request(
-            { method: "tools/call", params: { name, arguments: args } },
-            CallToolResultSchema,
-            { timeout: config.timeoutMs },
+  Effect.tryPromise({
+    try: () =>
+      client.request(
+        { method: "tools/call", params: { name, arguments: args } },
+        CallToolResultSchema,
+        { timeout: config.timeoutMs },
+      ),
+    catch: (cause) => cause,
+  });
+
+const callMetaTool = (
+  bridge: Bridge,
+  name: string,
+  args: McpToolArguments,
+  shared: boolean,
+): Effect.Effect<CallToolResult, unknown> =>
+  shared
+    ? Effect.flatMap(bridge.acquireShared(), (client) =>
+        requestOnce(client, bridge.config, name, args).pipe(
+          Effect.catch((cause) =>
+            Effect.flatMap(bridge.dropShared(client), () => Effect.fail(cause)),
           ),
-        catch: (cause) => cause,
-      }),
-    (client) => closeClient(client),
-  );
+        ),
+      )
+    : Effect.acquireUseRelease(
+        bridge.open(),
+        (client) => requestOnce(client, bridge.config, name, args),
+        (client) => closeClient(client),
+      );
 
 const textItem = (text: string): TextContent => ({ type: "text", text });
 
@@ -250,11 +306,12 @@ export const renderResult = (result: CallToolResult): ToolExecutionResult => {
 };
 
 const runMetaTool = (
-  config: ResolvedConfig,
+  bridge: Bridge,
   name: string,
   args: McpToolArguments,
+  shared: boolean,
 ): Effect.Effect<ToolExecutionResult> =>
-  callMetaTool(config, name, args).pipe(
+  callMetaTool(bridge, name, args, shared).pipe(
     Effect.match({
       onSuccess: renderResult,
       onFailure: (cause) =>
@@ -295,7 +352,7 @@ const executorProtocol = [
 
 const executorProtocolSection = section("executor-protocol", () => executorProtocol);
 
-const searchTool = (config: ResolvedConfig) =>
+const searchTool = (bridge: Bridge) =>
   defineTool({
     name: "executor_search",
     description:
@@ -309,10 +366,10 @@ const searchTool = (config: ResolvedConfig) =>
       offset: Type.Optional(Type.Number({ description: "Number of results to skip." })),
     }),
     replay: "safe",
-    execute: (args) => Effect.runPromise(runMetaTool(config, "search", args)),
+    execute: (args) => Effect.runPromise(runMetaTool(bridge, "search", args, true)),
   });
 
-const describeTool = (config: ResolvedConfig) =>
+const describeTool = (bridge: Bridge) =>
   defineTool({
     name: "executor_describe",
     description:
@@ -324,10 +381,10 @@ const describeTool = (config: ResolvedConfig) =>
       }),
     }),
     replay: "safe",
-    execute: (args) => Effect.runPromise(runMetaTool(config, "describe", args)),
+    execute: (args) => Effect.runPromise(runMetaTool(bridge, "describe", args, true)),
   });
 
-const callTool = (config: ResolvedConfig) =>
+const callTool = (bridge: Bridge) =>
   defineTool({
     name: "executor_call",
     description:
@@ -352,10 +409,10 @@ const callTool = (config: ResolvedConfig) =>
       ),
     }),
     replay: "unsafe",
-    execute: (args) => Effect.runPromise(runMetaTool(config, "call", args)),
+    execute: (args) => Effect.runPromise(runMetaTool(bridge, "call", args, false)),
   });
 
-const executeTool = (config: ResolvedConfig) =>
+const executeTool = (bridge: Bridge) =>
   defineTool({
     name: "executor_execute",
     description:
@@ -367,10 +424,10 @@ const executeTool = (config: ResolvedConfig) =>
       }),
     }),
     replay: "unsafe",
-    execute: (args) => Effect.runPromise(runMetaTool(config, "execute", args)),
+    execute: (args) => Effect.runPromise(runMetaTool(bridge, "execute", args, false)),
   });
 
-const skillsTool = (config: ResolvedConfig) =>
+const skillsTool = (bridge: Bridge) =>
   defineTool({
     name: "executor_skills",
     description:
@@ -393,7 +450,7 @@ const skillsTool = (config: ResolvedConfig) =>
       ),
     }),
     replay: "safe",
-    execute: (args) => Effect.runPromise(runMetaTool(config, "skills", args)),
+    execute: (args) => Effect.runPromise(runMetaTool(bridge, "skills", args, true)),
   });
 
 const resumeResponse = Type.Object(
@@ -411,7 +468,7 @@ const resumeResponse = Type.Object(
   { additionalProperties: true, description: "The answer to a paused request." },
 );
 
-const resumeTool = (config: ResolvedConfig) =>
+const resumeTool = (bridge: Bridge) =>
   defineTool({
     name: "executor_resume",
     description:
@@ -426,25 +483,33 @@ const resumeTool = (config: ResolvedConfig) =>
       { additionalProperties: true },
     ),
     replay: "unsafe",
-    execute: (args) => Effect.runPromise(runMetaTool(config, "resume", args)),
+    execute: (args) => Effect.runPromise(runMetaTool(bridge, "resume", args, false)),
   });
 
 /**
  * Build the Executor v2 bridge extension: six pi tools plus the
  * `executor-protocol` prompt section. Give the result to the harness registry
  * (`registry.install(...)`) or select it on a conversation's agent.
+ *
+ * `connect` is the seam a test uses to count connections, so the sharing policy
+ * for the read-only tools can be checked without a live Executor.
  */
-export function createExecutorMcp(config: ExecutorMcpConfig): Extension {
-  const resolved = resolveConfig(config);
+export function createExecutorMcp(
+  config: ExecutorMcpConfig,
+  options?: {
+    readonly connect?: (config: ResolvedConfig) => Promise<Client>;
+  },
+): Extension {
+  const bridge = makeBridge(config, options?.connect ?? openClient);
   return defineExtension({
     name: "executor-mcp",
     tools: [
-      searchTool(resolved),
-      describeTool(resolved),
-      callTool(resolved),
-      executeTool(resolved),
-      skillsTool(resolved),
-      resumeTool(resolved),
+      searchTool(bridge),
+      describeTool(bridge),
+      callTool(bridge),
+      executeTool(bridge),
+      skillsTool(bridge),
+      resumeTool(bridge),
     ],
     sections: [executorProtocolSection],
   });
