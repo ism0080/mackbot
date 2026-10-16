@@ -20,12 +20,18 @@ import { createExecutorMcp } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
 import { serveEvents } from "./feed.ts";
 import { cronOperationId, httpOperationId, originOf } from "./operation.ts";
-import type { OperationOrigin } from "./operation.ts";
 import { isAuthorized, readChatRequest } from "./chat-request.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
-import type { ModelRef, ThinkingLevel } from "./bots.ts";
+import type { ThinkingLevel } from "./bots.ts";
+import { createApprovalStore } from "./approvals.ts";
+import type { ApprovalStore } from "./approvals.ts";
+import { createRunStore } from "./runs.ts";
+import type { RunStore } from "./runs.ts";
+import { activeRunOf, projectStatus } from "./status.ts";
+import { highestEntryId } from "./transcript.ts";
+import type { BotView, PendingOperationView } from "./web-contract.ts";
 
 import * as Effect from "effect/Effect";
 
@@ -41,21 +47,6 @@ export interface Env {
   readonly EXECUTOR_TOKEN: string;
   readonly OPENCODE_API_KEY: string;
   readonly CHAT_BEARER_TOKEN: string;
-}
-
-export interface PendingOperation {
-  readonly operationId: string;
-  readonly origin: OperationOrigin;
-  readonly status: "queued" | "running";
-}
-
-export interface BotStatus {
-  readonly id: string;
-  readonly model: ModelRef;
-  readonly thinkingLevel: ThinkingLevel | null;
-  readonly busy: boolean;
-  readonly pending: readonly PendingOperation[];
-  readonly usage: UsageState;
 }
 
 export interface WaitResult {
@@ -116,6 +107,8 @@ export class Bot extends DurableObject<Env> {
   readonly streams: Streams;
   readonly runtime: ManagedRuntime<BotRegistryService, never>;
   #auditSink: AuditLog | undefined;
+  #runStore: RunStore | undefined;
+  #approvalStore: ApprovalStore | undefined;
   #botReady: Promise<void> | undefined;
   /** In-flight thread→session creations, so concurrent requests share one. */
   readonly #threadSessions = new Map<string, Promise<string>>();
@@ -151,11 +144,23 @@ export class Bot extends DurableObject<Env> {
         ? ROOT_SESSION
         : await Effect.runPromise(Effect.tryPromise(() => this.#sessionForThread(thread)));
     if (thread === undefined) await Effect.runPromise(Effect.tryPromise(() => this.#ensureBot()));
+    // Read the entry high-water mark before admission, so the run's window
+    // starts after everything pi had already written.
+    const startEntry = await this.#entryMark(sessionId);
     const receipt = await Effect.runPromise(
       Effect.tryPromise(() =>
         this.harness.submit(text, { operationId, whenBusy, session: sessionId }),
       ),
     );
+    if (receipt.accepted) {
+      this.#runs().open({
+        sessionId,
+        operationId: receipt.operationId,
+        inputs: [text],
+        startedAt: Date.now(),
+        startEntry,
+      });
+    }
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -212,6 +217,7 @@ export class Bot extends DurableObject<Env> {
         reason: result.reason ?? null,
       },
     });
+    await this.#settleRun(result.session, result.operationId);
     return {
       operationId: result.operationId,
       session: result.session,
@@ -221,7 +227,7 @@ export class Bot extends DurableObject<Env> {
     };
   }
 
-  async status(): Promise<BotStatus> {
+  async status(): Promise<BotView> {
     await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
     const id = this.lifecycle.name;
     const bot = await this.#botConfig();
@@ -235,20 +241,68 @@ export class Bot extends DurableObject<Env> {
         { concurrency: "unbounded" },
       ),
     );
-    return {
+    const pendingViews: readonly PendingOperationView[] = pending.map((operation) => ({
+      operationId: operation.operationId,
+      origin: originOf(operation.operationId),
+      status: operation.status,
+    }));
+    const runs = this.#runs().list();
+    const active = activeRunOf(pendingViews, runs);
+    const cursor = active === undefined ? 0 : await this.#streamCursor(active.streamId);
+    return projectStatus({
       id,
       model: resolveModelRef(bot),
       thinkingLevel: bot.thinkingLevel ?? null,
       // `sessions.list()` already reports each session's busy flag, so no
       // extra per-session `busy()` round trips are needed here.
       busy: sessions.some((session) => session.busy),
-      pending: pending.map((operation) => ({
-        operationId: operation.operationId,
-        origin: originOf(operation.operationId),
-        status: operation.status,
-      })),
+      pending: pendingViews,
       usage,
-    };
+      approvals: this.#approvals().pending(),
+      runs,
+      activeRun: active === undefined ? undefined : { run: active, cursor },
+    });
+  }
+
+  /** The conversation's next entry id: the run window's lower bound. */
+  async #entryMark(session: string): Promise<number> {
+    const records = await Effect.runPromise(
+      Effect.tryPromise(() => this.harness.messages({ session })),
+    );
+    return highestEntryId(records) + 1;
+  }
+
+  async #settleRun(session: string, operationId: string): Promise<void> {
+    const records = await Effect.runPromise(
+      Effect.tryPromise(() => this.harness.messages({ session })),
+    );
+    this.#runs().settle({
+      sessionId: session,
+      operationId,
+      endEntry: highestEntryId(records),
+      settledAt: Date.now(),
+    });
+  }
+
+  /**
+   * The newest chunk of a run's stream, or 0 before the bridge has written one.
+   * The routes are what name the stream a client should attach to.
+   */
+  async #streamCursor(streamId: string): Promise<number> {
+    const status = await Effect.runPromise(
+      Effect.tryPromise(() => this.streams.status(streamId)).pipe(Effect.orElseSucceed(() => null)),
+    );
+    return status?.cursor ?? 0;
+  }
+
+  #runs(): RunStore {
+    this.#runStore ??= createRunStore(this.ctx.storage);
+    return this.#runStore;
+  }
+
+  #approvals(): ApprovalStore {
+    this.#approvalStore ??= createApprovalStore(this.ctx.storage);
+    return this.#approvalStore;
   }
 
   #ensureThreadsTable(): void {
@@ -419,7 +473,7 @@ const handleChat = async (
 
 interface BotStatusResult {
   readonly id: string;
-  readonly status?: BotStatus;
+  readonly status?: BotView;
   readonly error?: string;
 }
 
@@ -438,7 +492,7 @@ const handleStatus = async (env: Env): Promise<Response> => {
   const results = await Effect.runPromise(
     Effect.all(Object.keys(bots).map(statusFor), { concurrency: "unbounded" }),
   );
-  const statuses: Record<string, BotStatus> = {};
+  const statuses: Record<string, BotView> = {};
   const errors: Record<string, string> = {};
   for (const entry of results) {
     if (entry.status === undefined) {
