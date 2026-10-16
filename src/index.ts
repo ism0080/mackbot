@@ -9,6 +9,7 @@ import { Harness, createRegistry } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
   ConversationId,
+  EntryRecord,
   HarnessSettings,
   UsageState,
 } from "@earendil-works/pi-durable";
@@ -154,7 +155,7 @@ export class Bot extends DurableObject<Env> {
         this.harness.submit(text, { operationId, whenBusy, session: sessionId }),
       ),
     );
-    if (receipt.accepted) {
+    if (receipt.accepted && startEntry !== undefined) {
       this.#runs().open({
         sessionId,
         operationId: receipt.operationId,
@@ -294,18 +295,36 @@ export class Bot extends DurableObject<Env> {
     return transcriptPage(session, records, runs, query, streamViewOf(session, latest, cursor));
   }
 
-  /** The conversation's next entry id: the run window's lower bound. */
-  async #entryMark(session: string): Promise<number> {
-    const records = await Effect.runPromise(
-      Effect.tryPromise(() => this.harness.messages({ session })),
+  /**
+   * The conversation's entries, or nothing when pi cannot read them. Admission's
+   * bookkeeping must not fail a submission that has already landed, so a read
+   * that fails costs the run its window, not the work.
+   */
+  async #messages(session: string): Promise<readonly EntryRecord[] | undefined> {
+    return await Effect.runPromise(
+      Effect.tryPromise(() => this.harness.messages({ session })).pipe(
+        Effect.match({
+          onSuccess: (records) => records,
+          onFailure: (cause) => {
+            console.error(
+              `mackbot: transcript read for "${this.lifecycle.name}" failed: ${describeCause(cause)}`,
+            );
+            return undefined;
+          },
+        }),
+      ),
     );
-    return highestEntryId(records) + 1;
+  }
+
+  /** The conversation's next entry id: the run window's lower bound. */
+  async #entryMark(session: string): Promise<number | undefined> {
+    const records = await this.#messages(session);
+    return records === undefined ? undefined : highestEntryId(records) + 1;
   }
 
   async #settleRun(session: string, operationId: string): Promise<void> {
-    const records = await Effect.runPromise(
-      Effect.tryPromise(() => this.harness.messages({ session })),
-    );
+    const records = await this.#messages(session);
+    if (records === undefined) return;
     this.#runs().settle({
       sessionId: session,
       operationId,
