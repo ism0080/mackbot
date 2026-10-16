@@ -147,6 +147,7 @@ button,
    triage sections collapse by `hidden`, and each one sets its own `display`, so
    the attribute has to be defended once here or every empty section shows. */
 [hidden] {
+  /* stylelint-disable-next-line declaration-no-important -- [hidden] has to beat every author `display` rule, so it is the one declaration that needs the flag; see the note above. */
   display: none !important;
 }
 
@@ -643,6 +644,7 @@ button {
   -webkit-box-orient: vertical;
   /* The one place `hidden` stays: the reference warns that `clip` with a line
      clamp is untested in Firefox, and the clamp needs one of the two. */
+  /* stylelint-disable-next-line declaration-property-value-disallowed-list -- `clip` plus a line clamp is untested in Firefox, so `hidden` is the correct half of that pair here. */
   overflow: hidden;
   font-size: var(--step--1);
   color: var(--warn-muted);
