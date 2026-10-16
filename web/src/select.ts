@@ -26,12 +26,19 @@ export interface Home {
   readonly sub: string;
   readonly allClear: boolean;
   readonly clearNote: string;
+  /** Why the roster is not trustworthy yet: loading, unreachable, or a bot that
+   *  answered with an error. `null` means every bot's status is in hand. */
+  readonly notice: string | null;
   readonly blocked: readonly Blocked[];
   readonly running: readonly Running[];
   readonly recent: readonly Recent[];
 }
 
 const statusOf = (channel: Channel): Option.Option<BotView> => AsyncData.getData(channel.status);
+
+/** Bots whose `/status` row never arrived, so the home can name them. */
+const failedBotsOf = (channels: readonly (readonly [string, Channel])[]): readonly string[] =>
+  channels.flatMap(([bot, channel]) => (AsyncData.hasError(channel.status) ? [bot] : []));
 
 const blockedOf = (bot: string, status: BotView): readonly Blocked[] =>
   status.approvals
@@ -61,6 +68,16 @@ const clearNoteOf = (running: readonly Running[]): string => {
   return `${botName(first.bot)} is still working. I pull you back when something blocks.`;
 };
 
+const noticeOf = (roster: Model["roster"], failed: readonly string[]): string | null =>
+  Option.match(AsyncData.getError(roster), {
+    onSome: (error) => `Couldn't reach the fleet (${error}).`,
+    onNone: () => {
+      if (AsyncData.isIdle(roster) || AsyncData.isLoading(roster)) return "Checking on the fleet…";
+      if (failed.length === 0) return null;
+      return `No status from ${failed.map(botName).join(", ")}.`;
+    },
+  });
+
 /** The triage home. It holds no state of its own: every line is a fold over the
  *  channels, so deciding an approval changes the home, the header count and the
  *  transcript together without any of them being updated. */
@@ -81,12 +98,14 @@ export const selectHome = (model: Model): Home => {
   const recent = channels
     .flatMap(([bot, channel]) => latestOf(bot, channel))
     .sort((left, right) => (right.entry.at ?? 0) - (left.entry.at ?? 0));
+  const notice = noticeOf(model.roster, failedBotsOf(channels));
 
   return {
     headline: blocked.length === 0 ? "Nothing needs you" : "Needs you",
     sub: subOf(channels.length, blocked.length, running.length),
-    allClear: blocked.length === 0,
+    allClear: blocked.length === 0 && notice === null,
     clearNote: clearNoteOf(running),
+    notice,
     blocked: blocked.sort((left, right) => left.approval.requestedAt - right.approval.requestedAt),
     running: running.sort((left, right) => left.run.startedAt - right.run.startedAt),
     recent,

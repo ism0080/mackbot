@@ -1,10 +1,9 @@
-import type { ActiveRunView, ApprovalView, BotView, EntryView } from "@mackbot/web-contract";
+import type { ActiveRunView, ApprovalView, BotView, EntryView, TranscriptPage } from "@mackbot/web-contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { clockOf, elapsedOf } from "./format.ts";
-import { FIXTURE_NOW } from "./fixture.ts";
 import { Message } from "./message.ts";
 import type { Channel, Model } from "./model.ts";
 import { avatar, botName, modelLabel, runTitle, statusTag } from "./partials.ts";
@@ -15,15 +14,14 @@ const statusIn = (channel: Channel | undefined): Option.Option<BotView> =>
     onSome: (present) => AsyncData.getData(present.status),
   });
 
-const entriesIn = (channel: Channel | undefined): readonly EntryView[] =>
+const pageIn = (channel: Channel | undefined): Option.Option<TranscriptPage> =>
   Option.match(Option.fromNullishOr(channel), {
-    onNone: () => [],
-    onSome: (present) =>
-      Option.match(AsyncData.getData(present.transcript), {
-        onNone: () => [],
-        onSome: (page) => page.entries,
-      }),
+    onNone: () => Option.none(),
+    onSome: (present) => AsyncData.getData(present.transcript),
   });
+
+const entriesIn = (channel: Channel | undefined): readonly EntryView[] =>
+  Option.match(pageIn(channel), { onNone: () => [], onSome: (page) => page.entries });
 
 const awaitingIn = (bot: string, channel: Channel | undefined): readonly ApprovalView[] =>
   Option.match(statusIn(channel), {
@@ -73,7 +71,7 @@ const awaitingRow = (approval: ApprovalView, h: HtmlBuilder<Message>): Html =>
     ],
   );
 
-const runRow = (bot: string, run: ActiveRunView, h: HtmlBuilder<Message>): Html =>
+const runRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder<Message>): Html =>
   h.keyed("div")(
     "run",
     [h.Class("streamline")],
@@ -84,10 +82,30 @@ const runRow = (bot: string, run: ActiveRunView, h: HtmlBuilder<Message>): Html 
         [
           h.p(
             [h.Class("live")],
-            [`${runTitle(run)} — running ${elapsedOf(run.startedAt, FIXTURE_NOW)}`],
+            [`${runTitle(run)} — running ${elapsedOf(run.startedAt, now)}`],
           ),
           h.span([h.Class("bar indeterminate")], [h.i([])]),
         ],
+      ),
+    ],
+  );
+
+/**
+ * The route pages backwards by entry id, so the only way to reach an older page
+ * is this button. It is the `nextBefore` cursor made clickable; without it the
+ * cursor would never be spent.
+ */
+const earlierRow = (bot: string, h: HtmlBuilder<Message>): Html =>
+  h.div(
+    [],
+    [
+      h.button(
+        [
+          h.Class("btn ghost"),
+          h.DataAttribute("load", "earlier"),
+          h.OnClick(Message.ClickedLoadEarlier({ bot })),
+        ],
+        ["Load earlier"],
       ),
     ],
   );
@@ -99,11 +117,15 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
 
   const body: readonly Html[] = [
     h.div([h.Class("dayline")], ["Today"]),
+    ...Option.match(pageIn(channel), {
+      onNone: () => [],
+      onSome: (page) => (page.nextBefore === undefined ? [] : [earlierRow(bot, h)]),
+    }),
     ...entriesIn(channel).map((entry) => messageRow(entry, h)),
     ...awaitingIn(bot, channel).map((approval) => awaitingRow(approval, h)),
     ...Option.match(run, {
       onNone: () => [],
-      onSome: (active) => [runRow(bot, active, h)],
+      onSome: (active) => [runRow(bot, active, model.now, h)],
     }),
     h.div([h.Class("pad")]),
   ];

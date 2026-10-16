@@ -2,7 +2,6 @@ import type { ActiveRunView, ApprovalView } from "@mackbot/web-contract";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { elapsedOf } from "./format.ts";
-import { FIXTURE_NOW } from "./fixture.ts";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, runTitle } from "./partials.ts";
@@ -29,7 +28,12 @@ const draftOf = (approval: ApprovalView, h: HtmlBuilder<Message>): readonly Html
   ];
 };
 
-const approvalCard = (bot: string, approval: ApprovalView, h: HtmlBuilder<Message>): Html =>
+const approvalCard = (
+  bot: string,
+  approval: ApprovalView,
+  now: number,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.keyed("div")(
     approval.approvalId,
     [
@@ -87,12 +91,17 @@ const approvalCard = (bot: string, approval: ApprovalView, h: HtmlBuilder<Messag
       ),
       h.div(
         [h.Class("ap-foot")],
-        [`waiting ${elapsedOf(approval.requestedAt, FIXTURE_NOW)} · ${bot}`],
+        [`waiting ${elapsedOf(approval.requestedAt, now)} · ${bot}`],
       ),
     ],
   );
 
-const runningRow = (bot: string, run: ActiveRunView, h: HtmlBuilder<Message>): Html =>
+const runningRow = (
+  bot: string,
+  run: ActiveRunView,
+  now: number,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.keyed("div")(
     bot,
     [h.Class("runit"), h.DataAttribute("bot", bot)],
@@ -104,7 +113,7 @@ const runningRow = (bot: string, run: ActiveRunView, h: HtmlBuilder<Message>): H
           h.span([h.Class("rt")], [runTitle(run)]),
           h.span(
             [h.Class("rmeta")],
-            [`running ${elapsedOf(run.startedAt, FIXTURE_NOW)} · ${run.stream.state}`],
+            [`running ${elapsedOf(run.startedAt, now)} · ${run.stream.state}`],
           ),
           h.span([h.Class("bar indeterminate")], [h.i([])]),
         ],
@@ -155,10 +164,14 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
         [h.Class("scroll")],
         [
           h.section(
+            [h.Class("grp"), h.DataAttribute("group", "error"), h.Hidden(triage.notice === null)],
+            [h.div([h.Class("empty")], [h.p([], [triage.notice ?? ""])])],
+          ),
+          h.section(
             [h.Class("grp"), h.DataAttribute("group", "blocked"), h.Hidden(triage.blocked.length === 0)],
             [
               h.h2([], ["Blocked on you"]),
-              ...triage.blocked.map(({ bot, approval }) => approvalCard(bot, approval, h)),
+              ...triage.blocked.map(({ bot, approval }) => approvalCard(bot, approval, model.now, h)),
             ],
           ),
           h.section(
@@ -178,7 +191,7 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
             [h.Class("grp"), h.DataAttribute("group", "running"), h.Hidden(triage.running.length === 0)],
             [
               h.h2([], ["Running now"]),
-              ...triage.running.map(({ bot, run }) => runningRow(bot, run, h)),
+              ...triage.running.map(({ bot, run }) => runningRow(bot, run, model.now, h)),
             ],
           ),
           h.section(

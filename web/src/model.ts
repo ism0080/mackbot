@@ -29,6 +29,17 @@ export type Channel = typeof Channel.Type;
 
 export const Model = Schema.Struct({
   screen: Screen,
+  /**
+   * The client's clock, minted by the status Command and carried on its result.
+   * Relative labels ("waiting 4m") are a function of it, and a view cannot read
+   * a clock without making the same Model render differently over time.
+   */
+  now: Schema.Number,
+  /**
+   * The roster fetch itself, so the home can tell "no bots yet" from "the
+   * fleet did not answer". Per-bot failures are their own channel's `status`.
+   */
+  roster: AsyncData.Schema(Schema.Null, Schema.String).schema,
   channels: Schema.Record(Schema.String, Channel),
 });
 export type Model = typeof Model.Type;

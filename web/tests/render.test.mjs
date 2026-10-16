@@ -1,157 +1,148 @@
 /*
- * Headless render check for the built app.
+ * The triage home and transcripts, rendered by the built app from the real
+ * routes.
  *
- * The desktop browser is the real verification; this exists so the same four
- * interactions can be re-run without one. It boots the production bundle (which
- * is what `bun run build` produced) in a DOM and drives it by clicking.
+ * The app fetches over HTTP; the stub in `tests/support/stub.mjs` answers the
+ * two documented routes with the recorded fixture payloads. The assertions are
+ * the same interactions the desktop browser is the real verification for, plus
+ * the requests the app made and the entries the stub returned.
  */
-import { readdirSync, readFileSync } from "node:fs";
-import { Window } from "happy-dom";
+import { Effect, Schema } from "effect";
 
-const ASSETS = new URL("../dist/assets/", import.meta.url);
-const files = readdirSync(ASSETS);
-const bundle = new URL(files.find((name) => name.endsWith(".js")), ASSETS);
-const css = readFileSync(
-  new URL(files.find((name) => name.endsWith(".css")), ASSETS),
-  "utf8",
-);
+import { BotViewSchema, TranscriptPageSchema } from "../../src/web-contract.ts";
+import { STATUS_RESPONSE, TRANSCRIPTS } from "./fixture.mjs";
+import { boot, makeChecker } from "./support/app.mjs";
+import { startStub } from "./support/stub.mjs";
 
-const window = new Window({ url: "http://localhost:5273/" });
-const globals = globalThis;
-globals.window = window;
-globals.self = window;
-globals.document = window.document;
-for (const key of [
-  "navigator",
-  "location",
-  "history",
-  "MutationObserver",
-  "requestAnimationFrame",
-  "cancelAnimationFrame",
-  "matchMedia",
-  "getComputedStyle",
-  "CSSStyleSheet",
-  "HTMLElement",
-  "Element",
-  "Node",
-  "Event",
-  "CustomEvent",
-  "EventTarget",
-  "MouseEvent",
-  "DocumentFragment",
-  "Text",
-  "Comment",
-  "SVGElement",
-  "XMLSerializer",
-  "DOMParser",
-  "performance",
-]) {
-  const value = window[key];
-  if (value !== undefined) globals[key] = value;
+const decode = (schema, label, value) =>
+  Effect.runSync(
+    Schema.decodeUnknownEffect(schema)(value).pipe(
+      Effect.catch((cause) => {
+        console.error(`fixture does not match ${label}: ${cause}`);
+        return Effect.die(cause);
+      }),
+    ),
+  );
+
+for (const [bot, view] of Object.entries(STATUS_RESPONSE.bots)) {
+  decode(BotViewSchema, `BotView(${bot})`, view);
+}
+for (const [bot, page] of Object.entries(TRANSCRIPTS)) {
+  decode(TranscriptPageSchema, `TranscriptPage(${bot})`, page);
 }
 
-window.document.body.innerHTML = '<div id="root"></div>';
-window.document.head.insertAdjacentHTML("beforeend", `<style>${css}</style>`);
+const stub = startStub({
+  status: STATUS_RESPONSE,
+  transcripts: {
+    hermes: () => TRANSCRIPTS.hermes,
+    scribe: () => TRANSCRIPTS.scribe,
+  },
+});
 
-const failures = [];
-const check = (label, condition, detail) => {
-  if (condition) {
-    console.log(`ok   ${label}`);
-    return;
-  }
-  failures.push(label);
-  console.log(`FAIL ${label}${detail === undefined ? "" : ` — ${detail}`}`);
-};
+const { check, finish } = makeChecker();
+const app = await boot(stub.origin);
+const { settle, query, all, text, display, waitFor, click } = app;
 
-const errors = [];
-window.addEventListener("error", (event) => errors.push(event.message));
-window.addEventListener("unhandledrejection", (event) =>
-  errors.push(String(event.reason)),
-);
+try {
+  await waitFor(() => all(".doneitem").length === 2, "both transcripts loaded");
 
-await import(bundle.href);
-const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
-await settle();
+  // 1 — the triage home renders all three sections from the stub's payloads.
+  check("home has the tall header", text(".hdr.tall h1") === "Needs you");
+  check(
+    "header count matches the payloads",
+    text(".hdr.tall .hdr-sub") === "2 bots · 1 blocked · 1 running",
+  );
+  check(
+    "blocked section is shown and the all-clear is not",
+    display('[data-group="blocked"]') !== "none" && display('[data-group="empty"]') === "none",
+  );
+  check("running section is shown", display('[data-group="running"]') !== "none");
+  check("recent section is shown", display('[data-group="recent"]') !== "none");
+  check("no error notice for a clean roster", display('[data-group="error"]') === "none");
+  check("one approval card", all("[data-approval]").length === 1);
+  check("approval names the tool", text(".ap-tool") === "botmail.send");
+  check("running row is derived from activeRun", text(".runit .rt") === "Reconciling March invoices");
+  check(
+    "since-you-last-looked lists one entry per bot",
+    all(".doneitem").length === 2 &&
+      all(".doneitem .rt").map((node) => node.textContent.trim()).join("|") ===
+        "Calendar hold moved to Thursday 10:00.|Q3 kickoff notes, 4 decisions",
+  );
 
-const query = (selector) => window.document.querySelector(selector);
-const all = (selector) => [...window.document.querySelectorAll(selector)];
-const text = (selector) => query(selector)?.textContent?.trim() ?? "";
-const display = (selector) => {
-  const element = query(selector);
-  return element === null ? "missing" : window.getComputedStyle(element).display;
-};
+  // 2 — the draft preview expands on click.
+  const draft = query("details.ap-draft");
+  check("draft is closed", draft.open === false);
+  check("draft body is in the DOM", query(".ap-draft pre").textContent.includes("Hi Dana,"));
+  click(query(".ap-draft summary"));
+  await settle();
+  check("draft expands", draft.open === true);
 
-// 1 — the triage home renders all three sections with the fixture data.
-check("home has the tall header", text(".hdr.tall h1") === "Needs you");
-check("header count matches the fixture", text(".hdr.tall .hdr-sub") === "2 bots · 1 blocked · 1 running");
-check(
-  "blocked section is shown and the all-clear is not",
-  display('[data-group="blocked"]') !== "none" &&
-    display('[data-group="empty"]') === "none",
-);
-check("running section is shown", display('[data-group="running"]') !== "none");
-check("recent section is shown", display('[data-group="recent"]') !== "none");
-check("one approval card", all("[data-approval]").length === 1);
-check("approval names the tool", text(".ap-tool") === "botmail.send");
-check("running row is derived from activeRun", text(".runit .rt") === "Reconciling March invoices");
-check(
-  "since-you-last-looked lists one entry per bot",
-  all(".doneitem").length === 2 &&
-    all(".doneitem .rt").map((node) => node.textContent.trim()).join("|") ===
-      "Calendar hold moved to Thursday 10:00.|Q3 kickoff notes, 4 decisions",
-);
+  // 3 — the transcript is reachable from an item.
+  const scribeRow = all(".doneitem").find(
+    (node) => node.querySelector(".rmeta").textContent.startsWith("Scribe"),
+  );
+  click(scribeRow);
+  await settle();
+  check("transcript opens", text(".hdr h1") === "Scribe");
+  check("transcript renders the model label", text(".hdr .hdr-sub") === "longcat-2.5-preview-free");
+  check("transcript renders session entries", all("[data-entry]").length === 3);
+  check("transcript shows no approval reference for scribe", all(".ap-ref").length === 0);
+  check("no load-earlier control on a complete page", query("[data-load]") === null);
+  click(query(".icon"));
+  await settle();
+  check("back returns to the home", text(".hdr.tall h1") === "Needs you");
 
-// 2 — the draft preview expands on click.
-const draft = query("details.ap-draft");
-check("draft is closed", draft.open === false);
-check("draft body is in the DOM", query(".ap-draft pre").textContent.includes("Hi Dana,"));
-query(".ap-draft summary").dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
-await settle();
-check("draft expands", draft.open === true);
+  // 4 — the approval is reachable from the home and the transcript shows it too.
+  click(query(".ap-review"));
+  await settle();
+  check("review opens the owning bot's transcript", text(".hdr h1") === "Hermes");
+  check("transcript references the pending approval", all(".ap-ref").length === 1);
+  check("transcript shows the in-flight run", text(".live").includes("Reconciling March invoices"));
+  check(
+    "a cron entry with no timestamp renders the origin with no clock",
+    all(".origin").map((node) => node.textContent.trim()).join("|") === "cron",
+  );
+  click(query(".icon"));
+  await settle();
 
-// 3 — the transcript is reachable from an item.
-const scribeRow = all(".doneitem").find(
-  (node) => node.querySelector(".rmeta").textContent.startsWith("Scribe"),
-);
-scribeRow.click();
-await settle();
-check("transcript opens", text(".hdr h1") === "Scribe");
-check("transcript renders the model label", text(".hdr .hdr-sub") === "longcat-2.5-preview-free");
-check("transcript renders session entries", all("[data-entry]").length === 3);
-check(
-  "transcript shows no approval reference for scribe",
-  all(".ap-ref").length === 0,
-);
-query(".icon").click();
-await settle();
-check("back returns to the home", text(".hdr.tall h1") === "Needs you");
+  // 5 — Allow retires the approval everywhere at once.
+  click(query(".btn.primary"));
+  await settle();
+  check("headline goes all-clear", text(".hdr.tall h1") === "Nothing needs you");
+  check("header count drops the blocked one", text(".hdr.tall .hdr-sub") === "2 bots · 0 blocked · 1 running");
+  check("blocked section collapses", display('[data-group="blocked"]') === "none");
+  check("all-clear section appears", display('[data-group="empty"]') !== "none");
+  check("all-clear note names the busy bot", text('[data-group="empty"] p').includes("Hermes"));
+  check("no approval card remains", all("[data-approval]").length === 0);
+  check("running section survives", text(".runit .rt") === "Reconciling March invoices");
 
-// 4 — the approval is reachable from the home and the transcript shows it too.
-query(".ap-review").click();
-await settle();
-check("review opens the owning bot's transcript", text(".hdr h1") === "Hermes");
-check("transcript references the pending approval", all(".ap-ref").length === 1);
-check("transcript shows the in-flight run", text(".live").includes("Reconciling March invoices"));
-query(".icon").click();
-await settle();
+  click(query(".doneitem"));
+  await settle();
+  check("transcript for the approved bot opens", text(".hdr h1") === "Hermes");
+  check("approval reference is gone from the transcript", all(".ap-ref").length === 0);
 
-// 5 — Allow retires the approval everywhere at once.
-query(".btn.primary").click();
-await settle();
-check("headline goes all-clear", text(".hdr.tall h1") === "Nothing needs you");
-check("header count drops the blocked one", text(".hdr.tall .hdr-sub") === "2 bots · 0 blocked · 1 running");
-check("blocked section collapses", display('[data-group="blocked"]') === "none");
-check("all-clear section appears", display('[data-group="empty"]') !== "none");
-check("all-clear note names the busy bot", text(".empty p").includes("Hermes"));
-check("no approval card remains", all("[data-approval]").length === 0);
-check("running section survives", text(".runit .rt") === "Reconciling March invoices");
+  // 6 — the requests the app made.
+  const calls = stub.requests.map((request) => `${request.method} ${request.path}`);
+  check(
+    "the app asked for the roster and both transcripts",
+    calls.length === 3 &&
+      calls[0] === "GET /status" &&
+      calls.slice(1).sort().join("|") === "GET /transcript/hermes|GET /transcript/scribe",
+    calls.join("; "),
+  );
+  const transcriptQueries = stub.requests
+    .filter((request) => request.path.startsWith("/transcript/"))
+    .map((request) => request.query);
+  check(
+    "each transcript request carries the limit the app asked for",
+    transcriptQueries.length === 2 &&
+      transcriptQueries.every((query) => query.limit === "50" && query.before === undefined),
+    JSON.stringify(transcriptQueries),
+  );
 
-query(".doneitem").click();
-await settle();
-check("transcript for the approved bot opens", text(".hdr h1") === "Hermes");
-check("approval reference is gone from the transcript", all(".ap-ref").length === 0);
+  check("no console errors", app.pageErrors.length === 0, app.pageErrors.join("; "));
+} finally {
+  stub.stop();
+}
 
-check("no console errors", errors.length === 0, errors.join("; "));
-
-console.log(failures.length === 0 ? "\nall checks passed" : `\n${failures.length} failed`);
-process.exit(failures.length === 0 ? 0 : 1);
+finish();
