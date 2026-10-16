@@ -1,41 +1,174 @@
 /* The app's own styles, lifted from the verified sketch's variant d
    (triage home + per-bot transcript). Only the rules that design needs are
-   kept; the sketch's variant switcher, sheets and toast are not part of it. */
+   kept; the sketch's variant switcher, sheets and toast are not part of it.
+
+   The design is dark only on purpose: a bot console has one look, so there is
+   one token set and no `light-dark()` pair. `color-scheme: dark` and its meta
+   tag keep the browser chrome and the pre-CSS canvas dark as well. */
+
+/* ---------- tokens ---------- */
 
 :root {
-  --bg: #0a0b0d;
-  --surface: #14161a;
-  --surface2: #1b1f26;
-  --line: #272c35;
-  --text: #eceef1;
-  --muted: #8a92a0;
-  --accent: #6ea8fe;
-  --ok: #4ade80;
-  --warn: #fbbf24;
+  color-scheme: dark;
+
+  /* Base colours, written in oklch. Grays, white and black carry `none` as the
+     hue, so mixing one with a colour never drags the result toward red. */
+  --black: oklch(0% 0 none);
+  --white: oklch(100% 0 none);
+  --bg: oklch(14.93% 0.0046 none);
+  --bg-deep: oklch(12.29% 0.0108 none);
+  --surface: oklch(19.98% 0.0086 none);
+  --surface2: oklch(23.83% 0.0147 none);
+  --line: oklch(29.21% 0.0179 none);
+  --text: oklch(94.84% 0.0046 none);
+  --muted: oklch(65.8% 0.0228 none);
+  --accent: oklch(72.87% 0.1398 258.1);
+  --violet: oklch(62% 0.16 290);
+  --ok: oklch(80.03% 0.1821 151.7);
+  --warn: oklch(83.69% 0.1644 84.4);
+
+  /* The warm text ramp. These are bases, not tints: each is a different
+     lightness, and the old pair that differed only by a hair (the draft body
+     and the reference text) is now one token. */
+  --warn-ink: oklch(89.86% 0.1059 83.8);
+  --warn-strong: oklch(93.59% 0.0363 87.8);
+  --warn-body: oklch(85.11% 0.0334 85.5);
+  --warn-muted: oklch(80.89% 0.0412 84.6);
+  --warn-faint: oklch(69% 0.0529 88);
+  --accent-ink: oklch(84.89% 0.0711 266.4);
+
+  /* Every tint, border and transparency is derived from a base, never written
+     by hand, so a change to a base carries through all of them. */
+  --text-soft: color-mix(in oklch, var(--text) 45%, var(--muted));
+  --track: color-mix(in oklch, var(--line) 60%, var(--surface2));
+  --hdr-bg: color-mix(in oklch, var(--surface) 86%, transparent);
+  --shadow: color-mix(in oklch, var(--black) 70%, transparent);
+  --sweep: color-mix(in oklch, var(--white) 45%, transparent);
+  --accent-soft: color-mix(in oklch, var(--accent) 20%, var(--bg-deep));
+  --accent-line: color-mix(in oklch, var(--accent) 40%, var(--surface));
+  --accent-bubble: color-mix(in oklch, var(--accent) 32%, var(--bg-deep));
+  --accent-bubble-line: color-mix(in oklch, var(--accent) 45%, var(--bg-deep));
+  --av-bg: color-mix(in oklch, var(--accent) 28%, var(--bg));
+  --av-alt-bg: color-mix(in oklch, var(--violet) 30%, var(--bg));
+  --av-alt-fg: color-mix(in oklch, var(--violet) 45%, var(--white));
+  --warn-soft: color-mix(in oklch, var(--warn) 14%, var(--bg));
+  --warn-quiet: color-mix(in oklch, var(--warn) 7%, var(--bg));
+  --warn-line: color-mix(in oklch, var(--warn) 35%, var(--bg));
+  --warn-line-soft: color-mix(in oklch, var(--warn) 30%, var(--bg));
+  --warn-veil: color-mix(in oklch, var(--warn) 6%, transparent);
+  --ok-soft: color-mix(in oklch, var(--ok) 22%, var(--bg-deep));
+
   --r: 14px;
+
+  /* One fluid type scale. It is measured against the app shell, not the window:
+     the shell is a fixed 390px on desktop, so a `vw` clamp would follow the
+     desktop window instead, and `100cqi` (the shell's inline size, set on
+     `.screen` below) is the correct axis. Each step runs from its 320px value
+     to its 370px value, and past 370px it holds the wide value, which is the
+     size the verified design used. */
+  --narrow: 20;
+  --wide: 23.125;
+  --fluid: clamp(0rem, (100cqi - var(--narrow) * 1rem) / (var(--wide) - var(--narrow)), 1rem);
+  --at-narrow: calc(1rem - var(--fluid));
+
+  --step-6: calc(1.5 * var(--at-narrow) + 1.625 * var(--fluid));
+  --step-5: calc(1.25 * var(--at-narrow) + 1.375 * var(--fluid));
+  --step-4: calc(1 * var(--at-narrow) + 1.125 * var(--fluid));
+  --step-3: calc(1 * var(--at-narrow) + 1.0625 * var(--fluid));
+  --step-2: calc(1 * var(--at-narrow) + 1 * var(--fluid));
+  --step-1: calc(0.9375 * var(--at-narrow) + 1 * var(--fluid));
+  --step-0: calc(0.875 * var(--at-narrow) + 0.9375 * var(--fluid));
+  --step--1: calc(0.8125 * var(--at-narrow) + 0.875 * var(--fluid));
+  --step--2: calc(0.75 * var(--at-narrow) + 0.8125 * var(--fluid));
+  --step--3: calc(0.6875 * var(--at-narrow) + 0.75 * var(--fluid));
+  --step--4: calc(0.625 * var(--at-narrow) + 0.6875 * var(--fluid));
 }
 
-* {
+/* ---------- reset ---------- */
+
+*,
+*::before,
+*::after {
   box-sizing: border-box;
+  min-width: 0;
+}
+
+:root {
+  interpolate-size: allow-keywords;
+  scrollbar-gutter: stable;
+  text-wrap: pretty;
+  overflow-wrap: break-word;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  margin: 0;
+  min-height: 100svh;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  text-wrap: balance;
+}
+
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+input,
+textarea,
+select {
+  font-size: max(16px, 1rem);
+}
+
+button,
+a,
+[role="button"] {
+  touch-action: manipulation;
+}
+
+button,
+[role="button"] {
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 /* Author rules that set `display` beat the browser's own `[hidden]` rule. The
-   triage sections collapse by `hidden`, and each sets its own `display`, so the
-   attribute has to be defended once here or every empty section shows. */
+   triage sections collapse by `hidden`, and each one sets its own `display`, so
+   the attribute has to be defended once here or every empty section shows. */
 [hidden] {
   display: none !important;
 }
 
+/* ---------- base ---------- */
+
 html,
 body {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: #05060a;
+  background: var(--bg-deep);
   color: var(--text);
-  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
-  -webkit-font-smoothing: antialiased;
-  overscroll-behavior: none;
+  font: 1rem/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+}
+
+html {
+  overscroll-behavior-y: none;
+}
+
+/* On a trackpad a page with fixed UI stretches past its edge; on a touch
+   screen the rubber-band bounce is the expected feel, so give it back. */
+@media (any-pointer: coarse) {
+  html {
+    overscroll-behavior-y: auto;
+  }
 }
 
 button {
@@ -47,13 +180,75 @@ button {
   cursor: pointer;
 }
 
+/* ---------- focus, hover, press ---------- */
+
+:focus-visible {
+  outline: max(2px, 0.08em) solid currentColor;
+  outline-offset: 0.25em;
+}
+
+/* The filled button sits on the accent, so a currentColor ring would be
+   near-black on near-black; the reference says to ring it in its own colour. */
+.btn.primary:focus-visible {
+  outline-color: var(--accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .btn:hover {
+    background: color-mix(in oklch, var(--surface2), var(--white) 8%);
+  }
+
+  .btn.primary:hover {
+    background: color-mix(in oklch, var(--accent), var(--black) 12%);
+    border-color: color-mix(in oklch, var(--accent), var(--black) 12%);
+  }
+
+  .ap-review:hover {
+    background: color-mix(in oklch, var(--warn) 12%, transparent);
+  }
+
+  .icon:hover {
+    color: var(--text);
+    background: var(--surface2);
+  }
+
+  .doneitem:hover {
+    background: color-mix(in oklch, var(--surface), var(--white) 4%);
+  }
+
+  .ap-ref:hover {
+    background: color-mix(in oklch, var(--warn-quiet), var(--white) 4%);
+  }
+}
+
+/* The tap highlight is off in the reset, so every pressable element has to give
+   its own press feedback. */
+.btn:active,
+.ap-review:active,
+.doneitem:active,
+.icon:active {
+  transform: scale(0.97);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .btn,
+  .ap-review,
+  .doneitem,
+  .icon {
+    transition: transform 160ms ease-out;
+  }
+}
+
 /* ---------- screen shell ---------- */
 
 .screen {
-  height: 100dvh;
+  /* The query container for the type scale above. Every fluid token resolves
+     `100cqi` here, on the shell, not on the desktop window. */
+  container-type: inline-size;
+  block-size: 100dvh;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: clip;
   background: var(--bg);
 }
 
@@ -64,11 +259,11 @@ button {
   }
 
   .screen {
-    width: 390px;
-    height: min(844px, calc(100dvh - 28px));
+    inline-size: 390px;
+    block-size: min(844px, calc(100dvh - 28px));
     border: 10px solid var(--surface2);
     border-radius: 46px;
-    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.7);
+    box-shadow: 0 30px 90px var(--shadow);
   }
 }
 
@@ -80,29 +275,34 @@ button {
   align-items: center;
   gap: 10px;
   padding: 10px 14px;
-  padding-top: calc(10px + env(safe-area-inset-top));
-  background: rgba(20, 22, 26, 0.86);
+  padding-block-start: calc(10px + env(safe-area-inset-top, 0px));
+  background: var(--hdr-bg);
   backdrop-filter: blur(14px);
-  border-bottom: 1px solid var(--line);
-  min-height: 52px;
+  border-block-end: 1px solid var(--line);
+  min-block-size: 52px;
 }
 
 .hdr.tall {
-  display: block;
-  padding-bottom: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding-block-end: 14px;
+}
+
+.hdr.tall .hdr-sub {
+  margin-inline-start: 0;
 }
 
 .hdr.tall h1 {
-  font-size: 26px;
+  font-size: var(--step-6);
   letter-spacing: -0.02em;
-  margin: 4px 0 2px;
 }
 
 .hdr-main {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 0;
 }
 
 .hdr-main.stacked {
@@ -112,28 +312,37 @@ button {
 }
 
 .hdr h1 {
-  font-size: 17px;
+  font-size: var(--step-3);
   font-weight: 600;
   margin: 0;
   white-space: nowrap;
 }
 
 .hdr-sub {
-  font-size: 12px;
+  font-size: var(--step--2);
   color: var(--muted);
-  margin-left: auto;
+  margin-inline-start: auto;
+  font-variant-numeric: tabular-nums;
 }
 
 .hdr-main.stacked .hdr-sub {
-  margin-left: 0;
+  margin-inline-start: 0;
 }
 
 .icon {
-  font-size: 22px;
+  position: relative;
+  font-size: var(--step-5);
   line-height: 1;
   color: var(--muted);
   padding: 2px 6px;
   border-radius: 8px;
+}
+
+/* The glyph is under 44px; this grows the tap area without moving it. */
+.icon::after {
+  content: "";
+  position: absolute;
+  inset: min(0px, (100% - 44px) / 2);
 }
 
 /* ---------- scroll region ---------- */
@@ -141,43 +350,49 @@ button {
 .scroll {
   flex: 1;
   overflow-y: auto;
-  overscroll-behavior-y: contain;
-  -webkit-overflow-scrolling: touch;
-  padding: 12px 14px 18px;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding-block: 12px 18px;
+  padding-inline: 14px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  font-size: var(--step-2);
 }
 
 /* ---------- avatar, tags ---------- */
 
+/* The avatar keeps its own radius scale rather than nesting concentrically in
+   each row: it is a tile of a fixed size on a fixed scale, the row padding is
+   not even (11px block, 12px inline), and a concentric inner radius would fall
+   to 1px or 2px and square the tile off. */
 .av {
   flex: none;
-  width: 38px;
-  height: 38px;
+  inline-size: 38px;
+  block-size: 38px;
   border-radius: 12px;
   display: grid;
   place-items: center;
   font-weight: 600;
-  font-size: 15px;
-  background: #24304a;
-  color: #b8cdfd;
+  font-size: var(--step-1);
+  background: var(--av-bg);
+  color: var(--accent-ink);
 }
 
 .av.sm {
-  width: 28px;
-  height: 28px;
+  inline-size: 28px;
+  block-size: 28px;
   border-radius: 9px;
-  font-size: 12px;
+  font-size: var(--step--2);
 }
 
 .av.alt {
-  background: #2c2a44;
-  color: #cfc2fd;
+  background: var(--av-alt-bg);
+  color: var(--av-alt-fg);
 }
 
 .tag {
-  font-size: 10px;
+  font-size: var(--step--4);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 2px 6px;
@@ -188,15 +403,15 @@ button {
 }
 
 .tag.work {
-  color: #9fc2ff;
-  border-color: #2c4470;
-  background: #16203a;
+  color: var(--accent-ink);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 .tag.warn {
-  color: #ffd88a;
-  border-color: #5b4415;
-  background: #2a2010;
+  color: var(--warn-ink);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
 }
 
 /* ---------- triage groups ---------- */
@@ -205,15 +420,14 @@ button {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 10px;
 }
 
 .grp h2 {
-  font-size: 11px;
+  font-size: var(--step--3);
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--muted);
-  margin: 8px 0 0;
+  margin: 0;
   font-weight: 600;
 }
 
@@ -222,7 +436,7 @@ button {
   display: flex;
   gap: 10px;
   align-items: center;
-  text-align: left;
+  text-align: start;
   padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: var(--r);
@@ -230,7 +444,6 @@ button {
 }
 
 .runit-main {
-  min-width: 0;
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -238,42 +451,46 @@ button {
 }
 
 .rt {
-  font-size: 14px;
+  font-size: var(--step-0);
   font-weight: 500;
 }
 
 .rmeta {
-  font-size: 11px;
+  font-size: var(--step--3);
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 .bar {
   display: block;
-  height: 3px;
+  block-size: 3px;
   border-radius: 2px;
-  background: #232936;
-  overflow: hidden;
+  background: var(--track);
+  overflow: clip;
 }
 
 .bar i {
   display: block;
-  height: 100%;
+  block-size: 100%;
   background: var(--accent);
   position: relative;
-}
-
-.bar i::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
-  animation: sweep 1.6s linear infinite;
 }
 
 /* Without a real fraction, a bar with a width is a lie. A bot on step 4 of 7 is
    not 52% done, so the bar only claims "still moving". */
 .bar.indeterminate i {
-  width: 100%;
+  inline-size: 100%;
+}
+
+/* The sweep is decoration, so it runs only when motion is welcome. */
+@media (prefers-reduced-motion: no-preference) {
+  .bar i::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(90deg, transparent, var(--sweep), transparent);
+    animation: sweep 1.6s linear infinite;
+  }
 }
 
 @keyframes sweep {
@@ -286,16 +503,17 @@ button {
 }
 
 .doneitem {
-  width: 100%;
+  inline-size: 100%;
+  min-block-size: 44px;
 }
 
 .chev {
   color: var(--muted);
-  font-size: 18px;
+  font-size: var(--step-4);
 }
 
 .pad {
-  height: 24px;
+  block-size: 24px;
 }
 
 /* ---------- empty state ---------- */
@@ -306,41 +524,52 @@ button {
   align-items: center;
   gap: 8px;
   text-align: center;
-  padding: 22px 16px;
+  padding-block: 22px;
+  padding-inline: 16px;
   border: 1px dashed var(--line);
   border-radius: var(--r);
   background: var(--surface);
 }
 
 .empty-mark {
-  width: 34px;
-  height: 34px;
+  inline-size: 34px;
+  block-size: 34px;
   border-radius: 50%;
   display: grid;
   place-items: center;
-  background: #14301f;
+  background: var(--ok-soft);
   color: var(--ok);
-  font-size: 17px;
+  font-size: var(--step-4);
 }
 
 .empty p {
   margin: 0;
-  font-size: 13px;
+  font-size: var(--step--1);
   color: var(--muted);
-  max-width: 30ch;
+  max-inline-size: 30ch;
 }
 
 /* ---------- approval card ---------- */
 
+/* The outer radius is derived from the inner one plus the padding, so the card
+   and the draft inside it are concentric and the gap between the curves is even
+   all the way round. */
 .approval {
-  border: 1px solid #5b4415;
-  background: linear-gradient(180deg, #241c0c, #1a1610);
-  border-radius: var(--r);
-  padding: 12px;
+  --radius: 10px;
+  --pad: 12px;
+
+  border: 1px solid var(--warn-line);
+  background: linear-gradient(180deg, var(--warn-soft), var(--warn-quiet));
+  border-radius: calc(var(--radius) + var(--pad));
+  padding: var(--pad);
   display: flex;
   flex-direction: column;
   gap: 10px;
-  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.06);
+  box-shadow: 0 0 0 1px var(--warn-veil);
+}
+
+.approval > * {
+  border-radius: var(--radius);
 }
 
 .ap-head {
@@ -350,39 +579,50 @@ button {
 }
 
 .ap-tool {
-  font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #ffd88a;
+  font-size: var(--step--2);
+  line-height: 1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--warn-ink);
 }
 
 .ap-review {
-  margin-left: auto;
-  font-size: 12px;
+  margin-inline-start: auto;
+  font-size: var(--step--2);
   font-weight: 600;
-  color: #ffd88a;
-  padding: 5px 8px;
+  color: var(--warn-ink);
+  padding-block: 18px;
+  padding-inline: 8px;
   border-radius: 8px;
+  text-box: trim-both cap alphabetic;
 }
 
 .ap-q {
   margin: 0;
-  font-size: 14px;
-  color: #f4e9cf;
+  font-size: var(--step-0);
+  color: var(--warn-strong);
 }
 
 /* An approval that authorizes a real effect has to show the effect. Without the
    draft you are approving an email you have never read. */
 .ap-draft {
-  border: 1px solid #4a3a14;
-  border-radius: 10px;
-  background: #1b1710;
-  padding: 0 10px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--warn-line-soft);
+  background: var(--warn-quiet);
+  padding-inline: 10px;
+}
+
+.ap-draft[open] {
+  padding-block-end: 10px;
 }
 
 .ap-draft > summary {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   cursor: pointer;
   list-style: none;
-  padding: 9px 0;
+  padding-block: 9px;
 }
 
 .ap-draft > summary::-webkit-details-marker {
@@ -391,18 +631,21 @@ button {
 
 .ap-draft-label {
   display: block;
-  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #ffd88a;
-  margin-bottom: 4px;
+  font-size: var(--step--3);
+  line-height: 1.4;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--warn-ink);
 }
 
 .ap-draft-peek {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+  /* The one place `hidden` stays: the reference warns that `clip` with a line
+     clamp is untested in Firefox, and the clamp needs one of the two. */
   overflow: hidden;
-  font-size: 13px;
-  color: #cdbfa3;
+  font-size: var(--step--1);
+  color: var(--warn-muted);
 }
 
 .ap-draft[open] .ap-draft-peek {
@@ -410,11 +653,30 @@ button {
 }
 
 .ap-draft pre {
-  margin: 0 0 10px;
-  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-  color: #d8cdb6;
+  margin: 0;
+  font-size: var(--step--1);
+  line-height: 1.5;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--warn-body);
   white-space: pre-wrap;
-  word-break: break-word;
+}
+
+/* The draft is a `<details>` accordion; the entry animates its height. */
+details::details-content {
+  block-size: 0;
+  overflow: clip;
+}
+
+details[open]::details-content {
+  block-size: auto;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  details::details-content {
+    transition:
+      block-size 0.3s ease-out,
+      content-visibility 0.3s allow-discrete;
+  }
 }
 
 .ap-actions {
@@ -423,25 +685,28 @@ button {
 }
 
 .ap-foot {
-  font-size: 11px;
-  color: #a99a76;
+  font-size: var(--step--3);
+  color: var(--warn-faint);
+  font-variant-numeric: tabular-nums;
 }
 
 .btn {
-  font-size: 14px;
+  font-size: var(--step-0);
   font-weight: 600;
-  padding: 9px 14px;
+  padding-block: 16px;
+  padding-inline: 14px;
   border-radius: 10px;
   border: 1px solid var(--line);
   color: var(--text);
   background: var(--surface2);
+  text-box: trim-both cap alphabetic;
 }
 
 .btn.primary {
   flex: 1;
   background: var(--accent);
   border-color: var(--accent);
-  color: #05060a;
+  color: var(--bg-deep);
 }
 
 .btn.ghost {
@@ -453,16 +718,19 @@ button {
 
 .dayline {
   text-align: center;
-  font-size: 11px;
+  font-size: var(--step--3);
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
-  padding: 4px 0 2px;
+  padding-block: 4px 2px;
 }
 
 .msg {
-  max-width: 86%;
-  font-size: 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-inline-size: 86%;
+  font-size: var(--step-1);
 }
 
 .msg p {
@@ -473,39 +741,46 @@ button {
   align-self: flex-start;
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: var(--r) var(--r) var(--r) 5px;
+  border-start-start-radius: var(--r);
+  border-start-end-radius: var(--r);
+  border-end-end-radius: var(--r);
+  border-end-start-radius: 5px;
   padding: 10px 12px;
 }
 
 .msg.me {
   align-self: flex-end;
-  background: #1d3358;
-  border: 1px solid #2b4a7d;
-  border-radius: var(--r) var(--r) 5px var(--r);
+  background: var(--accent-bubble);
+  border: 1px solid var(--accent-bubble-line);
+  border-start-start-radius: var(--r);
+  border-start-end-radius: var(--r);
+  border-end-end-radius: 5px;
+  border-end-start-radius: var(--r);
   padding: 10px 12px;
 }
 
 .origin {
   display: block;
-  font-size: 10px;
+  font-size: var(--step--4);
   letter-spacing: 0.05em;
   text-transform: uppercase;
   color: var(--warn);
-  margin-bottom: 5px;
+  font-variant-numeric: tabular-nums;
 }
 
 .ap-ref {
   display: flex;
   align-items: center;
   gap: 8px;
-  width: 100%;
-  text-align: left;
+  inline-size: 100%;
+  min-block-size: 44px;
+  text-align: start;
   padding: 10px 12px;
-  border: 1px dashed #5b4415;
+  border: 1px dashed var(--warn-line);
   border-radius: var(--r);
-  background: #1a1610;
-  font-size: 13px;
-  color: #d8c9a4;
+  background: var(--warn-quiet);
+  font-size: var(--step--1);
+  color: var(--warn-body);
 }
 
 .ap-ref-text {
@@ -516,7 +791,7 @@ button {
   display: flex;
   gap: 10px;
   align-items: flex-start;
-  text-align: left;
+  text-align: start;
   padding: 11px 12px;
   border: 1px solid var(--line);
   border-radius: var(--r);
@@ -525,6 +800,6 @@ button {
 
 .live {
   margin: 0;
-  font-size: 14px;
-  color: #aeb6c2;
+  font-size: var(--step-0);
+  color: var(--text-soft);
 }
