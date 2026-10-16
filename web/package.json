@@ -10,7 +10,7 @@
     "test": "bun run build && bun tests/render.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --config .oxlintrc.json",
-    "lint:css": "stylelint \"src/styles.css\"",
+    "lint:css": "stylelint \"src/**/*.css\"",
     "test:css": "bun stylelint/fixtures.test.mjs"
   },
   "dependencies": {

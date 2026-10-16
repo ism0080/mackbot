@@ -22,7 +22,7 @@ bun install
 
 bun run typecheck   # tsc --noEmit
 bun run lint        # oxlint (core profile + vendored forge plugin)
-bun run lint:css    # stylelint — the good-css rules over web/src/styles.css
+bun run lint:css    # stylelint — the good-css rules over every stylesheet under web/src
 bun run format      # oxfmt
 bun run test        # every tests/*.smoke.mjs in its own process
 bun run test:css    # prove each good-css rule still fires (web/stylelint/fixtures)
