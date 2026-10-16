@@ -1,0 +1,4 @@
+.card {
+  color: oklch(98% 0 0);
+  background: oklch(50% 0% 0deg);
+}

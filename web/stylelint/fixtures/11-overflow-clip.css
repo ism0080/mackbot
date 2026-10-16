@@ -1,0 +1,11 @@
+.card {
+  overflow: hidden;
+}
+
+.alt {
+  overflow-x: hidden;
+}
+
+.more {
+  overflow-y: hidden;
+}

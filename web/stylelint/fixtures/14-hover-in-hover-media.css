@@ -1,0 +1,3 @@
+.card:hover {
+  background: oklch(50% 0.02 240);
+}

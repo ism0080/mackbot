@@ -1,0 +1,17 @@
+/* Not a violation. good-css names left, right, top and bottom, not width and
+   height, and its own prescribed reset writes max-width and height on
+   img/svg/video. overflow-y is an axis, not a side. */
+img,
+svg,
+video {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.card {
+  width: 10rem;
+  min-height: 2rem;
+  overflow-y: auto;
+  overscroll-behavior-y: none;
+}

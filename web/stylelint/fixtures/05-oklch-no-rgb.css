@@ -1,0 +1,9 @@
+.card {
+  color: rgb(255 255 255);
+  background: rgba(0 0 0 / 0.5);
+}
+
+.alt {
+  color: hsl(200 50% 50%);
+  background: hsla(200, 50%, 50%, 0.5);
+}

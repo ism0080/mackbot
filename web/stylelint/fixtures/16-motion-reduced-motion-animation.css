@@ -1,0 +1,12 @@
+@keyframes slide {
+  from {
+    transform: translateX(-10px);
+  }
+  to {
+    transform: translateX(10px);
+  }
+}
+
+.card {
+  animation: slide 1s linear infinite;
+}

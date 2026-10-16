@@ -1,0 +1,7 @@
+.card {
+  transition: all 200ms ease-out;
+}
+
+.other {
+  transition-property: all;
+}

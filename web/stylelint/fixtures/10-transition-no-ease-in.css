@@ -1,0 +1,24 @@
+@keyframes pulse {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.card {
+  transition: opacity 200ms ease-in;
+}
+
+.other {
+  transition-timing-function: ease-in;
+}
+
+.third {
+  animation: pulse 1s ease-in;
+}
+
+.fourth {
+  animation-timing-function: ease-in;
+}
