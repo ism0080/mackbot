@@ -3,6 +3,9 @@ import { defineMessageUnion } from "foldkit/message";
 import * as Schema from "effect/Schema";
 
 export const Message = defineMessageUnion({
+  /** A poll tick. Update turns it into the `Status` Command unless one is
+   *  already outstanding. */
+  PolledStatus: {},
   ClickedOpenTranscript: { bot: Schema.String },
   ClickedLoadEarlier: { bot: Schema.String },
   ClickedBack: {},

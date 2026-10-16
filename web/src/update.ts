@@ -4,7 +4,7 @@ import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
 import type { Update } from "foldkit";
 
-import { Transcript } from "./api.ts";
+import { Status, Transcript } from "./api.ts";
 import { Message } from "./message.ts";
 import { Screen } from "./model.ts";
 import type { Channel, Model } from "./model.ts";
@@ -82,6 +82,10 @@ const decideInChannel = (
 
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
+    PolledStatus: () =>
+      model.polling
+        ? { model }
+        : { model: { ...model, polling: true }, commands: [Status()] },
     ClickedBack: () => ({
       model: modifyFields(model, { screen: () => Screen.Home() }),
     }),
@@ -123,10 +127,10 @@ export const update = (model: Model, message: Message) =>
         .filter((id) => dataOf(transcriptOf(model, id)) === undefined)
         .map((id) => Transcript({ bot: id }));
 
-      return { model: { ...model, roster: AsyncData.succeed(null), now: at, channels }, commands };
+      return { model: { ...model, roster: AsyncData.succeed(null), now: at, channels, polling: false }, commands };
     },
     StatusFailed: ({ error, at }) => ({
-      model: { ...model, roster: AsyncData.fail(error), now: at },
+      model: { ...model, roster: AsyncData.fail(error), now: at, polling: false },
     }),
     TranscriptLoaded: ({ bot, page, before }) => {
       const previous = dataOf(transcriptOf(model, bot));

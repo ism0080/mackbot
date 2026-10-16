@@ -30,6 +30,12 @@ export type Channel = typeof Channel.Type;
 export const Model = Schema.Struct({
   screen: Screen,
   /**
+   * Whether a `/status` request is outstanding. A poll that fires while one is
+   * still in flight must not dispatch a second one, so the gate lives in the
+   * Model where the poll can read it rather than in the Command.
+   */
+  polling: Schema.Boolean,
+  /**
    * The client's clock, minted by the status Command and carried on its result.
    * Relative labels ("waiting 4m") are a function of it, and a view cannot read
    * a clock without making the same Model render differently over time.

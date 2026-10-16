@@ -9,11 +9,13 @@ export const init = () => ({
     now: 0,
     roster: AsyncData.Idle(),
     channels: {},
+    polling: true,
   },
   commands: [Status()],
 });
 
 export { Model } from "./model.ts";
 export { Message } from "./message.ts";
+export { subscriptions } from "./subscriptions.ts";
 export { update } from "./update.ts";
 export { view } from "./view.ts";

@@ -1,7 +1,7 @@
 import { Runtime } from "foldkit";
 
 import "./styles.css";
-import { Model, init, update, view } from "./main.ts";
+import { Model, init, subscriptions, update, view } from "./main.ts";
 
 Runtime.run(
   Runtime.makeApplication({
@@ -9,6 +9,7 @@ Runtime.run(
     init,
     update,
     view,
+    subscriptions,
     container: document.getElementById("root"),
   }),
 );
