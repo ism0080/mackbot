@@ -38,18 +38,12 @@ export const MODEL_VARIANTS = {
 
 export type ThinkingLevel = (typeof MODEL_VARIANTS)[keyof typeof MODEL_VARIANTS][number];
 
-export interface BudgetConfig {
-  tokens?: number;
-  usd?: number;
-}
-
 export interface BotConfig {
   readonly model: ModelDecl;
   readonly thinkingLevel?: ThinkingLevel;
   readonly systemPrompt: string;
   readonly brief?: string;
   readonly delegatesTo?: string[];
-  readonly budgets?: BudgetConfig;
 }
 
 const VARIANT_INDEX = new Map<string, readonly ThinkingLevel[]>(Object.entries(MODEL_VARIANTS));
@@ -57,7 +51,6 @@ const ALL_THINKING_LEVELS = new Set<string>(Object.values(MODEL_VARIANTS).flat()
 const KNOWN_MODEL_IDS = Object.keys(MODEL_VARIANTS).join(", ");
 
 const isString = Schema.is(Schema.String);
-const isNumber = Schema.is(Schema.Number);
 const isObject = (value: RawJson | undefined): value is RawObject =>
   Object.prototype.toString.call(value) === "[object Object]";
 
@@ -180,34 +173,12 @@ const decodeStringArray = (
   return Effect.succeed(out);
 };
 
-const decodeBudgets = (botId: string, value: RawJson): Effect.Effect<BudgetConfig, Error> =>
-  Effect.gen(function* () {
-    if (!isObject(value)) return yield* fail(`bot "${botId}" field "budgets" must be an object`);
-    const result: BudgetConfig = {};
-    const tokens = field(value, "tokens");
-    if (tokens !== undefined) {
-      if (!isNumber(tokens) || !Number.isFinite(tokens) || tokens < 0) {
-        return yield* fail(`bot "${botId}" field "budgets.tokens" must be a non-negative number`);
-      }
-      result.tokens = tokens;
-    }
-    const usd = field(value, "usd");
-    if (usd !== undefined) {
-      if (!isNumber(usd) || !Number.isFinite(usd) || usd < 0) {
-        return yield* fail(`bot "${botId}" field "budgets.usd" must be a non-negative number`);
-      }
-      result.usd = usd;
-    }
-    return result;
-  });
-
 interface DraftBotConfig {
   model: ModelDecl;
   systemPrompt: string;
   thinkingLevel?: ThinkingLevel;
   brief?: string;
   delegatesTo?: string[];
-  budgets?: BudgetConfig;
 }
 
 const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error> =>
@@ -232,10 +203,6 @@ const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error>
     const delegatesTo = field(raw, "delegatesTo");
     if (delegatesTo !== undefined) {
       config.delegatesTo = yield* decodeStringArray(botId, "delegatesTo", delegatesTo);
-    }
-    const budgets = field(raw, "budgets");
-    if (budgets !== undefined) {
-      config.budgets = yield* decodeBudgets(botId, budgets);
     }
     return config;
   });

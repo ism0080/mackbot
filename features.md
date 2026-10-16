@@ -3,8 +3,8 @@
 This file now lists only the work that is still outstanding. The following
 foundation pieces are already implemented and are intentionally omitted here:
 
-- Durable bot registry config extensions: `delegatesTo` and `budgets`, with
-  validation.
+- Durable bot registry config extension: the optional `delegatesTo` allowlist,
+  with validation.
 - Delegation enforcement for the optional `delegatesTo` allowlist.
 - Optional durable thread IDs in `POST /chat/:bot`, including per-thread pi
   session creation and SQLite mapping.
@@ -44,9 +44,6 @@ foundation pieces are already implemented and are intentionally omitted here:
 - **Asynchronous delegation.** Add async fire-and-poll delegation, richer thread
   lineage, and stronger anti-livelock behavior. The basic `delegatesTo`
   allowlist is implemented.
-- **Per-bot budget enforcement.** Add optional token, time, or spend soft caps
-  with visibility in `/status`. Config fields exist; runtime enforcement does
-  not yet.
 - **Remaining operation taxonomy.** Origin labelling covers `http`, `cron`, and
   `delegate` in `/status` and in audit records. Still open: a queryable `origin`
   column on the audit table (the value lives in `detail`, and the operation id
@@ -83,8 +80,10 @@ foundation pieces are already implemented and are intentionally omitted here:
 
 ## Cost, observability, and governance
 
-- **Spend controls.** Add per-bot and per-conversation spend tracking, soft
-  caps, and provider-specific limits beyond config declarations.
+- **Spend controls.** Add per-bot and per-conversation spend tracking, soft caps,
+  and provider-specific limits. A `bots.json` budget config was removed on
+  2026-10-16 because it validated and then did nothing, so reintroduce it
+  together with the enforcement that reads it rather than ahead of it.
 - **Tracing.** Add agent, model-turn, and tool-call spans with standard GenAI
   attributes.
 - **Cost posture monitoring.** Track Durable Object duration, storage, alarm

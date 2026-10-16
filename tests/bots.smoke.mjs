@@ -82,15 +82,6 @@ ok("delegatesTo declared", {
   b: { model: "glm-5.3", systemPrompt: "y" },
 });
 
-err(
-  "budgets negative",
-  { a: { model: "glm-5.3", systemPrompt: "x", budgets: { tokens: -1 } } },
-  'field "budgets.tokens" must be a non-negative number',
-);
-ok("budgets ok", {
-  a: { model: "glm-5.3", systemPrompt: "x", budgets: { tokens: 10, usd: 1 } },
-});
-
 const opencodeRef = resolveModelRef({ model: "deepseek-v4-pro", systemPrompt: "x" });
 if (opencodeRef.provider !== "opencode-go" || opencodeRef.id !== "deepseek-v4-pro") {
   failures.push(`resolveModelRef opencode: ${JSON.stringify(opencodeRef)}`);
