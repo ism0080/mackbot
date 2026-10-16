@@ -140,14 +140,19 @@ const windowFrames = (frames: readonly Frame[], frame: Frame): readonly Frame[] 
  * it — while a `snapshot`'s generation is the one thing that reseeds the fold.
  */
 const applyFrame = (channel: Channel, frame: Frame, seq: number, at: number): Channel => {
+  const generation = frame.kind === "snapshot" ? frame.generation : channel.stream.generation;
   const cursor: Channel = {
     ...channel,
     frames: windowFrames(channel.frames, frame),
     stream: {
       ...channel.stream,
-      generation: frame.kind === "snapshot" ? frame.generation : channel.stream.generation,
+      generation,
       lastSeq: seq,
       phase: channel.stream.phase === "idle" ? "live" : channel.stream.phase,
+      // A new generation is a new stream, so a previous run's spent retry
+      // budget does not carry into it. Within one generation the budget only
+      // grows, which is what stops a failed reconnect from looping.
+      attempt: generation === channel.stream.generation ? channel.stream.attempt : 0,
     },
   };
 
@@ -248,13 +253,20 @@ export const update = (model: Model, message: Message) =>
             view === undefined
               ? AsyncData.fail(lookup(errors, id) ?? "status unavailable")
               : AsyncData.succeed(view),
-          // The status row names the stream the client should attach to; its
-          // generation is where the cursor's basis starts until a frame says
-          // otherwise.
+          // The status row names the stream the client should attach to; a new
+          // generation is a new stream, so it also clears the previous run's
+          // spent reconnect budget.
           stream:
             view?.activeStream === undefined
               ? current.stream
-              : { ...current.stream, generation: view.activeStream.generation },
+              : {
+                  ...current.stream,
+                  generation: view.activeStream.generation,
+                  attempt:
+                    view.activeStream.generation === current.stream.generation
+                      ? current.stream.attempt
+                      : 0,
+                },
         };
       }
       const commands = Object.keys(bots)
