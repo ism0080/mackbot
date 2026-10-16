@@ -41,14 +41,27 @@ are not set; see [`.env.example`](./.env.example) for the required secrets.
 
 ## HTTP surface
 
-Both routes require `Authorization: Bearer <CHAT_BEARER_TOKEN>`. The scheme name
+Every route requires `Authorization: Bearer <CHAT_BEARER_TOKEN>`. The scheme name
 is case-insensitive.
 
 - `POST /chat/:bot` — submit text to a bot. Returns the answer, or `202` with an
   `operationId` when the wait times out or `wait=false` (resubmit the same
   `operationId` to keep waiting; admission is at-most-once).
-- `GET /status` — per-bot model, busy state, pending operations with their origin
-  (`http`, `cron`, or `delegate`), and usage.
+- `GET /status` — one `BotView` per bot: model, thinking level, busy state,
+  pending operations with their origin (`http`, `cron`, or `delegate`), pending
+  approvals, the run in flight, and usage. A bot whose status fails lands in the
+  response's `errors` map rather than failing the whole call.
+- `GET /transcript/:bot?thread=&before=&limit=` — one page of a session's
+  transcript, newest first, paged backwards by entry id. `limit` defaults to 50
+  and clamps to 200. `nextBefore` appears only when an older page exists.
+- `GET /events/:bot?stream=&from=` — Server-Sent Events for one run, served
+  through the SDK's resumable writer, so `Last-Event-ID` and `?from=` resume
+  where a client left off. The bridge that feeds a stream per run is not wired
+  yet.
+
+The Worker and the web app share one vocabulary in
+[`src/web-contract.ts`](./src/web-contract.ts). Every route decodes its input and
+its output against a Schema there, so the two cannot drift apart.
 
 ## Deploy
 
