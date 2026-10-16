@@ -1,0 +1,530 @@
+/* The app's own styles, lifted from the verified sketch's variant d
+   (triage home + per-bot transcript). Only the rules that design needs are
+   kept; the sketch's variant switcher, sheets and toast are not part of it. */
+
+:root {
+  --bg: #0a0b0d;
+  --surface: #14161a;
+  --surface2: #1b1f26;
+  --line: #272c35;
+  --text: #eceef1;
+  --muted: #8a92a0;
+  --accent: #6ea8fe;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --r: 14px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Author rules that set `display` beat the browser's own `[hidden]` rule. The
+   triage sections collapse by `hidden`, and each sets its own `display`, so the
+   attribute has to be defended once here or every empty section shows. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #05060a;
+  color: var(--text);
+  font: 16px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+/* ---------- screen shell ---------- */
+
+.screen {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg);
+}
+
+@media (min-width: 760px) {
+  body {
+    display: grid;
+    place-items: center;
+  }
+
+  .screen {
+    width: 390px;
+    height: min(844px, calc(100dvh - 28px));
+    border: 10px solid var(--surface2);
+    border-radius: 46px;
+    box-shadow: 0 30px 90px rgba(0, 0, 0, 0.7);
+  }
+}
+
+/* ---------- header ---------- */
+
+.hdr {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  padding-top: calc(10px + env(safe-area-inset-top));
+  background: rgba(20, 22, 26, 0.86);
+  backdrop-filter: blur(14px);
+  border-bottom: 1px solid var(--line);
+  min-height: 52px;
+}
+
+.hdr.tall {
+  display: block;
+  padding-bottom: 14px;
+}
+
+.hdr.tall h1 {
+  font-size: 26px;
+  letter-spacing: -0.02em;
+  margin: 4px 0 2px;
+}
+
+.hdr-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hdr-main.stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.hdr h1 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0;
+  white-space: nowrap;
+}
+
+.hdr-sub {
+  font-size: 12px;
+  color: var(--muted);
+  margin-left: auto;
+}
+
+.hdr-main.stacked .hdr-sub {
+  margin-left: 0;
+}
+
+.icon {
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+/* ---------- scroll region ---------- */
+
+.scroll {
+  flex: 1;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+  padding: 12px 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* ---------- avatar, tags ---------- */
+
+.av {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-weight: 600;
+  font-size: 15px;
+  background: #24304a;
+  color: #b8cdfd;
+}
+
+.av.sm {
+  width: 28px;
+  height: 28px;
+  border-radius: 9px;
+  font-size: 12px;
+}
+
+.av.alt {
+  background: #2c2a44;
+  color: #cfc2fd;
+}
+
+.tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--surface2);
+  color: var(--muted);
+  border: 1px solid var(--line);
+}
+
+.tag.work {
+  color: #9fc2ff;
+  border-color: #2c4470;
+  background: #16203a;
+}
+
+.tag.warn {
+  color: #ffd88a;
+  border-color: #5b4415;
+  background: #2a2010;
+}
+
+/* ---------- triage groups ---------- */
+
+.grp {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.grp h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+  margin: 8px 0 0;
+  font-weight: 600;
+}
+
+.runit,
+.doneitem {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+.runit-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rt {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.rmeta {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.bar {
+  display: block;
+  height: 3px;
+  border-radius: 2px;
+  background: #232936;
+  overflow: hidden;
+}
+
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  position: relative;
+}
+
+.bar i::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.45), transparent);
+  animation: sweep 1.6s linear infinite;
+}
+
+/* Without a real fraction, a bar with a width is a lie. A bot on step 4 of 7 is
+   not 52% done, so the bar only claims "still moving". */
+.bar.indeterminate i {
+  width: 100%;
+}
+
+@keyframes sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(100%);
+  }
+}
+
+.doneitem {
+  width: 100%;
+}
+
+.chev {
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.pad {
+  height: 24px;
+}
+
+/* ---------- empty state ---------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  text-align: center;
+  padding: 22px 16px;
+  border: 1px dashed var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+.empty-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #14301f;
+  color: var(--ok);
+  font-size: 17px;
+}
+
+.empty p {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  max-width: 30ch;
+}
+
+/* ---------- approval card ---------- */
+
+.approval {
+  border: 1px solid #5b4415;
+  background: linear-gradient(180deg, #241c0c, #1a1610);
+  border-radius: var(--r);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.06);
+}
+
+.ap-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ap-tool {
+  font: 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #ffd88a;
+}
+
+.ap-review {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffd88a;
+  padding: 5px 8px;
+  border-radius: 8px;
+}
+
+.ap-q {
+  margin: 0;
+  font-size: 14px;
+  color: #f4e9cf;
+}
+
+/* An approval that authorizes a real effect has to show the effect. Without the
+   draft you are approving an email you have never read. */
+.ap-draft {
+  border: 1px solid #4a3a14;
+  border-radius: 10px;
+  background: #1b1710;
+  padding: 0 10px;
+}
+
+.ap-draft > summary {
+  display: block;
+  cursor: pointer;
+  list-style: none;
+  padding: 9px 0;
+}
+
+.ap-draft > summary::-webkit-details-marker {
+  display: none;
+}
+
+.ap-draft-label {
+  display: block;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #ffd88a;
+  margin-bottom: 4px;
+}
+
+.ap-draft-peek {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+  color: #cdbfa3;
+}
+
+.ap-draft[open] .ap-draft-peek {
+  -webkit-line-clamp: 99;
+}
+
+.ap-draft pre {
+  margin: 0 0 10px;
+  font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #d8cdb6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.ap-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.ap-foot {
+  font-size: 11px;
+  color: #a99a76;
+}
+
+.btn {
+  font-size: 14px;
+  font-weight: 600;
+  padding: 9px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  color: var(--text);
+  background: var(--surface2);
+}
+
+.btn.primary {
+  flex: 1;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #05060a;
+}
+
+.btn.ghost {
+  flex: 1;
+  background: transparent;
+}
+
+/* ---------- transcript ---------- */
+
+.dayline {
+  text-align: center;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 4px 0 2px;
+}
+
+.msg {
+  max-width: 86%;
+  font-size: 15px;
+}
+
+.msg p {
+  margin: 0;
+}
+
+.msg.bot {
+  align-self: flex-start;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r) var(--r) var(--r) 5px;
+  padding: 10px 12px;
+}
+
+.msg.me {
+  align-self: flex-end;
+  background: #1d3358;
+  border: 1px solid #2b4a7d;
+  border-radius: var(--r) var(--r) 5px var(--r);
+  padding: 10px 12px;
+}
+
+.origin {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--warn);
+  margin-bottom: 5px;
+}
+
+.ap-ref {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 10px 12px;
+  border: 1px dashed #5b4415;
+  border-radius: var(--r);
+  background: #1a1610;
+  font-size: 13px;
+  color: #d8c9a4;
+}
+
+.ap-ref-text {
+  flex: 1;
+}
+
+.streamline {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+.live {
+  margin: 0;
+  font-size: 14px;
+  color: #aeb6c2;
+}
