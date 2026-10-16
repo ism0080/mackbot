@@ -6,6 +6,8 @@
   "workspaces": ["web"],
   "scripts": {
     "lint": "oxlint --config oxlint.config.ts",
+    "lint:css": "cd web && bun run lint:css",
+    "test:css": "cd web && bun run test:css",
     "format": "oxfmt",
     "typecheck": "tsc --noEmit",
     "test": "bun tests/run.mjs",

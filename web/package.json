@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "test": "bun run build && bun tests/render.test.mjs",
     "typecheck": "tsc --noEmit",
-    "lint": "oxlint --config .oxlintrc.json"
+    "lint": "oxlint --config .oxlintrc.json",
+    "lint:css": "stylelint \"src/styles.css\"",
+    "test:css": "bun stylelint/fixtures.test.mjs"
   },
   "dependencies": {
     "foldkit": "0.168.0",
