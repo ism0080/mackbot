@@ -9,9 +9,9 @@ export const clockOf = (at: number): string => CLOCK.format(new Date(at));
 
 /** "4m", the way the sketch's "waiting 4m" and "running 6m" read. */
 export const elapsedOf = (at: number, now: number): string => {
-  const minutes = globalThis.Math.max(0, globalThis.Math.round((now - at) / 60_000));
+  const minutes = Math.max(0, Math.round((now - at) / 60_000));
   if (minutes < 1) return "moments";
   if (minutes < 60) return `${minutes}m`;
-  const hours = globalThis.Math.round(minutes / 60);
-  return hours < 24 ? `${hours}h` : `${globalThis.Math.round(hours / 24)}d`;
+  const hours = Math.round(minutes / 60);
+  return hours < 24 ? `${hours}h` : `${Math.round(hours / 24)}d`;
 };

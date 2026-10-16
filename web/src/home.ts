@@ -5,10 +5,8 @@ import { elapsedOf } from "./format.ts";
 import { FIXTURE_NOW } from "./fixture.ts";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
-import { avatar, botName } from "./partials.ts";
+import { avatar, botName, runTitle } from "./partials.ts";
 import { entryStampOf, selectHome } from "./select.ts";
-
-const runTitle = (run: ActiveRunView): string => run.inputs[0] ?? "Working";
 
 const draftOf = (approval: ApprovalView, h: HtmlBuilder<Message>): readonly Html[] => {
   const artifact = approval.artifact;

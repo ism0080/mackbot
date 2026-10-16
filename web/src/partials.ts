@@ -1,4 +1,4 @@
-import type { BotView } from "@mackbot/web-contract";
+import type { ActiveRunView, BotView } from "@mackbot/web-contract";
 import type { HtmlBuilder } from "foldkit/html";
 
 import type { Message } from "./message.ts";
@@ -10,6 +10,8 @@ export const botInitial = (bot: string): string => bot.slice(0, 1).toUpperCase()
 
 export const avatar = (bot: string, h: HtmlBuilder<Message>) =>
   h.span([h.Class("av sm")], [botInitial(bot)]);
+
+export const runTitle = (run: ActiveRunView): string => run.inputs[0] ?? "Working";
 
 export const modelLabel = (bot: BotView): string =>
   bot.thinkingLevel === null ? bot.model.id : `${bot.model.id} · ${bot.thinkingLevel}`;

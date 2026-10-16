@@ -65,7 +65,7 @@ const clearNoteOf = (running: readonly Running[]): string => {
  *  channels, so deciding an approval changes the home, the header count and the
  *  transcript together without any of them being updated. */
 export const selectHome = (model: Model): Home => {
-  const channels = globalThis.Object.entries(model.channels);
+  const channels = Object.entries(model.channels);
   const statuses = channels.map(
     ([bot, channel]) => [bot, statusOf(channel)] as const,
   );

@@ -7,9 +7,7 @@ import { clockOf, elapsedOf } from "./format.ts";
 import { FIXTURE_NOW } from "./fixture.ts";
 import { Message } from "./message.ts";
 import type { Channel, Model } from "./model.ts";
-import { avatar, botName, modelLabel, statusTag } from "./partials.ts";
-
-const runTitle = (run: ActiveRunView): string => run.inputs[0] ?? "Working";
+import { avatar, botName, modelLabel, runTitle, statusTag } from "./partials.ts";
 
 const statusIn = (channel: Channel | undefined): Option.Option<BotView> =>
   Option.match(Option.fromNullishOr(channel), {
