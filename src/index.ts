@@ -27,13 +27,15 @@ import type { BotConfig } from "./bots.ts";
 import type { ThinkingLevel } from "./bots.ts";
 import { createApprovalStore } from "./approvals.ts";
 import type { ApprovalStore } from "./approvals.ts";
-import { createRunStore } from "./runs.ts";
+import { createRunStore, streamViewOf } from "./runs.ts";
 import type { RunStore } from "./runs.ts";
 import { activeRunOf, projectStatus } from "./status.ts";
-import { highestEntryId } from "./transcript.ts";
-import type { BotView, PendingOperationView } from "./web-contract.ts";
+import { emptyTranscriptPage, highestEntryId, transcriptPage } from "./transcript.ts";
+import { TranscriptQuerySchema } from "./web-contract.ts";
+import type { BotView, PendingOperationView, TranscriptPage, TranscriptQuery } from "./web-contract.ts";
 
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
 import { BotRegistryService } from "./services/bot-registry.ts";
@@ -264,6 +266,34 @@ export class Bot extends DurableObject<Env> {
     });
   }
 
+  /**
+   * The transcript of one thread, paged backwards by entry id. A thread mackbot
+   * has never created has no transcript yet, so this reads rather than creating
+   * a session on a GET.
+   */
+  async transcript(query: TranscriptQuery): Promise<TranscriptPage> {
+    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    const thread = query.thread;
+    if (thread !== undefined) {
+      this.#ensureThreadsTable();
+      const existing = this.#sessionIdForThread(thread);
+      return existing === undefined
+        ? emptyTranscriptPage(thread)
+        : await this.#transcriptOf(existing, query);
+    }
+    return await this.#transcriptOf(ROOT_SESSION, query);
+  }
+
+  async #transcriptOf(session: string, query: TranscriptQuery): Promise<TranscriptPage> {
+    const records = await Effect.runPromise(
+      Effect.tryPromise(() => this.harness.messages({ session })),
+    );
+    const runs = this.#runs().list().filter((run) => run.sessionId === session);
+    const latest = runs.at(-1);
+    const cursor = latest === undefined ? 0 : await this.#streamCursor(latest.streamId);
+    return transcriptPage(session, records, runs, query, streamViewOf(session, latest, cursor));
+  }
+
   /** The conversation's next entry id: the run window's lower bound. */
   async #entryMark(session: string): Promise<number> {
     const records = await Effect.runPromise(
@@ -285,8 +315,8 @@ export class Bot extends DurableObject<Env> {
   }
 
   /**
-   * The newest chunk of a run's stream, or 0 before the bridge has written one.
-   * The routes are what name the stream a client should attach to.
+   * The newest chunk of a run's stream, or 0 before the bridge has written one:
+   * the transcript route is what names the stream a client should attach to.
    */
   async #streamCursor(streamId: string): Promise<number> {
     const status = await Effect.runPromise(
@@ -421,6 +451,7 @@ export class Bot extends DurableObject<Env> {
 
 const CHAT_ROUTE = /^\/chat\/([^/]+)$/u;
 const EVENTS_ROUTE = /^\/events\/([^/]+)$/u;
+const TRANSCRIPT_ROUTE = /^\/transcript\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
@@ -504,6 +535,25 @@ const handleStatus = async (env: Env): Promise<Response> => {
   return Response.json({ bots: statuses, errors });
 };
 
+const handleTranscript = async (url: URL, env: Env, botId: string): Promise<Response> => {
+  const bots = await Effect.runPromise(loadBotsEffect());
+  if (!Object.hasOwn(bots, botId)) {
+    return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
+  }
+  const query = await Effect.runPromise(
+    Schema.decodeUnknownEffect(TranscriptQuerySchema)(Object.fromEntries(url.searchParams)).pipe(
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+  if (query === undefined) {
+    return Response.json({ error: "invalid query" }, { status: 400 });
+  }
+  const page = await Effect.runPromise(
+    Effect.tryPromise(() => env.Bot.getByName(botId).transcript(query)),
+  );
+  return Response.json(page);
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
@@ -518,6 +568,12 @@ export default {
       if (match !== null) {
         return request.method === "POST"
           ? await handleChat(request, env, match[1]!, url.searchParams.get("wait") === "0")
+          : methodNotAllowed();
+      }
+      const transcript = TRANSCRIPT_ROUTE.exec(url.pathname);
+      if (transcript !== null) {
+        return request.method === "GET"
+          ? await handleTranscript(url, env, transcript[1]!)
           : methodNotAllowed();
       }
       const events = EVENTS_ROUTE.exec(url.pathname);
