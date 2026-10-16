@@ -5,7 +5,9 @@ import { profiles } from "./tools/oxlint/profiles.ts";
 export default defineConfig({
   plugins: ["typescript", "unicorn", "oxc"],
   // tools/oxlint is vendored from the forge repo — it verifies itself via `bun run tools:oxlint`
-  ignorePatterns: ["node_modules", "dist", ".alchemy", "tools/oxlint"],
+  // web/ is the Foldkit app: it lints itself with the Foldkit preset in
+  // web/.oxlintrc.json, which the core profile here would only fight.
+  ignorePatterns: ["node_modules", "dist", ".alchemy", "tools/oxlint", "web"],
   jsPlugins: [
     {
       name: "forge",

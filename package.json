@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "workspaces": ["web"],
   "scripts": {
     "lint": "oxlint --config oxlint.config.ts",
     "format": "oxfmt",
