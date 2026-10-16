@@ -1,4 +1,4 @@
-import { BotViewSchema, TranscriptPageSchema } from "@mackbot/web-contract";
+import { BotViewSchema, FrameSchema, TranscriptPageSchema } from "@mackbot/web-contract";
 import { AsyncData } from "foldkit";
 import { defineTaggedUnion } from "foldkit/schema";
 import * as Schema from "effect/Schema";
@@ -14,16 +14,35 @@ export const Screen = defineTaggedUnion({
 export type Screen = typeof Screen.Type;
 
 /**
+ * The live events subscription's descriptor. It is the only reconnect input:
+ * `lastSeq` is the cursor the next connection resumes from, and `attempt` is
+ * what makes a dropped transport a *dependency change*, so the subscription
+ * record recreates the stream rather than a retry loop living inside it.
+ */
+export const StreamState = Schema.Struct({
+  phase: Schema.Literals(["idle", "live", "retrying", "closed"]),
+  generation: Schema.Number,
+  lastSeq: Schema.Number,
+  attempt: Schema.Number,
+});
+export type StreamState = typeof StreamState.Type;
+
+/** How many recent Frames one channel keeps. A devtools window, not history:
+ *  the transcript owns history. */
+export const FRAME_WINDOW = 50;
+
+/**
  * Everything the client knows about one bot, keyed by that bot's id. The two
- * fields are the two routes: `/status` returns the `BotView`, and
- * `/transcript/:bot` returns the page. An approval lives only in
- * `status.approvals`, so deciding it is one write, and every view that shows it
- * — the triage home, its header count, the transcript's "waiting on you" row —
- * is a fold over this record rather than a second copy kept in step by hand.
+ * routes fill `status` and `transcript`; `frames` is what the SSE subscription
+ * has folded in since, so an approval or a settled message that arrived while
+ * the app was open is in the same record the routes wrote rather than a second
+ * copy kept in step by hand.
  */
 export const Channel = Schema.Struct({
   status: AsyncData.Schema(BotViewSchema, Schema.String).schema,
   transcript: AsyncData.Schema(TranscriptPageSchema, Schema.String).schema,
+  stream: StreamState,
+  frames: Schema.Array(FrameSchema),
 });
 export type Channel = typeof Channel.Type;
 

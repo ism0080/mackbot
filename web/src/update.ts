@@ -1,4 +1,4 @@
-import type { ApprovalView, BotView, TranscriptPage } from "@mackbot/web-contract";
+import type { ApprovalView, BotView, EntryView, Frame, TranscriptPage } from "@mackbot/web-contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
@@ -6,12 +6,14 @@ import type { Update } from "foldkit";
 
 import { Status, Transcript } from "./api.ts";
 import { Message } from "./message.ts";
-import { Screen } from "./model.ts";
+import { FRAME_WINDOW, Screen } from "./model.ts";
 import type { Channel, Model } from "./model.ts";
 
 const emptyChannel = (): Channel => ({
   status: AsyncData.Idle(),
   transcript: AsyncData.Idle(),
+  stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0 },
+  frames: [],
 });
 
 /** A record read that admits the key it does not have. */
@@ -80,12 +82,137 @@ const decideInChannel = (
       AsyncData.map(status, (view) => decideInStatus(view, approvalId, action, at)),
   });
 
+const mergeEntries = (
+  existing: readonly EntryView[],
+  incoming: readonly EntryView[],
+): readonly EntryView[] => {
+  const byId = new Map(existing.map((entry) => [entry.id, entry]));
+  for (const entry of incoming) byId.set(entry.id, entry);
+  return [...byId.values()].sort((left, right) => left.id - right.id);
+};
+
+const mergeEntriesInto = (
+  transcript: AsyncData.AsyncData<TranscriptPage, string>,
+  entries: readonly EntryView[],
+): AsyncData.AsyncData<TranscriptPage, string> =>
+  AsyncData.map(transcript, (page) => ({ ...page, entries: mergeEntries(page.entries, entries) }));
+
+const modifyStatus = (channel: Channel, change: (view: BotView) => BotView): Channel =>
+  modifyFields(channel, { status: (status) => AsyncData.map(status, change) });
+
+const upsertApproval = (view: BotView, approval: ApprovalView): BotView =>
+  modifyFields(view, {
+    approvals: (approvals) => [
+      ...approvals.filter((existing) => existing.approvalId !== approval.approvalId),
+      approval,
+    ],
+  });
+
+const statusOfDecision = (decision: "allow" | "deny" | "expired"): ApprovalView["status"] =>
+  decision === "allow" ? "allowed" : decision === "deny" ? "denied" : "expired";
+
+const resolveApproval = (
+  view: BotView,
+  approvalId: string,
+  decision: "allow" | "deny" | "expired",
+  at: number,
+): BotView =>
+  modifyFields(view, {
+    approvals: (approvals) =>
+      approvals.map((approval) =>
+        approval.approvalId === approvalId
+          ? { ...approval, status: statusOfDecision(decision), decidedAt: at }
+          : approval,
+      ),
+  });
+
+/** A run that ended is no longer a reason to hold the connection. */
+const endRun = (view: BotView): BotView => modifyFields(view, { activeRun: () => undefined });
+
+const windowFrames = (frames: readonly Frame[], frame: Frame): readonly Frame[] => {
+  const next = [...frames, frame];
+  return next.length <= FRAME_WINDOW ? next : next.slice(next.length - FRAME_WINDOW);
+};
+
+/**
+ * One Frame, one Channel change. The cursor advances on every frame — it is the
+ * sequence number of the frame's `id:` line, so an acknowledgement cannot move
+ * it — while a `snapshot`'s generation is the one thing that reseeds the fold.
+ */
+const applyFrame = (channel: Channel, frame: Frame, seq: number, at: number): Channel => {
+  const cursor: Channel = {
+    ...channel,
+    frames: windowFrames(channel.frames, frame),
+    stream: {
+      ...channel.stream,
+      generation: frame.kind === "snapshot" ? frame.generation : channel.stream.generation,
+      lastSeq: seq,
+      phase: channel.stream.phase === "idle" ? "live" : channel.stream.phase,
+    },
+  };
+
+  switch (frame.kind) {
+    case "snapshot":
+      return { ...cursor, transcript: mergeEntriesInto(cursor.transcript, frame.entries) };
+    case "message":
+      return frame.phase === "end" && frame.entry !== undefined
+        ? { ...cursor, transcript: mergeEntriesInto(cursor.transcript, [frame.entry]) }
+        : cursor;
+    case "approval":
+      return modifyStatus(cursor, (view) => upsertApproval(view, frame.approval));
+    case "approval_resolved":
+      return modifyStatus(cursor, (view) =>
+        resolveApproval(view, frame.approvalId, frame.decision, at),
+      );
+    case "run":
+      return frame.phase === "end" ? modifyStatus(cursor, endRun) : cursor;
+    case "task_failed":
+      return modifyStatus(cursor, endRun);
+    default:
+      return cursor;
+  }
+};
+
+const setStreamPhase = (channel: Channel, phase: Channel["stream"]["phase"]): Channel => ({
+  ...channel,
+  stream: { ...channel.stream, phase },
+});
+
+/** Attempts past this many drops close the stream: a bot that cannot be reached
+ *  falls back to the status poll rather than reconnecting forever. */
+const MAX_STREAM_ATTEMPTS = 5;
+
+const reconnect = (channel: Channel): Channel => {
+  if (channel.stream.phase === "closed") return channel;
+  const attempt = channel.stream.attempt + 1;
+  return {
+    ...channel,
+    stream: {
+      ...channel.stream,
+      phase: attempt > MAX_STREAM_ATTEMPTS ? "closed" : "retrying",
+      attempt,
+    },
+  };
+};
+
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
     PolledStatus: () =>
       model.polling
         ? { model }
         : { model: { ...model, polling: true }, commands: [Status()] },
+    FrameReceived: ({ bot, frame, seq, at }) => ({
+      model: withChannel(model, bot, (channel) => applyFrame(channel, frame, seq, at)),
+    }),
+    StreamUpToDate: ({ bot }) => ({
+      model: withChannel(model, bot, (channel) => setStreamPhase(channel, "live")),
+    }),
+    StreamClosed: ({ bot }) => ({
+      model: withChannel(model, bot, (channel) => setStreamPhase(channel, "closed")),
+    }),
+    StreamDropped: ({ bot }) => ({
+      model: withChannel(model, bot, reconnect),
+    }),
     ClickedBack: () => ({
       model: modifyFields(model, { screen: () => Screen.Home() }),
     }),
@@ -121,6 +248,13 @@ export const update = (model: Model, message: Message) =>
             view === undefined
               ? AsyncData.fail(lookup(errors, id) ?? "status unavailable")
               : AsyncData.succeed(view),
+          // The status row names the stream the client should attach to; its
+          // generation is where the cursor's basis starts until a frame says
+          // otherwise.
+          stream:
+            view?.activeStream === undefined
+              ? current.stream
+              : { ...current.stream, generation: view.activeStream.generation },
         };
       }
       const commands = Object.keys(bots)
