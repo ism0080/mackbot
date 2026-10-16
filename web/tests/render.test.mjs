@@ -10,7 +10,7 @@
 import { Effect, Schema } from "effect";
 
 import { BotViewSchema, TranscriptPageSchema } from "../../src/web-contract.ts";
-import { STATUS_RESPONSE, TRANSCRIPTS } from "./fixture.mjs";
+import { FIXTURE_NOW, STATUS_RESPONSE, TRANSCRIPTS } from "./fixture.mjs";
 import { boot, makeChecker } from "./support/app.mjs";
 import { startStub } from "./support/stub.mjs";
 
@@ -36,6 +36,19 @@ const stub = startStub({
   transcripts: {
     hermes: () => TRANSCRIPTS.hermes,
     scribe: () => TRANSCRIPTS.scribe,
+  },
+  decisions: {
+    // The decision now has a server; this one confirms it, so "Allow retires the
+    // approval everywhere" is still this test's subject rather than a rollback.
+    "/approvals/hermes/apr_botmail_send": () => ({
+      status: 200,
+      body: {
+        approvalId: "apr_botmail_send",
+        bot: "hermes",
+        status: "allowed",
+        decidedAt: FIXTURE_NOW,
+      },
+    }),
   },
 });
 
@@ -126,11 +139,11 @@ try {
     .filter((request, index) => stub.requests.findIndex((other) => other.path === request.path) === index)
     .map((request) => `${request.method} ${request.path}`);
   check(
-    "the app asked for the roster, both transcripts, and the live bot's events",
-    firstCalls.length === 4 &&
+    "the app asked for the roster, both transcripts, the live bot's events, and the decision",
+    firstCalls.length === 5 &&
       firstCalls[0] === "GET /status" &&
       firstCalls.slice(1).sort().join("|") ===
-        "GET /events/hermes|GET /transcript/hermes|GET /transcript/scribe",
+        "GET /events/hermes|GET /transcript/hermes|GET /transcript/scribe|POST /approvals/hermes/apr_botmail_send",
     firstCalls.join("; "),
   );
   const transcriptQueries = stub.requests

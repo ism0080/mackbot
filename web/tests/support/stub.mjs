@@ -34,7 +34,7 @@ const sseFrame = ({ id, event, data }) => {
   return `${lines.join("\n")}\n\n`;
 };
 
-export const startStub = ({ status, transcripts, failing = [], events = {} }) => {
+export const startStub = ({ status, transcripts, failing = [], events = {}, decisions = {} }) => {
   const requests = [];
   const held = new Set();
   const encoder = new TextEncoder();
@@ -55,14 +55,28 @@ export const startStub = ({ status, transcripts, failing = [], events = {} }) =>
   const server = Bun.serve({
     hostname: "127.0.0.1",
     port: 0,
-    fetch(request) {
+    async fetch(request) {
       const url = new URL(request.url);
       const query = Object.fromEntries(url.searchParams);
       const connections = requests.filter((entry) => entry.path === url.pathname).length;
-      requests.push({ method: request.method, path: url.pathname, query, connections });
+      const decision = /^\/approvals\/([^/]+)\/([^/]+)$/.exec(url.pathname);
+      const body = decision === null ? undefined : await request.json().catch(() => undefined);
+      requests.push({ method: request.method, path: url.pathname, query, connections, body });
 
       if (failing.includes(url.pathname)) return new Response("boom", { status: 500 });
-      if (url.pathname === "/status") return Response.json(status);
+      if (url.pathname === "/status") {
+        return Response.json(typeof status === "function" ? status() : status);
+      }
+
+      if (decision !== null) {
+        const handler = decisions[url.pathname];
+        const spec =
+          handler === undefined
+            ? undefined
+            : await handler({ body, query, bot: decision[1], approvalId: decision[2] });
+        const answer = spec ?? { status: 404, body: { error: "no decision handler" } };
+        return Response.json(answer.body, { status: answer.status });
+      }
 
       const eventRoute = /^\/events\/([^/]+)$/.exec(url.pathname);
       if (eventRoute !== null) {
