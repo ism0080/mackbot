@@ -19,7 +19,8 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
-import { serveEvents } from "./feed.ts";
+import { createFeed } from "./feed.ts";
+import type { Feed } from "./feed.ts";
 import { cronOperationId, httpOperationId, originOf } from "./operation.ts";
 import { isAuthorized, readChatRequest } from "./chat-request.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
@@ -112,6 +113,7 @@ export class Bot extends DurableObject<Env> {
   #auditSink: AuditLog | undefined;
   #runStore: RunStore | undefined;
   #approvalStore: ApprovalStore | undefined;
+  #feedService: Feed | undefined;
   #botReady: Promise<void> | undefined;
   /** In-flight thread→session creations, so concurrent requests share one. */
   readonly #threadSessions = new Map<string, Promise<string>>();
@@ -132,7 +134,7 @@ export class Bot extends DurableObject<Env> {
    * methods (`submit`, `wait`, `status`) do not pass through it.
    */
   onRequest(request: Request): Promise<Response> {
-    return serveEvents(this.streams, request);
+    return this.#feed().serve(request);
   }
 
   async submit(
@@ -147,6 +149,9 @@ export class Bot extends DurableObject<Env> {
         ? ROOT_SESSION
         : await Effect.runPromise(Effect.tryPromise(() => this.#sessionForThread(thread)));
     if (thread === undefined) await Effect.runPromise(Effect.tryPromise(() => this.#ensureBot()));
+    // Attach before the submission is durable, so no harness event of the run
+    // it admits can be produced before the watcher is listening.
+    await this.#feed().attach(sessionId);
     // Read the entry high-water mark before admission, so the run's window
     // starts after everything pi had already written.
     const startEntry = await this.#entryMark(sessionId);
@@ -352,6 +357,18 @@ export class Bot extends DurableObject<Env> {
   #approvals(): ApprovalStore {
     this.#approvalStore ??= createApprovalStore(this.ctx.storage);
     return this.#approvalStore;
+  }
+
+  #feed(): Feed {
+    this.#feedService ??= createFeed({
+      botId: this.lifecycle.name,
+      streams: this.streams,
+      runs: this.#runs(),
+      events: (session) => this.harness.session(session).events(BACKGROUND_CONTEXT),
+      sessionOf: (thread) =>
+        Promise.resolve(thread === undefined ? ROOT_SESSION : this.#sessionIdForThread(thread)),
+    });
+    return this.#feedService;
   }
 
   #ensureThreadsTable(): void {

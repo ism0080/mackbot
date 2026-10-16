@@ -34,7 +34,7 @@ if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
 const { Database } = await import("bun:sqlite");
 const { Lifecycle } = await import("agents/lifecycle");
 const { Streams } = await import("agents/streams");
-const { serveEvents } = await import("../src/feed.ts");
+const { createFeed } = await import("../src/feed.ts");
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -104,7 +104,16 @@ const ctx = {
 };
 
 const streams = new Streams();
-const host = { ctx, onRequest: (request) => serveEvents(streams, request) };
+// The route's bridge is exercised by feed.smoke.mjs; here every request carries
+// an explicit `?stream=`, so the session resolver and run table are never read.
+const feed = createFeed({
+  botId: "hermes",
+  streams,
+  runs: { list: () => [] },
+  events: () => Promise.reject(new Error("unused")),
+  sessionOf: () => Promise.resolve(undefined),
+});
+const host = { ctx, onRequest: (request) => feed.serve(request) };
 const lifecycle = Lifecycle.install(host);
 lifecycle.use(streams);
 
