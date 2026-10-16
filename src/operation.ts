@@ -34,6 +34,15 @@ export const httpOperationId = (supplied: string | undefined): string => {
 };
 
 /**
+ * The steering submission a human's decision admits. Prefixed `http:` because
+ * the decision arrived on an HTTP route, and derived from the approval so a
+ * replay of the same decision names the same operation instead of admitting a
+ * second steer.
+ */
+export const approvalOperationId = (approvalId: string): string =>
+  `${HTTP_PREFIX}approval:${approvalId}`;
+
+/**
  * `scheduledTime` makes the id stable across the retries one scheduled hour can
  * deliver.
  */
