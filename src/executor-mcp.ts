@@ -23,7 +23,11 @@
  * Public API (what `src/index.ts` imports):
  *
  *   import { createExecutorMcp } from "./executor-mcp.ts";
- *   const extension = createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN });
+ *   const extension = createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN },
+ *     { onPaused: (paused) => approvals.recordPaused(paused) });
+ *
+ * `onPaused` is how a paused call becomes durable: the bridge detects the pause
+ * and hands over the requestId and the envelope, and the host records the row.
  *
  * `url` is the org/connection MCP URL. Its `elicitation_mode` decides how
  * approvals arrive: the bare URL uses `model`, where the paused result carries a
@@ -59,7 +63,9 @@ import { Type } from "@earendil-works/pi-ai";
 import type { TextContent } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionResult } from "@earendil-works/pi-durable";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -100,6 +106,30 @@ const resolveConfig = (config: ExecutorMcpConfig): ResolvedConfig => ({
 
 /** Opens one MCP client for one connection. */
 type Connector = (config: ResolvedConfig) => Promise<Client>;
+
+/**
+ * What a paused result carries, as {@link renderResult} found it: the id
+ * `executor_resume` accepts, and the envelope it came from.
+ */
+export type PausedEnvelope = {
+  readonly requestId: string;
+  /**
+   * Executor's pause payload: `structuredContent` when it sent one, else the
+   * text section. It is the record of what the paused call wanted to do, so it
+   * is what the approval row is extracted from — and it can carry an
+   * `approvalUrl` signed for the org connection, so it is parsed, never stored.
+   */
+  readonly envelope: string;
+};
+
+/** A paused call, with the conversation it paused in. */
+export type PausedCall = PausedEnvelope & {
+  /** The pi conversation, so a decision can steer the same one. */
+  readonly session: string;
+};
+
+/** Where a paused call is recorded. */
+export type PausedSink = (paused: PausedCall) => void;
 
 const openClient: Connector = async (config) => {
   const transport = new StreamableHTTPClientTransport(new URL(config.url), {
@@ -252,6 +282,22 @@ export const looksPaused = (haystack: string): boolean =>
 export const maybeApprovalNotice = (haystack: string): string | null =>
   looksPaused(haystack) ? approvalNotice(haystack) : null;
 
+/**
+ * The envelope of a paused result, or `undefined`. A pause with no `requestId`
+ * is not one: nothing can resume it and there is nothing durable to record, so
+ * the notice still guides the model but no approval row is written.
+ */
+const pausedEnvelope = (
+  text: string,
+  compact: string,
+  haystack: string,
+): PausedEnvelope | undefined => {
+  if (!looksPaused(haystack)) return undefined;
+  const requestId = REQUEST_ID_PATTERN.exec(haystack)?.[1];
+  if (requestId === undefined) return undefined;
+  return { requestId, envelope: compact.length > 0 ? compact : text };
+};
+
 const JsonFromText = Schema.fromJsonString(Schema.Unknown);
 
 const ExecutionOutcomeSchema = Schema.Struct({
@@ -297,12 +343,33 @@ const renderBody = (text: string, structured: string): string => {
 };
 
 /**
+ * Hand a paused envelope to the sink. A sink failure must not change the result
+ * the model sees, but a lost approval is the loop stalling invisibly, so it is
+ * logged rather than swallowed.
+ */
+const announcePaused = (
+  onPaused: (paused: PausedEnvelope) => void,
+  paused: PausedEnvelope,
+): void => {
+  const exit = Effect.runSync(Effect.exit(Effect.sync(() => onPaused(paused))));
+  if (Exit.isFailure(exit)) {
+    console.error(`mackbot: recording a paused executor call failed: ${Cause.pretty(exit.cause)}`);
+  }
+};
+
+/**
  * Map an MCP `CallToolResult` onto a pi tool result. A paused approval gets a
  * prominent header; failures come back as `isError` results so the model can
  * react instead of the harness throwing. Exported so the rendering can be
  * checked against synthetic envelopes without a live Executor.
+ *
+ * `onPaused` is called with what a paused envelope carries, so the host can
+ * record it; a sink that throws cannot change the result the model sees.
  */
-export const renderResult = (result: CallToolResult): ToolExecutionResult => {
+export const renderResult = (
+  result: CallToolResult,
+  onPaused?: (paused: PausedEnvelope) => void,
+): ToolExecutionResult => {
   const text = renderContent(result.content);
   const structuredContent = result.structuredContent;
   const compact = structuredContent === undefined ? "" : JSON.stringify(structuredContent);
@@ -316,7 +383,11 @@ export const renderResult = (result: CallToolResult): ToolExecutionResult => {
       : JSON.stringify(structuredContent, null, 2);
   const haystack = structured.length > 0 ? `${text}\n${structured}` : text;
   const body = renderBody(text, structured);
-  const output = looksPaused(haystack) ? `${approvalNotice(haystack)}\n\n${body}` : body;
+  const paused = pausedEnvelope(text, compact, haystack);
+  if (paused !== undefined && onPaused !== undefined) {
+    announcePaused(onPaused, paused);
+  }
+  const output = paused === undefined ? body : `${approvalNotice(haystack)}\n\n${body}`;
   // Reads the whole payload even when it was not rendered, so dropping a repeat
   // cannot hide a failure.
   const failed = programFailed(compact);
@@ -331,10 +402,16 @@ const runMetaTool = (
   name: string,
   args: McpToolArguments,
   shared: boolean,
+  paused: PausedSink | undefined,
+  session: string,
 ): Effect.Effect<ToolExecutionResult> =>
   callMetaTool(bridge, name, args, shared).pipe(
     Effect.match({
-      onSuccess: renderResult,
+      onSuccess: (result) =>
+        renderResult(
+          result,
+          paused === undefined ? undefined : (found) => paused({ ...found, session }),
+        ),
       onFailure: (cause) =>
         errorResult(`Executor MCP call failed (${name}): ${describeError(cause)}`),
     }),
@@ -373,7 +450,7 @@ const executorProtocol = [
 
 const executorProtocolSection = section("executor-protocol", () => executorProtocol);
 
-const searchTool = (bridge: Bridge) =>
+const searchTool = (bridge: Bridge, paused: PausedSink | undefined) =>
   defineTool({
     name: "executor_search",
     description:
@@ -387,10 +464,13 @@ const searchTool = (bridge: Bridge) =>
       offset: Type.Optional(Type.Number({ description: "Number of results to skip." })),
     }),
     replay: "safe",
-    execute: (args) => Effect.runPromise(runMetaTool(bridge, "search", args, true)),
+    execute: (args, api) =>
+      Effect.runPromise(
+        runMetaTool(bridge, "search", args, true, paused, String(api.conversationId)),
+      ),
   });
 
-const describeTool = (bridge: Bridge) =>
+const describeTool = (bridge: Bridge, paused: PausedSink | undefined) =>
   defineTool({
     name: "executor_describe",
     description:
@@ -402,10 +482,13 @@ const describeTool = (bridge: Bridge) =>
       }),
     }),
     replay: "safe",
-    execute: (args) => Effect.runPromise(runMetaTool(bridge, "describe", args, true)),
+    execute: (args, api) =>
+      Effect.runPromise(
+        runMetaTool(bridge, "describe", args, true, paused, String(api.conversationId)),
+      ),
   });
 
-const callTool = (bridge: Bridge) =>
+const callTool = (bridge: Bridge, paused: PausedSink | undefined) =>
   defineTool({
     name: "executor_call",
     description:
@@ -430,10 +513,13 @@ const callTool = (bridge: Bridge) =>
       ),
     }),
     replay: "unsafe",
-    execute: (args) => Effect.runPromise(runMetaTool(bridge, "call", args, false)),
+    execute: (args, api) =>
+      Effect.runPromise(
+        runMetaTool(bridge, "call", args, false, paused, String(api.conversationId)),
+      ),
   });
 
-const executeTool = (bridge: Bridge) =>
+const executeTool = (bridge: Bridge, paused: PausedSink | undefined) =>
   defineTool({
     name: "executor_execute",
     description:
@@ -445,10 +531,13 @@ const executeTool = (bridge: Bridge) =>
       }),
     }),
     replay: "unsafe",
-    execute: (args) => Effect.runPromise(runMetaTool(bridge, "execute", args, false)),
+    execute: (args, api) =>
+      Effect.runPromise(
+        runMetaTool(bridge, "execute", args, false, paused, String(api.conversationId)),
+      ),
   });
 
-const skillsTool = (bridge: Bridge) =>
+const skillsTool = (bridge: Bridge, paused: PausedSink | undefined) =>
   defineTool({
     name: "executor_skills",
     description:
@@ -471,7 +560,10 @@ const skillsTool = (bridge: Bridge) =>
       ),
     }),
     replay: "safe",
-    execute: (args) => Effect.runPromise(runMetaTool(bridge, "skills", args, true)),
+    execute: (args, api) =>
+      Effect.runPromise(
+        runMetaTool(bridge, "skills", args, true, paused, String(api.conversationId)),
+      ),
   });
 
 const resumeResponse = Type.Object(
@@ -489,7 +581,7 @@ const resumeResponse = Type.Object(
   { additionalProperties: true, description: "The answer to a paused request." },
 );
 
-const resumeTool = (bridge: Bridge) =>
+const resumeTool = (bridge: Bridge, paused: PausedSink | undefined) =>
   defineTool({
     name: "executor_resume",
     description:
@@ -504,7 +596,10 @@ const resumeTool = (bridge: Bridge) =>
       { additionalProperties: true },
     ),
     replay: "unsafe",
-    execute: (args) => Effect.runPromise(runMetaTool(bridge, "resume", args, false)),
+    execute: (args, api) =>
+      Effect.runPromise(
+        runMetaTool(bridge, "resume", args, false, paused, String(api.conversationId)),
+      ),
   });
 
 /**
@@ -513,24 +608,28 @@ const resumeTool = (bridge: Bridge) =>
  * (`registry.install(...)`) or select it on a conversation's agent.
  *
  * `connect` is the seam a test uses to count connections, so the sharing policy
- * for the read-only tools can be checked without a live Executor.
+ * for the read-only tools can be checked without a live Executor. `onPaused` is
+ * where a paused call is recorded; it is called with the requestId and the
+ * envelope, and the host turns that into an approval row.
  */
 export function createExecutorMcp(
   config: ExecutorMcpConfig,
   options?: {
     readonly connect?: (config: ResolvedConfig) => Promise<Client>;
+    readonly onPaused?: PausedSink;
   },
 ): Extension {
+  const paused = options?.onPaused;
   const bridge = makeBridge(config, options?.connect ?? openClient);
   return defineExtension({
     name: "executor-mcp",
     tools: [
-      searchTool(bridge),
-      describeTool(bridge),
-      callTool(bridge),
-      executeTool(bridge),
-      skillsTool(bridge),
-      resumeTool(bridge),
+      searchTool(bridge, paused),
+      describeTool(bridge, paused),
+      callTool(bridge, paused),
+      executeTool(bridge, paused),
+      skillsTool(bridge, paused),
+      resumeTool(bridge, paused),
     ],
     sections: [executorProtocolSection],
   });
