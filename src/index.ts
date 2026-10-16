@@ -18,6 +18,7 @@ import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
+import type { PausedCall, PausedSink } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
 import { createFeed } from "./feed.ts";
 import type { Feed } from "./feed.ts";
@@ -28,13 +29,19 @@ import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
 import type { ThinkingLevel } from "./bots.ts";
 import { createApprovalStore } from "./approvals.ts";
-import type { ApprovalStore } from "./approvals.ts";
+import type { ApprovalStore, DecidedApproval } from "./approvals.ts";
 import { createRunStore, streamViewOf } from "./runs.ts";
 import type { RunStore } from "./runs.ts";
 import { activeRunOf, projectStatus } from "./status.ts";
 import { emptyTranscriptPage, highestEntryId, transcriptPage } from "./transcript.ts";
-import { TranscriptQuerySchema } from "./web-contract.ts";
-import type { BotView, PendingOperationView, TranscriptPage, TranscriptQuery } from "./web-contract.ts";
+import { ApprovalDecisionSchema, TranscriptQuerySchema } from "./web-contract.ts";
+import type {
+  ApprovalDecision,
+  BotView,
+  PendingOperationView,
+  TranscriptPage,
+  TranscriptQuery,
+} from "./web-contract.ts";
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -94,10 +101,16 @@ const describeCause = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
 const makeHarnessFactory =
-  (env: Env, botId: string): PiHarnessFactory =>
+  (env: Env, botId: string, onPaused: PausedSink): PiHarnessFactory =>
   async ({ storage, context }) => {
     const registry = createRegistry();
-    registry.install(createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }));
+    // The bridge detects the pause; `onPaused` turns it into the approval row.
+    registry.install(
+      createExecutorMcp(
+        { url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN },
+        { onPaused },
+      ),
+    );
     registry.install(createBotDelegation({ env, sourceBotId: botId }));
     const models = createModels();
     models.setProvider(opencodeGoProvider());
@@ -121,7 +134,11 @@ export class Bot extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.lifecycle = Lifecycle.install(this);
-    this.harness = new PiHarness({ harness: makeHarnessFactory(env, this.lifecycle.name) });
+    this.harness = new PiHarness({
+      harness: makeHarnessFactory(env, this.lifecycle.name, (paused) =>
+        this.#recordPaused(paused),
+      ),
+    });
     this.streams = new Streams();
     this.lifecycle.use(this.harness);
     this.lifecycle.use(this.streams);
@@ -142,13 +159,17 @@ export class Bot extends DurableObject<Env> {
     operationId: string,
     whenBusy: PiWhenBusy,
     thread?: string,
+    session?: string,
   ): Promise<PiReceipt> {
     await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
     const sessionId =
-      thread === undefined
+      session ??
+      (thread === undefined
         ? ROOT_SESSION
-        : await Effect.runPromise(Effect.tryPromise(() => this.#sessionForThread(thread)));
-    if (thread === undefined) await Effect.runPromise(Effect.tryPromise(() => this.#ensureBot()));
+        : await Effect.runPromise(Effect.tryPromise(() => this.#sessionForThread(thread))));
+    if (sessionId === ROOT_SESSION) {
+      await Effect.runPromise(Effect.tryPromise(() => this.#ensureBot()));
+    }
     // Attach before the submission is durable, so no harness event of the run
     // it admits can be produced before the watcher is listening.
     await this.#feed().attach(sessionId);
@@ -273,6 +294,26 @@ export class Bot extends DurableObject<Env> {
   }
 
   /**
+   * Decide one pending approval: the decision is durable first, then the single
+   * steer that has the model call `executor_resume`. `undefined` means there is
+   * nothing left to decide, which the front door reports rather than replaying.
+   */
+  async decide(
+    approvalId: string,
+    decision: ApprovalDecision,
+  ): Promise<DecidedApproval | undefined> {
+    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    return await this.#approvals().decide(
+      approvalId,
+      decision,
+      // The steer is a submission like any other, so it goes through `submit`:
+      // that is what gives it a run window, a stream and an audit row.
+      (input, operationId, whenBusy, session) =>
+        this.submit(input, operationId, whenBusy, undefined, session),
+    );
+  }
+
+  /**
    * The transcript of one thread, paged backwards by entry id. A thread mackbot
    * has never created has no transcript yet, so this reads rather than creating
    * a session on a GET.
@@ -357,6 +398,20 @@ export class Bot extends DurableObject<Env> {
   #approvals(): ApprovalStore {
     this.#approvalStore ??= createApprovalStore(this.ctx.storage);
     return this.#approvalStore;
+  }
+
+  /**
+   * The paused-call sink: the bridge found the pause, this records it. Recording
+   * is idempotent on the requestId, so a second sighting of the same pause is
+   * the same row.
+   */
+  #recordPaused(paused: PausedCall): void {
+    this.#approvals().recordPaused({
+      bot: this.lifecycle.name,
+      session: paused.session,
+      requestId: paused.requestId,
+      envelope: paused.envelope,
+    });
   }
 
   #feed(): Feed {
@@ -488,6 +543,7 @@ export class Bot extends DurableObject<Env> {
 const CHAT_ROUTE = /^\/chat\/([^/]+)$/u;
 const EVENTS_ROUTE = /^\/events\/([^/]+)$/u;
 const TRANSCRIPT_ROUTE = /^\/transcript\/([^/]+)$/u;
+const APPROVAL_ROUTE = /^\/approvals\/([^/]+)\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
@@ -590,6 +646,44 @@ const handleTranscript = async (url: URL, env: Env, botId: string): Promise<Resp
   return Response.json(page);
 };
 
+/**
+ * The decision body, decoded with the contract's schema at the front door. An
+ * unreadable or undecodable body is not a decision, so it is `undefined` rather
+ * than a partial one.
+ */
+const readApprovalDecision = (request: Request): Promise<ApprovalDecision | undefined> =>
+  Effect.runPromise(
+    Effect.tryPromise(() => request.text()).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ApprovalDecisionSchema))),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+
+const handleApproval = async (
+  request: Request,
+  env: Env,
+  botId: string,
+  approvalId: string,
+): Promise<Response> => {
+  const bots = await Effect.runPromise(loadBotsEffect());
+  if (!Object.hasOwn(bots, botId)) {
+    return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
+  }
+  const decision = await readApprovalDecision(request);
+  if (decision === undefined) {
+    return Response.json({ error: "invalid request body" }, { status: 400 });
+  }
+  const decided = await Effect.runPromise(
+    Effect.tryPromise(() => env.Bot.getByName(botId).decide(approvalId, decision)),
+  );
+  if (decided === undefined) {
+    // Already decided, unknown, or not resumable: the human's decision must not
+    // be replayed into a second resume.
+    return Response.json({ error: "no pending approval" }, { status: 409 });
+  }
+  return Response.json(decided);
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
@@ -610,6 +704,12 @@ export default {
       if (transcript !== null) {
         return request.method === "GET"
           ? await handleTranscript(url, env, transcript[1]!)
+          : methodNotAllowed();
+      }
+      const approval = APPROVAL_ROUTE.exec(url.pathname);
+      if (approval !== null) {
+        return request.method === "POST"
+          ? await handleApproval(request, env, approval[1]!, approval[2]!)
           : methodNotAllowed();
       }
       const events = EVENTS_ROUTE.exec(url.pathname);
