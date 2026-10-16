@@ -246,6 +246,9 @@ button {
   /* The query container for the type scale above. Every fluid token resolves
      `100cqi` here, on the shell, not on the desktop window. */
   container-type: inline-size;
+  /* The positioned ancestor for the toast, so it stays on the phone frame when
+     the desktop centres the shell. */
+  position: relative;
   block-size: 100dvh;
   display: flex;
   flex-direction: column;
@@ -684,6 +687,28 @@ details[open]::details-content {
 .ap-actions {
   display: flex;
   gap: 8px;
+}
+
+/* ---------- toast ---------- */
+
+/* The server answer the screen has to say out loud: a decision that did not
+   stick, or one another client had already made. It is the shell's own child so
+   it rides the phone frame, and it sits above the scroll region it interrupts. */
+.toast {
+  position: absolute;
+  inset-inline: 14px;
+  inset-block-end: calc(14px + env(safe-area-inset-bottom, 0px));
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-soft);
+  color: var(--warn-strong);
+  font-size: var(--step--1);
+  text-align: start;
+  box-shadow: 0 10px 30px var(--shadow);
 }
 
 .ap-foot {

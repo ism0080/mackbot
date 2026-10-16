@@ -8,6 +8,7 @@ export const init = () => ({
     screen: Screen.Home(),
     now: 0,
     roster: AsyncData.Idle(),
+    toast: null,
     channels: {},
     polling: true,
   },

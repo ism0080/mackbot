@@ -28,6 +28,25 @@ export const Message = defineMessageUnion({
     approvalId: Schema.String,
     action: Schema.Literals(["allow", "deny"]),
   },
+  /** The server recorded this client's decision, and says what it wrote. */
+  ApprovalDecided: {
+    bot: Schema.String,
+    approvalId: Schema.String,
+    status: Schema.Literals(["allowed", "denied"]),
+    decidedAt: Schema.Number,
+  },
+  /** The approval was not pending, so another decider got there first. */
+  ApprovalRefused: {
+    bot: Schema.String,
+    approvalId: Schema.String,
+  },
+  /** The decision did not reach the server, so the local claim is undone. */
+  ApprovalFailed: {
+    bot: Schema.String,
+    approvalId: Schema.String,
+    error: Schema.String,
+  },
+  DismissedToast: {},
   StatusLoaded: {
     bots: Schema.Record(Schema.String, BotViewSchema),
     errors: Schema.Record(Schema.String, Schema.String),

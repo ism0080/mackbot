@@ -1,12 +1,13 @@
 import { BotViewSchema, TranscriptPageSchema } from "@mackbot/web-contract";
+import type { ApprovalDecision } from "@mackbot/web-contract";
 import { Clock, Effect, Schema } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/http";
+import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Command, Http } from "foldkit";
 
 import { Message } from "./message.ts";
 
 /**
- * The two Commands that are the app's whole data source. Each one decodes its
+ * The Commands that are the app's whole data source. Each one decodes its
  * response against the contract's Schema, so a route that drifts from the
  * vocabulary fails at the boundary rather than rendering a half-built view.
  */
@@ -74,6 +75,64 @@ export const Transcript = Command.define("Transcript", {
     }).pipe(
       Effect.catch((cause) =>
         Effect.succeed(Message.TranscriptFailed({ bot, error: describe(cause) })),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/**
+ * The decision route's own response shapes, not the contract's: the route is the
+ * server's and serves the four fields the store wrote, then `{ error }` when the
+ * approval was not pending. A browser must decode the shape it is actually
+ * served, so these live here as the route's shape rather than as a contract type.
+ */
+const DecisionAcceptedSchema = Schema.Struct({
+  approvalId: Schema.String,
+  bot: Schema.String,
+  status: Schema.Literals(["allowed", "denied"]),
+  decidedAt: Schema.Number,
+});
+
+const DecisionRefusedSchema = Schema.Struct({ error: Schema.String });
+
+/**
+ * `POST /approvals/:bot/:approvalId` with the contract's decision body. A `409`
+ * is not a transport failure: it is the honest answer that the approval was not
+ * pending, so this reads the refusal body rather than turning it into a decode
+ * error the rollback path would claim as this client's failure.
+ */
+export const DecideApproval = Command.define("DecideApproval", {
+  args: {
+    bot: Schema.String,
+    approvalId: Schema.String,
+    action: Schema.Literals(["allow", "deny"]),
+  },
+  messages: [Message.ApprovalDecided, Message.ApprovalRefused, Message.ApprovalFailed],
+  execute: ({ bot, approvalId, action }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.post(
+        apiUrl(`/approvals/${encodeURIComponent(bot)}/${encodeURIComponent(approvalId)}`),
+      ).pipe(HttpClientRequest.bodyJson({ action } satisfies ApprovalDecision));
+      const response = yield* client.execute(request);
+
+      if (response.status === 409) {
+        yield* HttpClientResponse.schemaBodyJson(DecisionRefusedSchema)(response);
+        return Message.ApprovalRefused({ bot, approvalId });
+      }
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(`the decision route answered ${response.status}`);
+      }
+      const decided = yield* HttpClientResponse.schemaBodyJson(DecisionAcceptedSchema)(response);
+      return Message.ApprovalDecided({
+        bot,
+        approvalId: decided.approvalId,
+        status: decided.status,
+        decidedAt: decided.decidedAt,
+      });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.ApprovalFailed({ bot, approvalId, error: describe(cause) })),
       ),
       Effect.provide(Http.layer),
     ),

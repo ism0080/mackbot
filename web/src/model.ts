@@ -32,6 +32,16 @@ export type StreamState = typeof StreamState.Type;
 export const FRAME_WINDOW = 50;
 
 /**
+ * The one transient line the server has to say out loud and the user can
+ * dismiss: a decision that did not stick, or one another client had already
+ * made. It is global rather than per-channel because only one is ever visible.
+ */
+export const Toast = Schema.Struct({
+  text: Schema.String,
+});
+export type Toast = typeof Toast.Type;
+
+/**
  * Everything the client knows about one bot, keyed by that bot's id. The two
  * routes fill `status` and `transcript`; `frames` is what the SSE subscription
  * has folded in since, so an approval or a settled message that arrived while
@@ -65,6 +75,8 @@ export const Model = Schema.Struct({
    * fleet did not answer". Per-bot failures are their own channel's `status`.
    */
   roster: AsyncData.Schema(Schema.Null, Schema.String).schema,
+  /** The last server answer a view has to show; see {@link Toast}. */
+  toast: Schema.NullOr(Toast),
   channels: Schema.Record(Schema.String, Channel),
 });
 export type Model = typeof Model.Type;

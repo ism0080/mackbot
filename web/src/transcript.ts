@@ -6,7 +6,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { clockOf, elapsedOf } from "./format.ts";
 import { Message } from "./message.ts";
 import type { Channel, Model } from "./model.ts";
-import { avatar, botName, modelLabel, runTitle, statusTag } from "./partials.ts";
+import { avatar, botName, modelLabel, runTitle, statusTag, toast } from "./partials.ts";
 
 const statusIn = (channel: Channel | undefined): Option.Option<BotView> =>
   Option.match(Option.fromNullishOr(channel), {
@@ -167,6 +167,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
         ],
       ),
       h.main([h.Class("scroll")], body),
+      ...toast(model.toast, h),
     ],
   );
 };

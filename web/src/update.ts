@@ -4,7 +4,7 @@ import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
 import type { Update } from "foldkit";
 
-import { Status, Transcript } from "./api.ts";
+import { DecideApproval, Status, Transcript } from "./api.ts";
 import { Message } from "./message.ts";
 import { FRAME_WINDOW, Screen } from "./model.ts";
 import type { Channel, Model } from "./model.ts";
@@ -129,6 +129,44 @@ const resolveApproval = (
 /** A run that ended is no longer a reason to hold the connection. */
 const endRun = (view: BotView): BotView => modifyFields(view, { activeRun: () => undefined });
 
+/** The server's word replaces the local claim, whichever way it disagrees. */
+const markApproval = (
+  channel: Channel,
+  approvalId: string,
+  status: "allowed" | "denied",
+  decidedAt: number,
+): Channel =>
+  modifyStatus(channel, (view) =>
+    modifyFields(view, {
+      approvals: (approvals) =>
+        approvals.map((approval) =>
+          approval.approvalId === approvalId
+            ? modifyFields(approval, {
+                status: () => status,
+                decidedAt: () => decidedAt,
+              })
+            : approval,
+        ),
+    }),
+  );
+
+/**
+ * Undo an optimistic decision. The decision is only ever offered for a pending
+ * approval, so restoring `pending` and dropping `decidedAt` is the exact
+ * inverse, and the card and the transcript row that the flip retired come back.
+ */
+const revertApproval = (channel: Channel, approvalId: string): Channel =>
+  modifyStatus(channel, (view) =>
+    modifyFields(view, {
+      approvals: (approvals) =>
+        approvals.map((approval) =>
+          approval.approvalId === approvalId
+            ? modifyFields(approval, { status: () => "pending", decidedAt: () => undefined })
+            : approval,
+        ),
+    }),
+  );
+
 const windowFrames = (frames: readonly Frame[], frame: Frame): readonly Frame[] => {
   const next = [...frames, frame];
   return next.length <= FRAME_WINDOW ? next : next.slice(next.length - FRAME_WINDOW);
@@ -236,11 +274,40 @@ export const update = (model: Model, message: Message) =>
       if (channelOf(model, bot) === undefined) return { model };
 
       return {
-        model: withChannel(model, bot, (channel) =>
-          decideInChannel(channel, approvalId, action, model.now),
+        model: modifyFields(
+          withChannel(model, bot, (channel) =>
+            decideInChannel(channel, approvalId, action, model.now),
+          ),
+          { toast: () => null },
         ),
+        commands: [DecideApproval({ bot, approvalId, action })],
       };
     },
+    ApprovalDecided: ({ bot, approvalId, status, decidedAt }) => ({
+      // The optimistic flip already showed this; recording the server's own
+      // `decidedAt` and status replaces a guess with the fact.
+      model: modifyFields(
+        withChannel(model, bot, (channel) => markApproval(channel, approvalId, status, decidedAt)),
+        { toast: () => null },
+      ),
+    }),
+    ApprovalRefused: () => ({
+      // The approval is decided, but not by this client and not to a state the
+      // 409 body names. The local flip already took it out of the pending set,
+      // which is the one thing we do know, so keep it retired and refetch the
+      // route that owns the real status rather than claim which decider won.
+      model: modifyFields(model, {
+        toast: () => ({ text: "That approval was already decided elsewhere." }),
+      }),
+      commands: [Status()],
+    }),
+    ApprovalFailed: ({ bot, approvalId, error }) => ({
+      model: modifyFields(
+        withChannel(model, bot, (channel) => revertApproval(channel, approvalId)),
+        { toast: () => ({ text: `Couldn't record that decision (${error}). Try again.` }) },
+      ),
+    }),
+    DismissedToast: () => ({ model: modifyFields(model, { toast: () => null }) }),
     StatusLoaded: ({ bots, errors, at }) => {
       const ids = [...new Set([...Object.keys(bots), ...Object.keys(errors)])];
       const channels: Record<string, Channel> = { ...model.channels };
