@@ -31,7 +31,7 @@ export default {
      * (not left/right/top/bottom) or overflow-x/-y and overscroll-behavior-x/-y
      * (not sides at all). The entry's own prescribed reset writes
      * `max-width: 100%` and `height: auto` on img/svg/video, so banning those
-     * would set the source against itself. See README for the reading.
+     * would set the source against itself.
      * ================================================================== */
     "property-layout-mappings": [
       "flow-relative",

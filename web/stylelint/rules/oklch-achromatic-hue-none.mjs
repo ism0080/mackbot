@@ -1,8 +1,7 @@
-// good-css, foundations.md "OKLCH color": "Write grays, white and black with
-// `none` as the hue... A written hue of `0` is red, and it pulls every mix
-// toward red." A zero-chroma color written with hue `0` looks identical on its
-// own, so stylesheets accept the mistake silently and only the mix drifts, a
-// colour bug no browser reports. Core stylelint has no rule for it.
+// An achromatic oklch() (zero chroma) must write `none` as its hue, not `0`.
+// A written hue of 0 is red, so the colour looks identical on its own and only
+// drags a later mix toward red: a colour bug no browser reports, and no core
+// stylelint rule can see it.
 
 import stylelint from "stylelint";
 

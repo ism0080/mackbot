@@ -1,6 +1,5 @@
-// good-css, interaction.md "Hover styles only where hover exists":
-// "Use it on every `:hover` rule, so a tap on a touch screen does not leave
-// the hover state stuck", inside `@media (hover: hover) and (pointer: fine)`.
+// Every `:hover` rule must sit inside `@media (hover: hover) and (pointer:
+// fine)`, so a tap on a touch screen does not leave the hover state stuck.
 //
 // Core stylelint matches one selector at a time and cannot see the @media that
 // wraps it, so the nesting context has to be checked here.

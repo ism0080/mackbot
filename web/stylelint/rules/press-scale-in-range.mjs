@@ -1,7 +1,6 @@
-// good-css, interaction.md "Press feedback": "Keep the scale between 0.95 and
-// 0.98." The range is a condition of the technique, and it is only the press
-// state that carries it, so the check is scoped to `:active` rules. Core
-// stylelint cannot join a selector to the value it is meant to bound.
+// A press scale must stay between 0.95 and 0.98. The range is a condition of
+// the press state, so the check is scoped to `:active` rules, which core
+// stylelint cannot join to the value it is meant to bound.
 
 import stylelint from "stylelint";
 

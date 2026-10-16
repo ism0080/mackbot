@@ -1,9 +1,9 @@
-// The good-css rules core stylelint cannot express, as one local plugin.
+// The rules core stylelint cannot express, as one local plugin.
 //
 // Core stylelint rules see a declaration or a rule on its own. Whatever a rule
 // needs to know about the tree around it — the @media it sits in, the
 // @keyframes an animation names, the selector that a value is meant to bound —
-// lives in the rules below. Each file names the good-css entry it comes from.
+// lives in the rules below.
 //
 // This is a plain ESM module beside the config, not a package, in the same
 // shape as the vendored oxlint plugin under tools/oxlint/.

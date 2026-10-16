@@ -1,6 +1,5 @@
-/* Not a violation. good-css names left, right, top and bottom, not width and
-   height, and its own prescribed reset writes max-width and height on
-   img/svg/video. overflow-y is an axis, not a side. */
+/* Not a violation: width, height, the min/max-* sizes and the overflow axes
+   are not the four sides the side-property mandate names. */
 img,
 svg,
 video {

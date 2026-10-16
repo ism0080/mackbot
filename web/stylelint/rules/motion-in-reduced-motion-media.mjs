@@ -1,11 +1,10 @@
-// good-css, interaction.md "Press feedback" (and SKILL.md "In all CSS"):
-// "Put a transition that moves or scales something inside
-// `@media (prefers-reduced-motion: no-preference)`."
+// A transition or animation that moves or scales must sit inside
+// `@media (prefers-reduced-motion: no-preference)`.
 //
 // Core stylelint cannot see the @media that wraps a declaration, so this rule
 // checks the ancestor chain. A transition moves or scales when it names
-// transform/translate/scale/rotate; an animation moves or scales when one of
-// the @keyframes it names declares one of those properties.
+// transform/translate/scale/rotate; an animation does when one of the
+// @keyframes it names declares one of those properties.
 
 import stylelint from "stylelint";
 

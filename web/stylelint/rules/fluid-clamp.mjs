@@ -1,10 +1,7 @@
-// good-css, foundations.md "Fluid sizes with clamp()":
-// - "Write the preferred value as `rem + vw`, never `vw` alone. ... A bare
-//   `vw` value also ignores the reader's font size setting."
-// - "Keep both bounds in `rem` so they follow the reader's font size."
-//
-// Both conditions are about the three arguments of one clamp() call, which a
-// core stylelint rule cannot see as a unit.
+// A clamp()'s preferred value must pair a viewport unit with a font-relative
+// one rather than a viewport unit alone, and both bounds must be in rem so they
+// follow the reader's font size. Both conditions are about the three arguments
+// of one clamp() call, which a core stylelint rule cannot see as a unit.
 
 import stylelint from "stylelint";
 
