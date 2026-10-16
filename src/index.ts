@@ -22,9 +22,8 @@ import { serveEvents } from "./feed.ts";
 import { cronOperationId, httpOperationId, originOf } from "./operation.ts";
 import type { OperationOrigin } from "./operation.ts";
 import { isAuthorized, readChatRequest } from "./chat-request.ts";
-import { createSharedMemory } from "./memory.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
-import { loadBots, resolveModelRef } from "./bots.ts";
+import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
 import type { ModelRef, ThinkingLevel } from "./bots.ts";
 
@@ -105,10 +104,6 @@ const makeHarnessFactory =
     const registry = createRegistry();
     registry.install(createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }));
     registry.install(createBotDelegation({ env, sourceBotId: botId }));
-    const bot = loadBots()[botId];
-    if (bot?.sharedMemory !== undefined) {
-      registry.install(createSharedMemory({ scopes: bot.sharedMemory }));
-    }
     const models = createModels();
     models.setProvider(opencodeGoProvider());
     models.setProvider(createAI({ binding: env.AI }).provider);

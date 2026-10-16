@@ -3,15 +3,13 @@
 This file now lists only the work that is still outstanding. The following
 foundation pieces are already implemented and are intentionally omitted here:
 
-- Durable bot registry config extensions: `delegatesTo`, `sharedMemory`, and
-  `budgets`, with validation.
+- Durable bot registry config extensions: `delegatesTo` and `budgets`, with
+  validation.
 - Delegation enforcement for the optional `delegatesTo` allowlist.
-- Shared-memory prompt/config seam (`src/memory.ts`), installed per bot when
-  `bots.json` declares `sharedMemory` scopes.
 - Optional durable thread IDs in `POST /chat/:bot`, including per-thread pi
   session creation and SQLite mapping.
 - Audit-log storage seam (`src/audit-log.ts`).
-- Existing meta-tool bridge, cron briefs, approvals via browser links, and
+- Existing meta-tool bridge, cron briefs, approvals in model mode, and
   compaction configuration.
 
 ## Product and UX
@@ -26,7 +24,7 @@ foundation pieces are already implemented and are intentionally omitted here:
 - **Saved routines (“show me once”).** Allow a user to record a workflow and
   store it as a reusable routine, then run it on a schedule with approval gates.
 - **Bot presets / marketplace config.** Evolve `bots.json` into versioned presets
-  with model, prompt, delegates, memory scopes, approved tools, and channel
+  with model, prompt, delegates, approved tools, and channel
   bindings.
 - **Shared workspaces across bots.** Add a real shared file/workspace capability
   with provenance fields identifying the bot that created or changed each
@@ -34,7 +32,7 @@ foundation pieces are already implemented and are intentionally omitted here:
 - **Attachment/media support.** Add durable storage for files, screenshots,
   reports, and artifacts produced by bot work.
 - **Richer task lifecycle labels.** Distinguish chat inputs, cron briefs,
-  delegated tasks, approval retries, and memory writes in `/status` and usage.
+  delegated tasks, and approval retries in `/status` and usage.
 
 ## Runtime and durability
 
@@ -55,10 +53,8 @@ foundation pieces are already implemented and are intentionally omitted here:
   prefix already carries it), approval turns labelled as their own origin, and
   per-origin spend, which `pi.usage` does not track because it belongs to the
   harness.
-- **Memory compaction automation.** Use compaction as a trigger for distilling
-  durable cross-bot facts into the shared memory app, as already designed.
 - **Audit-runtime integration.** Wire the audit-log seam into chat, delegation,
-  approval, memory, and sandbox flows instead of leaving it standalone.
+  and approval flows instead of leaving it standalone.
 - **Sandbox and workspace.** Add a durable virtual filesystem and dynamic code
   execution, reserving containers for native tools, git, package installation,
   or compilers.
@@ -69,8 +65,6 @@ foundation pieces are already implemented and are intentionally omitted here:
   Worker isolates with the bindings and output limits appropriate for bots.
 - **Account connection as a first-class flow.** Let a human obtain and complete a
   connection link and select profiles without exposing secrets in chat.
-- **Tool provenance in memory.** When a bot records a fact, retain which tool,
-  profile, account, and conversation produced it.
 - **Provider/model fallback.** Add fallback tiers (free, cheap, premium) per bot
   and make them visible in status.
 
@@ -93,8 +87,6 @@ foundation pieces are already implemented and are intentionally omitted here:
   caps, and provider-specific limits beyond config declarations.
 - **Tracing.** Add agent, model-turn, and tool-call spans with standard GenAI
   attributes.
-- **Memory review cadence.** Prevent trivia accumulation by adding confidence,
-  review, or decay mechanisms for distilled facts.
 - **Cost posture monitoring.** Track Durable Object duration, storage, alarm
   usage, and free-tier tuning effectiveness.
 

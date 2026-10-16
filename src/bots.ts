@@ -38,10 +38,6 @@ export const MODEL_VARIANTS = {
 
 export type ThinkingLevel = (typeof MODEL_VARIANTS)[keyof typeof MODEL_VARIANTS][number];
 
-export interface SharedMemoryConfig {
-  readonly read: readonly string[];
-  readonly write: readonly string[];
-}
 export interface BudgetConfig {
   tokens?: number;
   usd?: number;
@@ -53,7 +49,6 @@ export interface BotConfig {
   readonly systemPrompt: string;
   readonly brief?: string;
   readonly delegatesTo?: string[];
-  readonly sharedMemory?: SharedMemoryConfig;
   readonly budgets?: BudgetConfig;
 }
 
@@ -185,25 +180,6 @@ const decodeStringArray = (
   return Effect.succeed(out);
 };
 
-const decodeSharedMemory = (
-  botId: string,
-  value: RawJson,
-): Effect.Effect<SharedMemoryConfig, Error> =>
-  Effect.gen(function* () {
-    if (!isObject(value))
-      return yield* fail(`bot "${botId}" field "sharedMemory" must be an object`);
-    const read = field(value, "read");
-    if (read === undefined)
-      return yield* fail(`bot "${botId}" field "sharedMemory.read" is required`);
-    const write = field(value, "write");
-    if (write === undefined)
-      return yield* fail(`bot "${botId}" field "sharedMemory.write" is required`);
-    return {
-      read: yield* decodeStringArray(botId, "sharedMemory.read", read),
-      write: yield* decodeStringArray(botId, "sharedMemory.write", write),
-    };
-  });
-
 const decodeBudgets = (botId: string, value: RawJson): Effect.Effect<BudgetConfig, Error> =>
   Effect.gen(function* () {
     if (!isObject(value)) return yield* fail(`bot "${botId}" field "budgets" must be an object`);
@@ -231,7 +207,6 @@ interface DraftBotConfig {
   thinkingLevel?: ThinkingLevel;
   brief?: string;
   delegatesTo?: string[];
-  sharedMemory?: SharedMemoryConfig;
   budgets?: BudgetConfig;
 }
 
@@ -257,10 +232,6 @@ const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error>
     const delegatesTo = field(raw, "delegatesTo");
     if (delegatesTo !== undefined) {
       config.delegatesTo = yield* decodeStringArray(botId, "delegatesTo", delegatesTo);
-    }
-    const sharedMemory = field(raw, "sharedMemory");
-    if (sharedMemory !== undefined) {
-      config.sharedMemory = yield* decodeSharedMemory(botId, sharedMemory);
     }
     const budgets = field(raw, "budgets");
     if (budgets !== undefined) {

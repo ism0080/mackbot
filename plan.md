@@ -20,7 +20,7 @@ mackbot is the self-hosted version of that: a fleet of durable agent bots, each 
 | 24/7, survives everything                          | Pi Durable in SQLite-backed Durable Objects; wake-up alarms resume mid-run after eviction/crash/deploy                                                                                                                                                    | —                                                                                                                                       |
 | "Own computer" / shared cloud computer             | Executor v2 apps hold all real tools and accounts (bots stay thin)                                                                                                                                                                                        | Shared workspace per user: sandbox phase — Daytona / Cloudflare Containers / homelab remote `ExecutionEnv`                              |
 | Routines on a schedule                             | Cron Triggers → per-bot briefs (stable `operationId` = at-most-once)                                                                                                                                                                                      | "Show me once" workflow capture → saved routine                                                                                         |
-| Memory, smarter over time                          | Per-conversation typed docs + automatic compaction                                                                                                                                                                                                        | Cross-bot shared memory via a `memory` Executor app (late todo, see below)                                                              |
+| Memory, smarter over time                          | Per-conversation typed docs + automatic compaction                                                                                                                                                                                                        | Cut 2026-10-16; see Cross-bot memory below                                                              |
 | Approvals / Auto Review                            | Executor approvals guard server-side; `model` elicitation mode — a paused call returns a `requestId`, the bot puts the question to you in the channel it is talking to you on, and `resume` collects the answer; unsafe tools never auto-replay | Channel approve/deny buttons, and remembered approvals. `browser` mode also exists, but its approval URL carries the connection token                                                       |
 | Bots in one thread passing work                    | Built-in `delegate_to_bot` pi tool: any bot submit()s a task to another bot's DO and long-polls (55s) or returns a receipt; unsafe replay; approval links relayed in the answer. No per-bot gating (any→any) in v1                                        | Bot-to-bot delegation hardening: `delegatesTo` allowlists in bots.json, fire-and-poll / async callbacks, and richer multi-bot threading |
 
@@ -81,7 +81,6 @@ mackbot/
     ├── bot-delegation.ts# delegate_to_bot pi tool (guards + long-poll)
     ├── chat-request.ts  # front-door request contract (bearer, byte cap, body schema)
     ├── operation.ts     # operation ids and the origin they encode
-    ├── memory.ts        # shared-memory prompt section (Executor memory app)
     ├── audit-log.ts     # append-only SQLite audit seam
     ├── runtime.ts       # ManagedRuntime bridge for Pi/Cloudflare callbacks
     └── services/        # BotRegistryService, DelegationPolicy
@@ -168,21 +167,18 @@ Implementation: `@modelcontextprotocol/sdk` `StreamableHTTPClientTransport` (wor
 6. `/status` + cron briefs
 7. Later (optional): first-party webapp on the SSE events route (PiHarness exposes each session's event stream; reconnects are snapshot-only — see Pi limitations above), per-chat sessions, sandbox/"own computer" phase
 8. **Telegram integration — last, and only if the webapp doesn't replace it as the phone surface**: `setWebhook` per bot (with per-bot `secret_token`); approval buttons via `model` elicitation mode come later still
-9. Late todo: cross-bot shared memory (Executor app) — see below
 
-## Late todo: cross-bot shared memory (Executor app)
+## Cross-bot memory (cut)
 
-Pi Durable keeps memory per conversation (typed docs + compaction), and one storage per harness means there is no built-in sharing across bot DOs. Shared memory lives in a **`memory` app on our Executor** instead: one seam every agent already uses (bots _and_ OpenCode agents), approvals can guard writes, and the app can ship a dashboard UI for browsing memory. Design settled 2026-10-13:
+Pi Durable keeps memory per conversation (typed docs plus compaction), and one storage per harness means there is no sharing across bot DOs. Cross-bot memory was designed three times and cut on 2026-10-16, because it was never load-bearing and every route needed either a vendor or unrewarded work.
 
-- **App tools**: `memory.remember` (fact + scope + tags, keyed upsert), `memory.recall` (search by words/scope), `memory.forget` (archive). Every row carries provenance: which bot, which conversation, when.
-- **Bot-side bridge**: a small pi extension per bot with
-  - a stable `memory` prompt section — index only (scopes + "use memory_search"), so provider prompt caches stay warm (confirmed in pi-durable docs: sections re-render only on change, and each conversation's UUIDv7 in `pi.provider` gives provider session affinity);
-  - a `memory_search` pi tool (`replay: "safe"`) — lazy reads on demand;
-  - a `remember` pi tool (`replay: "unsafe"` until writes are keyed upserts).
-- **Write paths**: explicit `remember` calls (the "noted for next time" moment) **plus automatic distillation**: a `beforeCompact` hook on `CompactionTask` so the compaction pass that already runs for context reasons also extracts durable cross-bot facts — one model pass, double duty.
-- **Per-bot scopes** in `bots.json`: `"sharedMemory": { "read": ["homelab", "family"], "write": ["homelab"] }`.
-- **Conflicts**: append-only log + timestamps; materialized last-writer-wins view; provenance surfaced in `/status` ("Updated memory for …", Grok Bot style).
-- **Gotchas**: route scope-changing writes through Executor approvals (later surfaced as Telegram buttons); give distilled facts a review cadence so trivia doesn't accumulate.
+What was tried, and where each stopped:
+
+- **A `memory` app of our own.** Two tables, five tools, one skill, and the app-authoring toolchain. Viable, but search would be keyword-only, since an Executor app has no embedding capability, and the write protocol and the trivia review would both have to be invented.
+- **Mem0** (`@executor.sh/mem0`). One catalog entry, but its scoping fights the design. Passing both `user_id` and `agent_id` files each extracted fact under whichever of the two said it, so `{"AND": [...]}` returns nothing, and there is an open platform report that v3 stores neither, which would leave any filter advisory.
+- **Kody** (installed from `https://kody.codes/mcp`). The closest fit, since it is built for exactly this and the installed app works. Two blockers. Its Executor surface is three generic tools (`search`, `execute`, `api`), and `api` is a mutation, so even `metaMemorySearch` pauses for human approval, which no unattended fleet can absorb. And its MCP OAuth grant is bound to `https://kody.codes/mcp`, confirmed by its own `auth.md` and Open API, so `api.kody.codes` is out of reach; that API wants a `kody_at_...` token.
+
+If it returns, the shortest route is a wrapper app over Kody's REST API, `GET /v1/memories`, `POST /v1/memories`, `POST /v1/memories/verify`, and `GET`/`DELETE /v1/memories/{memory_id}`, with a `secrets` account holding a `kody_at_...` token, reads on `approval: never()` and writes on `always()`.
 
 ## Open inputs (before implementation)
 

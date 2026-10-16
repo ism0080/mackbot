@@ -83,22 +83,12 @@ ok("delegatesTo declared", {
 });
 
 err(
-  "sharedMemory missing write",
-  { a: { model: "glm-5.3", systemPrompt: "x", sharedMemory: { read: ["s"] } } },
-  'field "sharedMemory.write" is required',
-);
-err(
   "budgets negative",
   { a: { model: "glm-5.3", systemPrompt: "x", budgets: { tokens: -1 } } },
   'field "budgets.tokens" must be a non-negative number',
 );
-ok("sharedMemory and budgets ok", {
-  a: {
-    model: "glm-5.3",
-    systemPrompt: "x",
-    sharedMemory: { read: ["s"], write: ["s"] },
-    budgets: { tokens: 10, usd: 1 },
-  },
+ok("budgets ok", {
+  a: { model: "glm-5.3", systemPrompt: "x", budgets: { tokens: 10, usd: 1 } },
 });
 
 const opencodeRef = resolveModelRef({ model: "deepseek-v4-pro", systemPrompt: "x" });
