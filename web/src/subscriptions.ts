@@ -154,6 +154,8 @@ const mergeSources = (sources: readonly Source[]): Stream.Stream<Message> =>
     ? Stream.empty
     : Stream.mergeAll(sources.map(sourceStream), { concurrency: "unbounded" });
 
+type EventDependencies = { readonly sources: readonly Source[] };
+
 export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   statusPoll: entry(
     { everyMs: Schema.Number },
@@ -171,9 +173,7 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   events: entry(
     { sources: Schema.Array(Source) },
     {
-      modelToDependencies: (model: Model): { readonly sources: readonly Source[] } => ({
-        sources: activeSources(model),
-      }),
+      modelToDependencies: (model: Model): EventDependencies => ({ sources: activeSources(model) }),
       // A frame updates `lastSeq` on every message; reconnecting for each one
       // would be a stream per frame. The cursor therefore stays out of the
       // restart decision while a new attempt — the drop — goes in.
@@ -187,11 +187,7 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
           }),
         ),
       }),
-      dependenciesToStream: ({
-        sources,
-      }: {
-        readonly sources: readonly Source[];
-      }) => mergeSources(sources),
+      dependenciesToStream: ({ sources }: EventDependencies) => mergeSources(sources),
     },
   ),
 }));
