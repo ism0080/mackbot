@@ -9,6 +9,8 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { Window } from "happy-dom";
 
+import { StubEventSource } from "./eventsource.mjs";
+
 const ASSETS = new URL("../../dist/assets/", import.meta.url);
 const files = readdirSync(ASSETS);
 const bundle = new URL(files.find((name) => name.endsWith(".js")), ASSETS);
@@ -54,6 +56,9 @@ export const boot = async (origin) => {
 
   window.document.body.innerHTML = '<div id="root"></div>';
   window.document.head.insertAdjacentHTML("beforeend", `<style>${css}</style>`);
+
+  // happy-dom ships no EventSource; the app's transport is the browser's.
+  globals.EventSource = StubEventSource;
 
   const pageErrors = [];
   window.addEventListener("error", (event) => pageErrors.push(event.message));

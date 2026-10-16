@@ -27,10 +27,10 @@ const StatusResponseSchema = Schema.Struct({
 /**
  * The Worker origin. Same-origin by default because the Worker serves this app;
  * a deployment that splits them sets `VITE_API_BASE`. No token is bundled — the
- * browser surface is not authenticated yet, so the bearer never leaves the
- * machine.
+ * browser surface authenticates with a cookie, because `EventSource` cannot set
+ * an `Authorization` header. The bearer never leaves the machine.
  */
-const apiUrl = (path: string): string => {
+export const apiUrl = (path: string): string => {
   const configured = import.meta.env.VITE_API_BASE;
   if (configured === undefined || configured === "") return `${globalThis.location.origin}${path}`;
   return `${configured.replace(/\/+$/u, "")}${path}`;

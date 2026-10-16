@@ -122,13 +122,16 @@ try {
   check("approval reference is gone from the transcript", all(".ap-ref").length === 0);
 
   // 6 — the requests the app made.
-  const calls = stub.requests.map((request) => `${request.method} ${request.path}`);
+  const firstCalls = stub.requests
+    .filter((request, index) => stub.requests.findIndex((other) => other.path === request.path) === index)
+    .map((request) => `${request.method} ${request.path}`);
   check(
-    "the app asked for the roster and both transcripts",
-    calls.length === 3 &&
-      calls[0] === "GET /status" &&
-      calls.slice(1).sort().join("|") === "GET /transcript/hermes|GET /transcript/scribe",
-    calls.join("; "),
+    "the app asked for the roster, both transcripts, and the live bot's events",
+    firstCalls.length === 4 &&
+      firstCalls[0] === "GET /status" &&
+      firstCalls.slice(1).sort().join("|") ===
+        "GET /events/hermes|GET /transcript/hermes|GET /transcript/scribe",
+    firstCalls.join("; "),
   );
   const transcriptQueries = stub.requests
     .filter((request) => request.path.startsWith("/transcript/"))
