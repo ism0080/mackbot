@@ -13,6 +13,11 @@
  * `OPENCODE_API_KEY` from `process.env`, and the agents lifecycle and the MCP
  * SDK use Node built-ins.
  *
+ * `assets` serves the built Foldkit app. `runWorkerFirst` routes every request
+ * through this Worker before the asset layer, because `/status` and its
+ * siblings would otherwise be answered by the SPA fallback. The Worker handles
+ * its own routes and hands everything else to `env.ASSETS`.
+ *
  * This is a fresh project: nothing is adopted (`adopt(true)` is not used).
  */
 
@@ -39,6 +44,11 @@ export default Alchemy.Stack(
         flags: ["nodejs_compat"],
       },
       crons: ["0 * * * *"],
+      assets: {
+        directory: "./web/dist",
+        runWorkerFirst: true,
+        notFoundHandling: "single-page-application",
+      },
       env: {
         Bot: Cloudflare.DurableObject<Bot>("Bot"),
         AI: Cloudflare.Workers.AI(),

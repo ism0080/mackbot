@@ -23,7 +23,9 @@ import { createBotDelegation } from "./bot-delegation.ts";
 import { createFeed } from "./feed.ts";
 import type { Feed } from "./feed.ts";
 import { cronOperationId, httpOperationId, originOf } from "./operation.ts";
-import { isAuthorized, readChatRequest } from "./chat-request.ts";
+import { readChatRequest, tokensMatch } from "./chat-request.ts";
+import { loginDocument } from "./login-page.ts";
+import { authenticate, csrfAllows, issueSession, sessionCookie } from "./session.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
@@ -54,6 +56,7 @@ import type { AuditEvent, AuditLog } from "./audit-log.ts";
 export interface Env {
   readonly Bot: DurableObjectNamespace<Bot>;
   readonly AI: Ai;
+  readonly ASSETS: Fetcher;
   readonly EXECUTOR_URL: string;
   readonly EXECUTOR_TOKEN: string;
   readonly OPENCODE_API_KEY: string;
@@ -548,6 +551,73 @@ const APPROVAL_ROUTE = /^\/approvals\/([^/]+)\/([^/]+)$/u;
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
 
+const LoginFormSchema = Schema.Struct({ token: Schema.NonEmptyString });
+
+const readLoginToken = async (request: Request): Promise<string | undefined> => {
+  const form = await Effect.runPromise(
+    Effect.tryPromise(() => request.formData()).pipe(Effect.orElseSucceed(() => undefined)),
+  );
+  if (form === undefined) return undefined;
+  return Effect.runPromise(
+    Schema.decodeUnknownEffect(LoginFormSchema)(Object.fromEntries(form)).pipe(
+      Effect.map((body) => body.token),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+};
+
+const handleLogin = async (request: Request, env: Env): Promise<Response> => {
+  if (request.method === "GET") {
+    return new Response(loginDocument(false), {
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
+  if (request.method !== "POST") return methodNotAllowed();
+  const token = await readLoginToken(request);
+  if (token === undefined || !tokensMatch(token, env.CHAT_BEARER_TOKEN)) {
+    return new Response(loginDocument(true), {
+      status: 401,
+      headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" },
+    });
+  }
+  const value = await Effect.runPromise(issueSession(env.CHAT_BEARER_TOKEN, Date.now()));
+  return new Response(null, {
+    status: 303,
+    headers: {
+      Location: "/",
+      "Set-Cookie": sessionCookie(request, value),
+      "cache-control": "no-store",
+    },
+  });
+};
+
+const isMutation = (request: Request): boolean =>
+  request.method !== "GET" && request.method !== "HEAD";
+
+const API_ROUTES = [CHAT_ROUTE, EVENTS_ROUTE, TRANSCRIPT_ROUTE, APPROVAL_ROUTE];
+
+const isApiRoute = (pathname: string): boolean =>
+  pathname === "/status" || API_ROUTES.some((route) => route.test(pathname));
+
+/**
+ * The refusal for a request that may not continue, or `undefined` when it may.
+ * A browser navigation without a credential is sent to the login page; an API
+ * call gets JSON, because a redirect would decode as a broken response.
+ */
+const authorize = async (request: Request, env: Env): Promise<Response | undefined> => {
+  const method = await Effect.runPromise(authenticate(request, env.CHAT_BEARER_TOKEN));
+  if (method === undefined) {
+    const pathname = new URL(request.url).pathname;
+    return isApiRoute(pathname) || isMutation(request)
+      ? Response.json({ error: "unauthorized" }, { status: 401 })
+      : Response.redirect(new URL("/login", request.url).toString(), 302);
+  }
+  if (method === "cookie" && isMutation(request) && !csrfAllows(request)) {
+    return Response.json({ error: "forbidden" }, { status: 403 });
+  }
+  return undefined;
+};
+
 const loadBotsEffect = (): Effect.Effect<Record<string, BotConfig>> =>
   Effect.flatMap(BotRegistryService, (registry) => registry.loadBots()).pipe(
     Effect.provide(BotRegistryService.layer),
@@ -687,10 +757,12 @@ const handleApproval = async (
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
-      if (!isAuthorized(request, env.CHAT_BEARER_TOKEN)) {
-        return Response.json({ error: "unauthorized" }, { status: 401 });
-      }
       const url = new URL(request.url);
+      if (url.pathname === "/login") {
+        return await handleLogin(request, env);
+      }
+      const refusal = await authorize(request, env);
+      if (refusal !== undefined) return refusal;
       if (url.pathname === "/status") {
         return request.method === "GET" ? await handleStatus(env) : methodNotAllowed();
       }
@@ -720,7 +792,9 @@ export default {
           ? await env.Bot.getByName(events[1]!).fetch(request)
           : methodNotAllowed();
       }
-      return Response.json({ error: "not found" }, { status: 404 });
+      // Everything that is not this Worker's own route is the built app. The
+      // assets binding applies the SPA fallback for a deep link.
+      return await env.ASSETS.fetch(request);
     } catch (cause) {
       // Never leak a stack or internal detail: log the cause, return JSON.
       console.error(`mackbot: request failed: ${describeCause(cause)}`);
