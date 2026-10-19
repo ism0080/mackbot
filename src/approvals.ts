@@ -62,6 +62,14 @@ const DECIDABLE_SQL =
 const DECIDE_SQL =
   "UPDATE mackbot_approvals SET status = ?, decided_at = ? WHERE approval_id = ? AND status = 'pending'";
 
+// The state of one paused call, by the id Executor knows it by.
+const REQUEST_STATE_SQL =
+  "SELECT status FROM mackbot_approvals WHERE request_id = ?";
+
+const RequestStateSchema = Schema.Struct({
+  status: Schema.Literals(["pending", "allowed", "denied", "expired"]),
+});
+
 const ApprovalRecordSchema = Schema.Struct({
   approval_id: Schema.String,
   bot_id: Schema.String,
@@ -120,6 +128,9 @@ const rowToApproval = (row: SqlRow): Option.Option<ApprovalView> =>
   );
 
 /** One paused call, as the bridge found it. */
+/** What the store knows about one paused call. */
+export type ApprovalState = "pending" | "decided" | "unknown";
+
 export interface PausedApproval {
   readonly bot: string;
   /**
@@ -157,6 +168,12 @@ export type ApprovalStore = {
   readonly record: (approval: ApprovalView) => void;
   readonly recordPaused: (paused: PausedApproval) => void;
   readonly pending: () => readonly ApprovalView[];
+  /**
+   * What the store knows about one paused call. The executor policy asks this
+   * before it lets a model resume a call, so a requestId nobody approved is
+   * "unknown" rather than "pending".
+   */
+  readonly stateOf: (requestId: string) => ApprovalState;
   readonly decide: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -293,6 +310,16 @@ export function createApprovalStore(storage: SqlStorage): ApprovalStore {
     return read(executor, PENDING_SQL).flatMap((row) => Option.toArray(rowToApproval(row)));
   };
 
+  const stateOf = (requestId: string): ApprovalState => {
+    ensureMigrated();
+    const rows = read(executor, REQUEST_STATE_SQL, requestId);
+    const record = Option.getOrUndefined(
+      Schema.decodeUnknownOption(RequestStateSchema)(rows[0]),
+    );
+    if (record === undefined) return "unknown";
+    return record.status === "pending" ? "pending" : "decided";
+  };
+
   /** The approval a decision can act on, or `undefined` when it cannot. */
   const decidable = (approvalId: string): DecidableApproval | undefined =>
     Option.getOrUndefined(
@@ -335,7 +362,7 @@ export function createApprovalStore(storage: SqlStorage): ApprovalStore {
     return { approvalId, bot: row.bot, status, decidedAt };
   };
 
-  return { record, recordPaused, pending, decide };
+  return { record, recordPaused, pending, stateOf, decide };
 }
 
 /** The bot and addressing a pending approval needs; kept off {@link DecidedApproval}. */

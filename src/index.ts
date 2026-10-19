@@ -22,7 +22,7 @@ import type { PausedCall, PausedSink } from "./executor-mcp.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
 import { createFeed } from "./feed.ts";
 import type { Feed } from "./feed.ts";
-import { cronOperationId, httpOperationId, originOf } from "./operation.ts";
+import { cronOperationId, httpOperationId, originOf, abortOperationId } from "./operation.ts";
 import { readChatRequest, tokensMatch } from "./chat-request.ts";
 import { loginDocument } from "./login-page.ts";
 import { authenticate, csrfAllows, issueSession, sessionCookie } from "./session.ts";
@@ -36,8 +36,10 @@ import { createRunStore, streamViewOf } from "./runs.ts";
 import type { RunStore } from "./runs.ts";
 import { activeRunOf, projectStatus } from "./status.ts";
 import { emptyTranscriptPage, highestEntryId, transcriptPage } from "./transcript.ts";
-import { ApprovalDecisionSchema, TranscriptQuerySchema } from "./web-contract.ts";
+import { ApprovalDecisionSchema, AbortRequestSchema, TranscriptQuerySchema } from "./web-contract.ts";
 import type {
+  AbortRequest,
+  AbortResult,
   ApprovalDecision,
   BotView,
   PendingOperationView,
@@ -257,6 +259,33 @@ export class Bot extends DurableObject<Env> {
       text: result.text,
       reason: result.reason,
     };
+  }
+
+  /**
+   * Stop a session's current work.
+   *
+   * pi withdraws the session's queued inputs and aborts its running work; the
+   * call resolves once the session is idle. `aborted` says whether there was
+   * anything to stop, because pi's own abort answers true for an idle session
+   * too and an idle bot must not look like it did something.
+   */
+  async abort(session: string = ROOT_SESSION): Promise<AbortResult> {
+    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    const pending = await Effect.runPromise(
+      Effect.tryPromise(() => this.harness.pending()),
+    );
+    const live = pending.filter((operation) => operation.session === session);
+    await Effect.runPromise(
+      Effect.tryPromise(() => this.harness.session(session).abort()),
+    );
+    await this.#appendAudit({
+      timestamp: Date.now(),
+      botId: this.lifecycle.name,
+      kind: "session.aborted",
+      operationId: abortOperationId(session),
+      detail: { session, stopped: live.length },
+    });
+    return { bot: this.lifecycle.name, session, aborted: live.length > 0 };
   }
 
   async status(): Promise<BotView> {
@@ -547,6 +576,7 @@ const CHAT_ROUTE = /^\/chat\/([^/]+)$/u;
 const EVENTS_ROUTE = /^\/events\/([^/]+)$/u;
 const TRANSCRIPT_ROUTE = /^\/transcript\/([^/]+)$/u;
 const APPROVAL_ROUTE = /^\/approvals\/([^/]+)\/([^/]+)$/u;
+const ABORT_ROUTE = /^\/abort\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
@@ -594,7 +624,7 @@ const handleLogin = async (request: Request, env: Env): Promise<Response> => {
 const isMutation = (request: Request): boolean =>
   request.method !== "GET" && request.method !== "HEAD";
 
-const API_ROUTES = [CHAT_ROUTE, EVENTS_ROUTE, TRANSCRIPT_ROUTE, APPROVAL_ROUTE];
+const API_ROUTES = [CHAT_ROUTE, EVENTS_ROUTE, TRANSCRIPT_ROUTE, APPROVAL_ROUTE, ABORT_ROUTE];
 
 const isApiRoute = (pathname: string): boolean =>
   pathname === "/status" || API_ROUTES.some((route) => route.test(pathname));
@@ -743,6 +773,22 @@ const readApprovalDecision = (request: Request): Promise<ApprovalDecision | unde
     ),
   );
 
+/**
+ * The stop's body. An empty body stops the bot's root session, so an empty
+ * body is a valid request rather than a bad one.
+ */
+const readAbortRequest = async (request: Request): Promise<AbortRequest | undefined> => {
+  const raw = await Effect.runPromise(
+    Effect.tryPromise(() => request.text()).pipe(Effect.orElseSucceed(() => "")),
+  );
+  const body = raw.trim().length === 0 ? "{}" : raw;
+  return await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.fromJsonString(AbortRequestSchema))(body).pipe(
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+};
+
 const handleApproval = async (
   request: Request,
   env: Env,
@@ -766,6 +812,30 @@ const handleApproval = async (
     return Response.json({ error: "no pending approval" }, { status: 409 });
   }
   return Response.json(decided);
+};
+
+/**
+ * Stop a bot's current work. The body is optional: an empty body stops the
+ * bot's root session. A stop is a mutation, so it goes through the same
+ * authorization and CSRF gate as any other.
+ */
+const handleAbort = async (
+  request: Request,
+  env: Env,
+  botId: string,
+): Promise<Response> => {
+  const bots = await Effect.runPromise(loadBotsEffect());
+  if (!Object.hasOwn(bots, botId)) {
+    return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
+  }
+  const body = await readAbortRequest(request);
+  if (body === undefined) {
+    return Response.json({ error: "invalid request body" }, { status: 400 });
+  }
+  const result = await Effect.runPromise(
+    Effect.tryPromise(() => env.Bot.getByName(botId).abort(body.session)),
+  );
+  return Response.json(result);
 };
 
 export default {
@@ -796,6 +866,12 @@ export default {
       if (approval !== null) {
         return request.method === "POST"
           ? await handleApproval(request, env, approval[1]!, approval[2]!)
+          : methodNotAllowed();
+      }
+      const abort = ABORT_ROUTE.exec(url.pathname);
+      if (abort !== null) {
+        return request.method === "POST"
+          ? await handleAbort(request, env, abort[1]!)
           : methodNotAllowed();
       }
       const events = EVENTS_ROUTE.exec(url.pathname);

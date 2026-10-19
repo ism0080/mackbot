@@ -49,6 +49,12 @@ export const approvalOperationId = (approvalId: string): string =>
 export const cronOperationId = (botId: string, scheduledTime: number): string =>
   `${CRON_PREFIX}${botId}:${scheduledTime}`;
 
+/**
+ * The audit id of a stop. A stop admits no submission, so it has no operation
+ * of its own; the id names the session that was stopped instead.
+ */
+export const abortOperationId = (session: string): string => `abort:${session}`;
+
 export const delegateOperationId = (
   sourceBotId: string,
   supplied: string | undefined,
