@@ -604,11 +604,25 @@ const isApiRoute = (pathname: string): boolean =>
  * A browser navigation without a credential is sent to the login page; an API
  * call gets JSON, because a redirect would decode as a broken response.
  */
+// Paths that must be reachable without a session, because the browser or the
+// operating system fetches them before it can authenticate: the manifest the
+// install prompt reads, the icons the home screen uses, and the favicon.
+const PUBLIC_ASSETS = new Set([
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/icon-maskable-512.png",
+  "/apple-touch-icon.png",
+  "/favicon.ico",
+]);
+
 const authorize = async (request: Request, env: Env): Promise<Response | undefined> => {
+  const url = new URL(request.url);
+  if (PUBLIC_ASSETS.has(url.pathname)) return undefined;
   const method = await Effect.runPromise(authenticate(request, env.CHAT_BEARER_TOKEN));
   if (method === undefined) {
-    const pathname = new URL(request.url).pathname;
-    return isApiRoute(pathname) || isMutation(request)
+    return isApiRoute(url.pathname) || isMutation(request)
       ? Response.json({ error: "unauthorized" }, { status: 401 })
       : Response.redirect(new URL("/login", request.url).toString(), 302);
   }
