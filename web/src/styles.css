@@ -497,6 +497,15 @@ button {
   }
 }
 
+/* With the sweep gone the fill sits at full width, which reads as "finished"
+   rather than "still going", and the row's own text already says which. So a
+   bar that cannot move is not shown at all, rather than lying in a still frame. */
+@media (prefers-reduced-motion: reduce) {
+  .bar {
+    display: none;
+  }
+}
+
 @keyframes sweep {
   from {
     transform: translateX(-100%);
