@@ -136,6 +136,35 @@ export const StreamStatusViewSchema = Schema.Struct({
 });
 export type StreamStatusView = typeof StreamStatusViewSchema.Type;
 
+/**
+ * One failure the bot's harness reported. `at` is when the harness reported
+ * it, not when the underlying fault happened; `name` is the error's own class
+ * name, so a reader can tell a `TypeError` from a `RangeError`.
+ */
+export const FailureViewSchema = Schema.Struct({
+  at: Schema.Number,
+  kind: Schema.Literals(["session_failed", "harness_failure"]),
+  name: Schema.String,
+  detail: Schema.String,
+});
+export type FailureView = typeof FailureViewSchema.Type;
+
+/**
+ * One live task of the bot's harness. `status` is the harness's own word for
+ * it, and `phase` is the task's current step when it has one. `owner` is the
+ * task that owns this one, absent for a task its conversation owns.
+ */
+export const TaskViewSchema = Schema.Struct({
+  id: Schema.String,
+  kind: Schema.String,
+  session: Schema.String,
+  status: Schema.Literals(["pending", "running", "waiting", "completing", "blocked"]),
+  phase: Schema.optional(Schema.String),
+  owner: Schema.optional(Schema.String),
+  background: Schema.Boolean,
+});
+export type TaskView = typeof TaskViewSchema.Type;
+
 export const SubmissionViewSchema = Schema.Struct({
   id: Schema.String,
   type: Schema.Literals(["input", "write"]),
@@ -185,6 +214,13 @@ export const BotViewSchema = Schema.Struct({
   approvals: Schema.Array(ApprovalViewSchema),
   activeStream: Schema.optional(StreamStatusViewSchema),
   activeRun: Schema.optional(ActiveRunViewSchema),
+  /**
+   * The failures the harness reported, newest first, and the work it still has
+   * live. Both are optional so a client built against an older contract still
+   * decodes a newer answer; the server always sends them.
+   */
+  failures: Schema.optional(Schema.Array(FailureViewSchema)),
+  tasks: Schema.optional(Schema.Array(TaskViewSchema)),
 });
 export type BotView = typeof BotViewSchema.Type;
 

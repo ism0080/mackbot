@@ -14,9 +14,9 @@
     "tools:oxlint": "cd tools/oxlint && tsc -b --clean && tsc -b && vitest run --config vitest.config.ts && node tests/smoke.mjs"
   },
   "dependencies": {
-    "@earendil-works/chord": "1.2.0",
-    "@earendil-works/pi-ai": "1.2.0",
-    "@earendil-works/pi-durable": "1.2.0",
+    "@earendil-works/chord": "1.3.0",
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-durable": "1.3.0",
     "@effect/platform-bun": "4.0.4",
     "@effect/platform-node": "4.0.4",
     "@modelcontextprotocol/sdk": "1.32.1",
