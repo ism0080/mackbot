@@ -31,11 +31,11 @@ for (const failed of [false, true]) {
   const document = loginDocument(failed);
   const stylesheet = /<style>([\s\S]*?)<\/style>/u.exec(document)?.[1];
 
-  check(`the ${failed ? "failed" : "fresh"} page has one inline stylesheet`, typeof stylesheet === "string");
+  check(`the ${failed ? "failed" : "fresh"} page has one inline stylesheet`, stylesheet !== undefined);
   check("it has no script", !/<script\b/iu.test(document));
   check("it has no token value", !/name="token"[^>]*\bvalue=/iu.test(document));
 
-  if (typeof stylesheet !== "string") continue;
+  if (stylesheet === undefined) continue;
 
   const { results } = await stylelint.lint({ code: stylesheet, configFile });
   const warnings = results.flatMap((result) => result.warnings);
