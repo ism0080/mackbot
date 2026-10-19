@@ -113,7 +113,12 @@ export const DecideApproval = Command.define("DecideApproval", {
       const client = yield* HttpClient.HttpClient;
       const request = yield* HttpClientRequest.post(
         apiUrl(`/approvals/${encodeURIComponent(bot)}/${encodeURIComponent(approvalId)}`),
-      ).pipe(HttpClientRequest.bodyJson({ action } satisfies ApprovalDecision));
+      ).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson({ action } satisfies ApprovalDecision),
+      );
       const response = yield* client.execute(request);
 
       if (response.status === 409) {
