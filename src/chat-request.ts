@@ -14,6 +14,9 @@
  *   import { isAuthorized, readChatRequest } from "./chat-request.ts";
  *   if (!isAuthorized(request, env.CHAT_BEARER_TOKEN)) { ... 401 ... }
  *   const body = await readChatRequest(request);
+ *
+ * `tokensMatch` is exported for the session cookie's signature check, so both
+ * credentials compare in constant time.
  */
 
 import type { PiWhenBusy } from "agents/harness/pi";
@@ -49,7 +52,7 @@ const ChatRequestBodySchema = Schema.Struct({
 
 const BEARER_PATTERN = /^Bearer\s+(.+)$/iu;
 
-const tokensMatch = (a: string, b: string): boolean => {
+export const tokensMatch = (a: string, b: string): boolean => {
   if (a.length !== b.length) return false;
   let diff = 0;
   for (let index = 0; index < a.length; index += 1) {
