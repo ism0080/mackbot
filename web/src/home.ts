@@ -5,7 +5,8 @@ import { elapsedOf } from "./format.ts";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, runTitle, toast } from "./partials.ts";
-import { entryStampOf, selectHome } from "./select.ts";
+import { entryStampOf, selectHome, selectStatusPanel } from "./select.ts";
+import { failurePanel, taskPanel } from "./status-panel.ts";
 
 const draftOf = (approval: ApprovalView, h: HtmlBuilder<Message>): readonly Html[] => {
   const artifact = approval.artifact;
@@ -149,6 +150,7 @@ const recentRow = (
 
 export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
   const triage = selectHome(model);
+  const panel = selectStatusPanel(model);
 
   return h.div(
     [h.Class("screen")],
@@ -166,6 +168,19 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.section(
             [h.Class("grp"), h.DataAttribute("group", "error"), h.Hidden(triage.notice === null)],
             [h.div([h.Class("empty")], [h.p([], [triage.notice ?? ""])])],
+          ),
+          h.section(
+            [
+              h.Class("grp"),
+              h.DataAttribute("group", "failures"),
+              h.Hidden(panel.failures.length === 0),
+            ],
+            [
+              h.h2([], ["Needs attention"]),
+              ...panel.failures.flatMap(({ bot, failures }) =>
+                failurePanel(bot, failures, model.now, h),
+              ),
+            ],
           ),
           h.section(
             [h.Class("grp"), h.DataAttribute("group", "blocked"), h.Hidden(triage.blocked.length === 0)],
@@ -192,6 +207,13 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
             [
               h.h2([], ["Running now"]),
               ...triage.running.map(({ bot, run }) => runningRow(bot, run, model.now, h)),
+            ],
+          ),
+          h.section(
+            [h.Class("grp"), h.DataAttribute("group", "tasks"), h.Hidden(panel.tasks.length === 0)],
+            [
+              h.h2([], ["Live work"]),
+              ...panel.tasks.flatMap(({ bot, tasks }) => taskPanel(bot, tasks, h)),
             ],
           ),
           h.section(

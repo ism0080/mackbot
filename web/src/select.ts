@@ -1,4 +1,11 @@
-import type { ActiveRunView, ApprovalView, BotView, EntryView } from "@mackbot/web-contract";
+import type {
+  ActiveRunView,
+  ApprovalView,
+  BotView,
+  EntryView,
+  FailureView,
+  TaskView,
+} from "@mackbot/web-contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 
@@ -19,6 +26,22 @@ export interface Running {
 export interface Recent {
   readonly bot: string;
   readonly entry: EntryView;
+}
+
+export interface BotFailures {
+  readonly bot: string;
+  readonly failures: readonly FailureView[];
+}
+
+export interface BotTasks {
+  readonly bot: string;
+  readonly tasks: readonly TaskView[];
+}
+
+/** What the harness reported and what it still has live, per bot. */
+export interface StatusPanel {
+  readonly failures: readonly BotFailures[];
+  readonly tasks: readonly BotTasks[];
 }
 
 export interface Home {
@@ -61,7 +84,6 @@ const latestOf = (bot: string, channel: Channel): readonly Recent[] =>
 
 const subOf = (bots: number, blocked: number, running: number): string =>
   `${bots} bots · ${blocked} blocked · ${running} running`;
-
 const clearNoteOf = (running: readonly Running[]): string => {
   const first = running[0];
   if (first === undefined) return "All quiet. Every bot is idle.";
@@ -99,16 +121,66 @@ export const selectHome = (model: Model): Home => {
     .flatMap(([bot, channel]) => latestOf(bot, channel))
     .sort((left, right) => (right.entry.at ?? 0) - (left.entry.at ?? 0));
   const notice = noticeOf(model.roster, failedBotsOf(channels));
+  // A harness fault is not a decision waiting on the user, but it is not quiet
+  // either, so it keeps the home from claiming that everything is fine.
+  const faults = statuses.reduce(
+    (total, [, status]) =>
+      total +
+      Option.match(status, {
+        onNone: () => 0,
+        onSome: (view) => (view.failures ?? []).length,
+      }),
+    0,
+  );
 
   return {
-    headline: blocked.length === 0 ? "Nothing needs you" : "Needs you",
+    headline:
+      blocked.length > 0
+        ? "Needs you"
+        : faults > 0
+          ? "Needs attention"
+          : "Nothing needs you",
     sub: subOf(channels.length, blocked.length, running.length),
-    allClear: blocked.length === 0 && notice === null,
+    allClear: blocked.length === 0 && faults === 0 && notice === null,
     clearNote: clearNoteOf(running),
     notice,
     blocked: blocked.sort((left, right) => left.approval.requestedAt - right.approval.requestedAt),
     running: running.sort((left, right) => left.run.startedAt - right.run.startedAt),
     recent,
+  };
+};
+
+/**
+ * What the harness reported and what it still has live, folded per bot.
+ *
+ * Both lists are optional on the contract, so an absent one is an empty list:
+ * a client built against an older contract still renders the home, and a bot
+ * with nothing to say contributes no section of its own.
+ */
+export const selectStatusPanel = (model: Model): StatusPanel => {
+  const statuses = Object.entries(model.channels).map(
+    ([bot, channel]) => [bot, statusOf(channel)] as const,
+  );
+
+  return {
+    failures: statuses.flatMap(([bot, status]) =>
+      Option.match(status, {
+        onNone: () => [],
+        onSome: (view) => {
+          const failures = view.failures ?? [];
+          return failures.length === 0 ? [] : [{ bot, failures }];
+        },
+      }),
+    ),
+    tasks: statuses.flatMap(([bot, status]) =>
+      Option.match(status, {
+        onNone: () => [],
+        onSome: (view) => {
+          const tasks = view.tasks ?? [];
+          return tasks.length === 0 ? [] : [{ bot, tasks }];
+        },
+      }),
+    ),
   };
 };
 

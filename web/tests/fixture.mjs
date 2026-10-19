@@ -67,6 +67,24 @@ export const HERMES_STATUS = {
     startedAt: at(6),
     stream: HERMES_STREAM,
   },
+  failures: [
+    {
+      at: at(9),
+      kind: "harness_failure",
+      name: "TypeError",
+      detail: "Cannot read properties of undefined (reading 'amount')",
+    },
+  ],
+  tasks: [
+    {
+      id: "task_invoice_ledger",
+      kind: "reconcile",
+      session: "hermes",
+      status: "running",
+      phase: "matching March invoices against the ledger",
+      background: true,
+    },
+  ],
 };
 
 export const SCRIBE_STATUS = {

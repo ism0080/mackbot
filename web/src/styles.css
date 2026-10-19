@@ -698,6 +698,47 @@ details[open]::details-content {
   gap: 8px;
 }
 
+/* ---------- status panel ---------- */
+
+/* A failure is the harness's own word that something broke, so its row wears
+   the warn ramp; a live task is ordinary work and keeps the plain surface. */
+.sp-fail {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: start;
+  padding: 11px 12px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-quiet);
+  color: var(--warn-strong);
+}
+
+.sp-task {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: start;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+/* The detail is the harness's own sentence, so it keeps its line breaks
+   rather than being reflowed into one. */
+.sp-detail {
+  font-size: var(--step--1);
+  color: var(--warn-body);
+  white-space: pre-wrap;
+}
+
+.sp-foot {
+  font-size: var(--step--3);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 /* ---------- toast ---------- */
 
 /* The server answer the screen has to say out loud: a decision that did not

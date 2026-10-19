@@ -121,11 +121,11 @@ try {
   // 5 — Allow retires the approval everywhere at once.
   click(query(".btn.primary"));
   await settle();
-  check("headline goes all-clear", text(".hdr.tall h1") === "Nothing needs you");
+  check("headline names the fault the approval did not clear", text(".hdr.tall h1") === "Needs attention");
   check("header count drops the blocked one", text(".hdr.tall .hdr-sub") === "2 bots · 0 blocked · 1 running");
   check("blocked section collapses", display('[data-group="blocked"]') === "none");
-  check("all-clear section appears", display('[data-group="empty"]') !== "none");
-  check("all-clear note names the busy bot", text('[data-group="empty"] p').includes("Hermes"));
+  check("the all-clear block stays hidden while a fault stands", display('[data-group="empty"]') === "none");
+  check("the fault is still listed", all("[data-failure]").length === 1);
   check("no approval card remains", all("[data-approval]").length === 0);
   check("running section survives", text(".runit .rt") === "Reconciling March invoices");
 
