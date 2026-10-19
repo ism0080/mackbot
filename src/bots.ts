@@ -38,19 +38,33 @@ export const MODEL_VARIANTS = {
 
 export type ThinkingLevel = (typeof MODEL_VARIANTS)[keyof typeof MODEL_VARIANTS][number];
 
+/** The run policy a bot declares for itself, in `bots.json`. */
+export interface BotRuntimeConfig {
+  readonly contextWindow?: number;
+  readonly reserveTokens?: number;
+  readonly maxRetries?: number;
+  readonly parallelTools?: boolean;
+}
+
 export interface BotConfig {
   readonly model: ModelDecl;
   readonly thinkingLevel?: ThinkingLevel;
   readonly systemPrompt: string;
   readonly brief?: string;
   readonly delegatesTo?: string[];
+  readonly runtime?: BotRuntimeConfig;
+  readonly commitments?: boolean;
 }
 
 const VARIANT_INDEX = new Map<string, readonly ThinkingLevel[]>(Object.entries(MODEL_VARIANTS));
 const ALL_THINKING_LEVELS = new Set<string>(Object.values(MODEL_VARIANTS).flat());
 const KNOWN_MODEL_IDS = Object.keys(MODEL_VARIANTS).join(", ");
+const RUNTIME_FIELDS = ["contextWindow", "reserveTokens", "maxRetries", "parallelTools"] as const;
+const RUNTIME_FIELD_SET = new Set<string>(RUNTIME_FIELDS);
 
 const isString = Schema.is(Schema.String);
+const isNumber = Schema.is(Schema.Number);
+const isBoolean = Schema.is(Schema.Boolean);
 const isObject = (value: RawJson | undefined): value is RawObject =>
   Object.prototype.toString.call(value) === "[object Object]";
 
@@ -173,12 +187,65 @@ const decodeStringArray = (
   return Effect.succeed(out);
 };
 
+const decodeNumber = (botId: string, key: string, value: RawJson): Effect.Effect<number, Error> =>
+  isNumber(value) ? Effect.succeed(value) : fail(`bot "${botId}" field "${key}" must be a number`);
+
+const decodeBoolean = (
+  botId: string,
+  key: string,
+  value: RawJson,
+): Effect.Effect<boolean, Error> =>
+  isBoolean(value)
+    ? Effect.succeed(value)
+    : fail(`bot "${botId}" field "${key}" must be a boolean`);
+
+interface DraftRuntimeConfig {
+  contextWindow?: number;
+  reserveTokens?: number;
+  maxRetries?: number;
+  parallelTools?: boolean;
+}
+
+const decodeRuntime = (botId: string, value: RawJson): Effect.Effect<BotRuntimeConfig, Error> =>
+  Effect.gen(function* () {
+    if (!isObject(value)) {
+      return yield* fail(`bot "${botId}" field "runtime" must be an object`);
+    }
+    for (const key of Object.keys(value)) {
+      if (!RUNTIME_FIELD_SET.has(key)) {
+        return yield* fail(
+          `bot "${botId}" field "runtime.${key}" is not a known runtime field (known: ${RUNTIME_FIELDS.join(", ")})`,
+        );
+      }
+    }
+    const runtime: DraftRuntimeConfig = {};
+    const contextWindow = field(value, "contextWindow");
+    if (contextWindow !== undefined) {
+      runtime.contextWindow = yield* decodeNumber(botId, "runtime.contextWindow", contextWindow);
+    }
+    const reserveTokens = field(value, "reserveTokens");
+    if (reserveTokens !== undefined) {
+      runtime.reserveTokens = yield* decodeNumber(botId, "runtime.reserveTokens", reserveTokens);
+    }
+    const maxRetries = field(value, "maxRetries");
+    if (maxRetries !== undefined) {
+      runtime.maxRetries = yield* decodeNumber(botId, "runtime.maxRetries", maxRetries);
+    }
+    const parallelTools = field(value, "parallelTools");
+    if (parallelTools !== undefined) {
+      runtime.parallelTools = yield* decodeBoolean(botId, "runtime.parallelTools", parallelTools);
+    }
+    return runtime;
+  });
+
 interface DraftBotConfig {
   model: ModelDecl;
   systemPrompt: string;
   thinkingLevel?: ThinkingLevel;
   brief?: string;
   delegatesTo?: string[];
+  runtime?: BotRuntimeConfig;
+  commitments?: boolean;
 }
 
 const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error> =>
@@ -203,6 +270,14 @@ const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error>
     const delegatesTo = field(raw, "delegatesTo");
     if (delegatesTo !== undefined) {
       config.delegatesTo = yield* decodeStringArray(botId, "delegatesTo", delegatesTo);
+    }
+    const runtime = field(raw, "runtime");
+    if (runtime !== undefined) {
+      config.runtime = yield* decodeRuntime(botId, runtime);
+    }
+    const commitments = field(raw, "commitments");
+    if (commitments !== undefined) {
+      config.commitments = yield* decodeBoolean(botId, "commitments", commitments);
     }
     return config;
   });
