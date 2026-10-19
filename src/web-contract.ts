@@ -162,8 +162,30 @@ export const TaskViewSchema = Schema.Struct({
   phase: Schema.optional(Schema.String),
   owner: Schema.optional(Schema.String),
   background: Schema.Boolean,
+  /** Why a blocked task cannot run, when the harness says. */
+  reason: Schema.optional(Schema.String),
 });
 export type TaskView = typeof TaskViewSchema.Type;
+
+/**
+ * A request to stop a bot's current work. `session` names the conversation to
+ * stop; absent means the bot's root conversation.
+ */
+export const AbortRequestSchema = Schema.Struct({
+  session: Schema.optional(Schema.String),
+});
+export type AbortRequest = typeof AbortRequestSchema.Type;
+
+/**
+ * What a stop did. `aborted` is false when there was nothing running to stop,
+ * which is the normal answer for an idle bot.
+ */
+export const AbortResultSchema = Schema.Struct({
+  bot: Schema.String,
+  session: Schema.String,
+  aborted: Schema.Boolean,
+});
+export type AbortResult = typeof AbortResultSchema.Type;
 
 export const SubmissionViewSchema = Schema.Struct({
   id: Schema.String,
