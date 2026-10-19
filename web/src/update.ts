@@ -4,8 +4,9 @@ import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
 import type { Update } from "foldkit";
 
-import { DecideApproval, Status, Transcript } from "./api.ts";
+import { DecideApproval, Status, StopBot, Transcript } from "./api.ts";
 import { Message } from "./message.ts";
+import { botName } from "./partials.ts";
 import { FRAME_WINDOW, Screen } from "./model.ts";
 import type { Channel, Model } from "./model.ts";
 
@@ -306,6 +307,29 @@ export const update = (model: Model, message: Message) =>
         withChannel(model, bot, (channel) => revertApproval(channel, approvalId)),
         { toast: () => ({ text: `Couldn't record that decision (${error}). Try again.` }) },
       ),
+    }),
+    ClickedStop: ({ bot, session }) => ({
+      // The stop is a request, not a fact: the run is still working until the
+      // server says so, so the model only changes once the answer arrives.
+      model,
+      commands: [StopBot({ bot, session })],
+    }),
+    StoppedBot: ({ bot, aborted }) => ({
+      model: modifyFields(model, {
+        toast: () => ({
+          text: aborted
+            ? `Stopped ${botName(bot)}.`
+            : `${botName(bot)} was already idle.`,
+        }),
+      }),
+      // The run that just stopped is gone from the server's view of the world,
+      // so the status that named it has to be read again.
+      commands: [Status()],
+    }),
+    StopFailed: ({ bot, error }) => ({
+      model: modifyFields(model, {
+        toast: () => ({ text: `Couldn't stop ${botName(bot)} (${error}). Try again.` }),
+      }),
     }),
     DismissedToast: () => ({ model: modifyFields(model, { toast: () => null }) }),
     StatusLoaded: ({ bots, errors, at }) => {

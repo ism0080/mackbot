@@ -63,6 +63,4 @@ const viewOf = (task: InspectedTask): TaskView => {
 
 /** The harness's live work, as the status view reports it. Pure. */
 export const projectTasks = (inspection: HarnessInspection): readonly TaskView[] =>
-  [...inspection.tasks]
-    .sort((a, b) => a.record.id - b.record.id)
-    .map(viewOf);
+  [...inspection.tasks].sort((a, b) => a.record.id - b.record.id).map(viewOf);

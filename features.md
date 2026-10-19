@@ -11,6 +11,12 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Audit-log storage seam (`src/audit-log.ts`).
 - Existing meta-tool bridge, cron briefs, approvals in model mode, and
   compaction configuration.
+- Per-bot run policy in `bots.json` (`runtime`), and a durable commitments
+  document for the bots that declare `commitments`.
+- Harness-side enforcement of the approval rule, and a durable record of what
+  the harness reported.
+- A stop: `POST /abort/:bot` ends a bot's current work, and the home screen
+  has a Stop button.
 
 ## Product and UX
 
@@ -39,8 +45,10 @@ foundation pieces are already implemented and are intentionally omitted here:
 - **Fiber-like recovery for long turns.** Checkpoint intermediate progress around
   expensive work so a restarted Durable Object can resume without restarting the
   whole turn.
-- **Explicit interrupted-state reporting.** Surface interrupted unsafe calls as
-  an explicit state in `/status` so a human can decide what to do next.
+- **Explicit interrupted-state reporting.** `/status` now reports the failures
+  the harness reported and the work it still has live, so a stuck bot says why.
+  Still open: an interrupted unsafe call, as opposed to a harness failure, is
+  not yet a state of its own that a human can decide about.
 - **Asynchronous delegation.** Add async fire-and-poll delegation, richer thread
   lineage, and stronger anti-livelock behavior. The basic `delegatesTo`
   allowlist is implemented.
@@ -50,8 +58,9 @@ foundation pieces are already implemented and are intentionally omitted here:
   prefix already carries it), approval turns labelled as their own origin, and
   per-origin spend, which `pi.usage` does not track because it belongs to the
   harness.
-- **Audit-runtime integration.** Wire the audit-log seam into chat, delegation,
-  and approval flows instead of leaving it standalone.
+- **Audit-runtime integration.** The audit seam now records submissions,
+  settlements, stops and Executor calls. Still open: the delegation and
+  approval flows are not audited.
 - **Sandbox and workspace.** Add a durable virtual filesystem and dynamic code
   execution, reserving containers for native tools, git, package installation,
   or compilers.

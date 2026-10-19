@@ -63,6 +63,7 @@ export const HERMES_STATUS = {
   activeStream: HERMES_STREAM,
   activeRun: {
     ordinal: 7,
+    session: "1",
     inputs: ["Reconciling March invoices"],
     startedAt: at(6),
     stream: HERMES_STREAM,

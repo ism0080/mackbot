@@ -217,6 +217,8 @@ export const ActiveRunViewSchema = Schema.Struct({
   ordinal: Schema.Number,
   inputs: Schema.Array(Schema.String),
   startedAt: Schema.Number,
+  /** The conversation the run belongs to, so a client can stop that one. */
+  session: Schema.String,
   stream: StreamStatusViewSchema,
 });
 export type ActiveRunView = typeof ActiveRunViewSchema.Type;

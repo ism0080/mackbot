@@ -61,6 +61,7 @@ const activeRunView = (run: RunRow, cursor: number): ActiveRunView => ({
   ordinal: run.ordinal,
   inputs: run.inputs,
   startedAt: run.startedAt,
+  session: run.sessionId,
   stream: streamViewOf(run.sessionId, run, cursor),
 });
 

@@ -50,7 +50,7 @@ const STATUS_VIEW = {
   pending: [{ operationId: "http:a", origin: "http", status: "running" }],
   usage: { inputTokens: 10, outputTokens: 4, exchanges: 1 },
   approvals: [{ approvalId: "apr-1", bot: "hermes", toolPath: "botmail.send", summary: "Send?", status: "pending", requestedAt: 1_000 }],
-  activeRun: { ordinal: 1, inputs: ["do the thing"], startedAt: 1_000, stream: { stream: "feed:1:1", generation: 1, cursor: 3, state: "streaming" } },
+  activeRun: { ordinal: 1, inputs: ["do the thing"], startedAt: 1_000, session: "1", stream: { stream: "feed:1:1", generation: 1, cursor: 3, state: "streaming" } },
 };
 
 const queries = [];

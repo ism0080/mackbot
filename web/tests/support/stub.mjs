@@ -34,7 +34,14 @@ const sseFrame = ({ id, event, data }) => {
   return `${lines.join("\n")}\n\n`;
 };
 
-export const startStub = ({ status, transcripts, failing = [], events = {}, decisions = {} }) => {
+export const startStub = ({
+  status,
+  transcripts,
+  failing = [],
+  events = {},
+  decisions = {},
+  aborts = {},
+}) => {
   const requests = [];
   const held = new Set();
   const encoder = new TextEncoder();
@@ -60,7 +67,9 @@ export const startStub = ({ status, transcripts, failing = [], events = {}, deci
       const query = Object.fromEntries(url.searchParams);
       const connections = requests.filter((entry) => entry.path === url.pathname).length;
       const decision = /^\/approvals\/([^/]+)\/([^/]+)$/.exec(url.pathname);
-      const body = decision === null ? undefined : await request.json().catch(() => undefined);
+      const abort = /^\/abort\/([^/]+)$/.exec(url.pathname);
+      const hasBody = decision !== null || abort !== null;
+      const body = hasBody ? await request.json().catch(() => undefined) : undefined;
       requests.push({ method: request.method, path: url.pathname, query, connections, body });
 
       if (failing.includes(url.pathname)) return new Response("boom", { status: 500 });
@@ -75,6 +84,16 @@ export const startStub = ({ status, transcripts, failing = [], events = {}, deci
             ? undefined
             : await handler({ body, query, bot: decision[1], approvalId: decision[2] });
         const answer = spec ?? { status: 404, body: { error: "no decision handler" } };
+        return Response.json(answer.body, { status: answer.status });
+      }
+
+      if (abort !== null) {
+        const handler = aborts[url.pathname];
+        const spec =
+          handler === undefined
+            ? undefined
+            : await handler({ body, query, bot: abort[1] });
+        const answer = spec ?? { status: 404, body: { error: "no abort handler" } };
         return Response.json(answer.body, { status: answer.status });
       }
 

@@ -46,6 +46,22 @@ export const Message = defineMessageUnion({
     approvalId: Schema.String,
     error: Schema.String,
   },
+  /** The user asked for a bot's current work to stop. */
+  ClickedStop: {
+    bot: Schema.String,
+    session: Schema.String,
+  },
+  /** The server stopped what was running, and says whether anything was. */
+  StoppedBot: {
+    bot: Schema.String,
+    session: Schema.String,
+    aborted: Schema.Boolean,
+  },
+  /** The stop did not reach the server, so the work is still running. */
+  StopFailed: {
+    bot: Schema.String,
+    error: Schema.String,
+  },
   DismissedToast: {},
   StatusLoaded: {
     bots: Schema.Record(Schema.String, BotViewSchema),

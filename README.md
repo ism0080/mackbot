@@ -49,8 +49,10 @@ is case-insensitive.
   `operationId` to keep waiting; admission is at-most-once).
 - `GET /status` — one `BotView` per bot: model, thinking level, busy state,
   pending operations with their origin (`http`, `cron`, or `delegate`), pending
-  approvals, the run in flight, and usage. A bot whose status fails lands in the
-  response's `errors` map rather than failing the whole call.
+  approvals, the run in flight, and usage. It also reports the failures the
+  harness reported and the work it still has live, so a bot that is stuck says
+  why. A bot whose status fails lands in the response's `errors` map rather
+  than failing the whole call.
 - `GET /transcript/:bot?thread=&before=&limit=` — one page of a session's
   transcript, newest first, paged backwards by entry id. `limit` defaults to 50
   and clamps to 200. `nextBefore` appears only when an older page exists.
@@ -58,6 +60,10 @@ is case-insensitive.
   through the SDK's resumable writer, so `Last-Event-ID` and `?from=` resume
   where a client left off. The bridge that feeds a stream per run is not wired
   yet.
+- `POST /abort/:bot` — stop a bot's current work. The body is optional;
+  `{"session": "<id>"}` names the conversation to stop, and an empty body stops
+  the bot's root conversation. The answer is `{ bot, session, aborted }`, where
+  `aborted` is false when there was nothing running to stop.
 
 The Worker and the web app share one vocabulary in
 [`src/web-contract.ts`](./src/web-contract.ts). Every route decodes its input and

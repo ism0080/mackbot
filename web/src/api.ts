@@ -1,4 +1,5 @@
-import { BotViewSchema, TranscriptPageSchema } from "@mackbot/web-contract";
+import { AbortResultSchema, BotViewSchema, TranscriptPageSchema } from "@mackbot/web-contract";
+import type { AbortRequest } from "@mackbot/web-contract";
 import type { ApprovalDecision } from "@mackbot/web-contract";
 import { Clock, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
@@ -95,6 +96,42 @@ const DecisionAcceptedSchema = Schema.Struct({
 
 const DecisionRefusedSchema = Schema.Struct({ error: Schema.String });
 
+/**
+ * `POST /abort/:bot` with the contract's abort body. The route answers the
+ * contract's `AbortResult`, so it decodes with the contract's schema rather
+ * than a private copy of the route's shape.
+ */
+export const StopBot = Command.define("StopBot", {
+  args: { bot: Schema.String, session: Schema.String },
+  messages: [Message.StoppedBot, Message.StopFailed],
+  execute: ({ bot, session }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.post(
+        apiUrl(`/abort/${encodeURIComponent(bot)}`),
+      ).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson({ session } satisfies AbortRequest),
+      );
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(`the stop route answered ${response.status}`);
+      }
+      const stopped = yield* HttpClientResponse.schemaBodyJson(AbortResultSchema)(response);
+      return Message.StoppedBot({
+        bot: stopped.bot,
+        session: stopped.session,
+        aborted: stopped.aborted,
+      });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.StopFailed({ bot, error: describe(cause) })),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
 /**
  * `POST /approvals/:bot/:approvalId` with the contract's decision body. A `409`
  * is not a transport failure: it is the honest answer that the approval was not

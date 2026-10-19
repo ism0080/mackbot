@@ -119,6 +119,14 @@ const runningRow = (
           h.span([h.Class("bar indeterminate")], [h.i([])]),
         ],
       ),
+      h.button(
+        [
+          h.Class("btn ghost"),
+          h.DataAttribute("stop", bot),
+          h.OnClick(Message.ClickedStop({ bot, session: run.session })),
+        ],
+        ["Stop"],
+      ),
     ],
   );
 

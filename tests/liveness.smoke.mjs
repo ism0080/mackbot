@@ -21,6 +21,8 @@
  */
 
 const { projectTasks } = await import("../src/liveness.ts");
+const { TaskViewSchema } = await import("../src/web-contract.ts");
+const Schema = await import("effect/Schema");
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -83,16 +85,22 @@ const inspection = (tasks) => ({ scheduling: "running", tasks, submissions: [] }
 }
 
 {
-  const [blocked] = projectTasks(
-    inspection([task({ kind: "blocked", reason: "missing_task" })]),
-  );
+  const [blocked] = projectTasks(inspection([task({ kind: "blocked", reason: "missing_task" })]));
   check("a blocked task is blocked", blocked.status === "blocked", blocked.status);
-  check("a blocked task carries the harness's reason", blocked.reason === "missing_task", blocked.reason);
+  check(
+    "a blocked task carries the harness's reason",
+    blocked.reason === "missing_task",
+    blocked.reason,
+  );
 }
 
 {
   const [running] = projectTasks(inspection([task({ kind: "running" })]));
-  check("a task that is not blocked has no reason", running.reason === undefined, `${running.reason}`);
+  check(
+    "a task that is not blocked has no reason",
+    running.reason === undefined,
+    `${running.reason}`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -108,7 +116,11 @@ const inspection = (tasks) => ({ scheduling: "running", tasks, submissions: [] }
       ),
     ]),
   );
-  check("a checkpoint without a phase has none", phaseless.phase === undefined, `${phaseless.phase}`);
+  check(
+    "a checkpoint without a phase has none",
+    phaseless.phase === undefined,
+    `${phaseless.phase}`,
+  );
 }
 
 {
@@ -136,6 +148,30 @@ const inspection = (tasks) => ({ scheduling: "running", tasks, submissions: [] }
   );
   check("a child task names its owner", owned.owner === "42", `${owned.owner}`);
   check("a conversation-owned task names no owner", orphan.owner === undefined, `${orphan.owner}`);
+
+  const wire = (view) => JSON.parse(JSON.stringify(Schema.encodeSync(TaskViewSchema)(view)));
+  check("an ownerless task carries no owner on the wire", !("owner" in wire(orphan)));
+  check("a child task carries its owner on the wire", wire(owned).owner === "42");
+}
+
+// ---------------------------------------------------------------------------
+// The view is the contract's TaskView, so what the operator receives decodes.
+// ---------------------------------------------------------------------------
+
+{
+  const views = projectTasks(
+    inspection([
+      task({ kind: "running" }, { record: { id: 1 } }),
+      task({ kind: "blocked", reason: "task_too_old" }, { record: { id: 2 } }),
+    ]),
+  );
+  let decoded = null;
+  try {
+    decoded = Schema.decodeUnknownSync(Schema.Array(TaskViewSchema))(views);
+  } catch (error) {
+    failures.push(`the views do not decode as TaskViews: ${error?.message ?? error}`);
+  }
+  check("the views decode as the contract's TaskViews", decoded !== null);
 }
 
 // ---------------------------------------------------------------------------
@@ -154,6 +190,28 @@ const inspection = (tasks) => ({ scheduling: "running", tasks, submissions: [] }
     "tasks come back in numeric id order",
     views.map((view) => view.id).join(",") === "2,7,10",
     views.map((view) => view.id).join(","),
+  );
+}
+
+{
+  // The harness lists live tasks in its own order, which two polls of the
+  // same state need not agree on; the projection has to.
+  const first = projectTasks(
+    inspection([
+      task({ kind: "running" }, { record: { id: 10 } }),
+      task({ kind: "running" }, { record: { id: 2 } }),
+    ]),
+  );
+  const second = projectTasks(
+    inspection([
+      task({ kind: "running" }, { record: { id: 2 } }),
+      task({ kind: "running" }, { record: { id: 10 } }),
+    ]),
+  );
+  check(
+    "two polls of the same state project the same order",
+    first.map((view) => view.id).join(",") === second.map((view) => view.id).join(","),
+    `${first.map((view) => view.id).join(",")} vs ${second.map((view) => view.id).join(",")}`,
   );
 }
 
