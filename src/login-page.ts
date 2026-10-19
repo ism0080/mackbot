@@ -2,6 +2,13 @@
  * The one page that is allowed to be unauthenticated: it is how a browser gets
  * the session cookie. It contains no script and no token, so it cannot leak
  * either.
+ *
+ * The stylesheet is deliberately self-contained. This document has to render
+ * before any asset is authorized, so it cannot wait for the app's stylesheet
+ * (or a font) to load; the tokens below are copied from `web/src/styles.css`
+ * by value, and the page carries every rule it needs. Do not "fix" this by
+ * linking the app stylesheet: an unauthorized request would get the login page
+ * with no styling.
  */
 
 export const loginDocument = (failed: boolean): string => `<!doctype html>
@@ -12,43 +19,76 @@ export const loginDocument = (failed: boolean): string => `<!doctype html>
     <meta name="color-scheme" content="dark" />
     <title>Sign in · mackbot</title>
     <style>
-      :root { color-scheme: dark; }
+      :root {
+        color-scheme: dark;
+
+        /* The app's palette, by value: --bg-deep, --surface, --line, --text,
+           --muted, --accent, --warn-ink and --black from web/src/styles.css. */
+        --bg-deep: oklch(12.29% 0.0108 none);
+        --surface: oklch(19.98% 0.0086 none);
+        --line: oklch(29.21% 0.0179 none);
+        --text: oklch(94.84% 0.0046 none);
+        --muted: oklch(65.8% 0.0228 none);
+        --accent: oklch(72.87% 0.1398 258.1);
+        --warn-ink: oklch(89.86% 0.1059 83.8);
+        --black: oklch(0% 0 none);
+      }
       * { box-sizing: border-box; }
       body {
         margin: 0;
-        min-height: 100dvh;
+        min-block-size: 100dvh;
         display: grid;
         place-items: center;
-        padding: 24px;
-        background: #05060a;
-        color: #e7e9ee;
+        padding-block: 24px;
+        padding-inline: 24px;
+        background: var(--bg-deep);
+        color: var(--text);
         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
       }
-      main { width: min(100%, 22rem); }
-      h1 { margin: 0 0 4px; font-size: 1.5rem; letter-spacing: -0.02em; }
-      p { margin: 0 0 24px; color: #9aa0ac; }
-      .error { color: #ff8f8f; margin-bottom: 16px; }
-      label { display: block; margin-bottom: 8px; font-size: 0.8125rem; color: #9aa0ac; }
+      main { inline-size: min(100%, 22rem); }
+      h1 { margin: 0; margin-block-end: 4px; font-size: 1.5rem; letter-spacing: -0.02em; }
+      p { margin: 0; margin-block-end: 24px; color: var(--muted); }
+      .error {
+        margin-block-end: 16px;
+        padding-block: 10px;
+        padding-inline: 12px;
+        border: 1px solid color-mix(in oklch, var(--warn-ink) 35%, var(--bg-deep));
+        border-radius: 10px;
+        background: color-mix(in oklch, var(--warn-ink) 10%, var(--surface));
+        color: var(--warn-ink);
+      }
+      label { display: block; margin-block-end: 8px; font-size: 0.8125rem; color: var(--muted); }
       input, button {
-        width: 100%;
-        min-height: 48px;
+        inline-size: 100%;
+        min-block-size: 48px;
         border-radius: 10px;
         font: inherit;
       }
       input {
-        margin-bottom: 12px;
-        padding: 0 14px;
-        border: 1px solid #2a2f3a;
-        background: #0d1017;
+        margin-block-end: 12px;
+        padding-block: 0;
+        padding-inline: 14px;
+        border: 1px solid var(--line);
+        background: var(--surface);
         color: inherit;
       }
-      input:focus-visible { outline: 2px solid #6ea8ff; outline-offset: 1px; }
+      input:focus-visible, button:focus-visible {
+        outline: max(2px, 0.08em) solid var(--accent);
+        outline-offset: 0.25em;
+      }
       button {
         border: 0;
-        background: #e7e9ee;
-        color: #05060a;
+        background: var(--accent);
+        color: var(--bg-deep);
         font-weight: 600;
         cursor: pointer;
+      }
+      button:active { transform: scale(0.97); }
+      @media (hover: hover) and (pointer: fine) {
+        button:hover { background: color-mix(in oklch, var(--accent), var(--black) 12%); }
+      }
+      @media (prefers-reduced-motion: no-preference) {
+        button { transition: transform 160ms ease-out; }
       }
     </style>
   </head>
