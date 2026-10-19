@@ -23,6 +23,7 @@
 import { Option, Schema } from "effect";
 import type { PiWhenBusy } from "agents/harness/pi";
 
+import type { ApprovalState } from "./executor-policy.ts";
 import { approvalOperationId } from "./operation.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage } from "./sql.ts";
@@ -129,7 +130,7 @@ const rowToApproval = (row: SqlRow): Option.Option<ApprovalView> =>
 
 /** One paused call, as the bridge found it. */
 /** What the store knows about one paused call. */
-export type ApprovalState = "pending" | "decided" | "unknown";
+export type { ApprovalState } from "./executor-policy.ts";
 
 export interface PausedApproval {
   readonly bot: string;

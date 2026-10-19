@@ -13,7 +13,14 @@ import type { ModelRef, ThinkingLevel } from "./bots.ts";
 import type { RunRow } from "./runs.ts";
 import { streamViewOf } from "./runs.ts";
 import { usageView } from "./web-contract.ts";
-import type { ActiveRunView, ApprovalView, BotView, PendingOperationView } from "./web-contract.ts";
+import type {
+  ActiveRunView,
+  ApprovalView,
+  BotView,
+  FailureView,
+  PendingOperationView,
+  TaskView,
+} from "./web-contract.ts";
 
 export interface StatusFacts {
   readonly id: string;
@@ -25,6 +32,10 @@ export interface StatusFacts {
   readonly approvals: readonly ApprovalView[];
   readonly runs: readonly RunRow[];
   readonly activeRun?: { readonly run: RunRow; readonly cursor: number };
+  /** What the harness reported and could not recover from, newest first. */
+  readonly failures: readonly FailureView[];
+  /** The work the harness still has live. */
+  readonly tasks: readonly TaskView[];
 }
 
 /**
@@ -65,4 +76,6 @@ export const projectStatus = (facts: StatusFacts): BotView => ({
     facts.activeRun === undefined
       ? undefined
       : activeRunView(facts.activeRun.run, facts.activeRun.cursor),
+  failures: facts.failures,
+  tasks: facts.tasks,
 });

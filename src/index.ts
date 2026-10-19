@@ -10,7 +10,6 @@ import type {
   AgentChange,
   ConversationId,
   EntryRecord,
-  HarnessSettings,
   UsageState,
 } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai";
@@ -19,7 +18,13 @@ import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go"
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { createExecutorMcp } from "./executor-mcp.ts";
 import type { PausedCall, PausedSink } from "./executor-mcp.ts";
+import { createExecutorPolicy } from "./executor-policy.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
+import { commitmentsExtension } from "./commitments.ts";
+import { createFailureStore } from "./failures.ts";
+import type { FailureStore } from "./failures.ts";
+import { projectTasks } from "./liveness.ts";
+import { settingsFor } from "./runtime-policy.ts";
 import { createFeed } from "./feed.ts";
 import type { Feed } from "./feed.ts";
 import { cronOperationId, httpOperationId, originOf, abortOperationId } from "./operation.ts";
@@ -73,10 +78,8 @@ export interface WaitResult {
   readonly reason?: string;
 }
 
-const HARNESS_SETTINGS: HarnessSettings = {
-  progress: { partialIntervalMs: 1_000, outputIntervalMs: 1_000 },
-  compaction: { enabled: true, reserveTokens: 16_384 },
-};
+/** How many recent failures `/status` reports. A status page, not a history. */
+const FAILURE_LIMIT = 10;
 
 const toThinkingLevel = (level: ThinkingLevel): ModelThinkingLevel =>
   level === "none" ? "off" : level;
@@ -105,24 +108,6 @@ const conversationIdOf = (sessionId: string): ConversationId => {
 const describeCause = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-const makeHarnessFactory =
-  (env: Env, botId: string, onPaused: PausedSink): PiHarnessFactory =>
-  async ({ storage, context }) => {
-    const registry = createRegistry();
-    // The bridge detects the pause; `onPaused` turns it into the approval row.
-    registry.install(
-      createExecutorMcp(
-        { url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN },
-        { onPaused },
-      ),
-    );
-    registry.install(createBotDelegation({ env, sourceBotId: botId }));
-    const models = createModels();
-    models.setProvider(opencodeGoProvider());
-    models.setProvider(createAI({ binding: env.AI }).provider);
-    return Harness.open(storage, { models, registry, settings: HARNESS_SETTINGS }, context);
-  };
-
 export class Bot extends DurableObject<Env> {
   readonly lifecycle: Lifecycle<Env>;
   readonly harness: PiHarness;
@@ -131,6 +116,7 @@ export class Bot extends DurableObject<Env> {
   #auditSink: AuditLog | undefined;
   #runStore: RunStore | undefined;
   #approvalStore: ApprovalStore | undefined;
+  #failureStore: FailureStore | undefined;
   #feedService: Feed | undefined;
   #botReady: Promise<void> | undefined;
   /** In-flight thread→session creations, so concurrent requests share one. */
@@ -140,7 +126,7 @@ export class Bot extends DurableObject<Env> {
     super(ctx, env);
     this.lifecycle = Lifecycle.install(this);
     this.harness = new PiHarness({
-      harness: makeHarnessFactory(env, this.lifecycle.name, (paused) =>
+      harness: this.#makeHarnessFactory(env, this.lifecycle.name, (paused) =>
         this.#recordPaused(paused),
       ),
     });
@@ -148,6 +134,63 @@ export class Bot extends DurableObject<Env> {
     this.lifecycle.use(this.harness);
     this.lifecycle.use(this.streams);
     this.runtime = makeManagedRuntime(BotRegistryService.layer);
+  }
+
+  /**
+   * The harness this bot runs on: its registry, its models and its run policy.
+   *
+   * The policy comes from the bot's own declaration rather than one settings
+   * object shared by the whole fleet, so a bot that knows its context window
+   * compacts at thresholds that suit it. The registry carries the Executor
+   * bridge, the delegation tool, the approval policy and, for a bot that
+   * declares commitments, the commitments extension.
+   *
+   * The harness reports what it could not recover from; the failure store
+   * keeps it, so `/status` can show it.
+   */
+  #makeHarnessFactory(env: Env, botId: string, onPaused: PausedSink): PiHarnessFactory {
+    return async ({ storage, context }) => {
+      const bot = await this.#botConfig();
+      const registry = createRegistry();
+      // The bridge detects the pause; `onPaused` turns it into the approval row.
+      registry.install(
+        createExecutorMcp(
+          { url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN },
+          { onPaused },
+        ),
+      );
+      registry.install(createBotDelegation({ env, sourceBotId: botId }));
+      registry.install(
+        createExecutorPolicy({
+          approvalState: (requestId) => this.#approvals().stateOf(requestId),
+          onCall: (call) => {
+            void this.#appendAudit({
+              timestamp: Date.now(),
+              botId: this.lifecycle.name,
+              kind: "executor.call",
+              operationId: `executor:${call.name}`,
+              detail: { tool: call.name, durationMs: call.durationMs },
+            });
+          },
+        }),
+      );
+      if (bot.commitments === true) registry.install(commitmentsExtension);
+      const models = createModels();
+      models.setProvider(opencodeGoProvider());
+      models.setProvider(createAI({ binding: env.AI }).provider);
+      return Harness.open(
+        storage,
+        {
+          models,
+          registry,
+          settings: settingsFor(bot),
+          onReport: (cause) => {
+            this.#failures().record(cause);
+          },
+        },
+        context,
+      );
+    };
   }
 
   /**
@@ -292,12 +335,14 @@ export class Bot extends DurableObject<Env> {
     await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
     const id = this.lifecycle.name;
     const bot = await this.#botConfig();
-    const [sessions, pending, usage] = await Effect.runPromise(
+    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+    const [sessions, pending, usage, inspection] = await Effect.runPromise(
       Effect.all(
         [
           Effect.tryPromise(() => this.harness.sessions.list()),
           Effect.tryPromise(() => this.harness.pending()),
           Effect.tryPromise(() => this.#usage()),
+          Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
         ],
         { concurrency: "unbounded" },
       ),
@@ -322,6 +367,8 @@ export class Bot extends DurableObject<Env> {
       approvals: this.#approvals().pending(),
       runs,
       activeRun: active === undefined ? undefined : { run: active, cursor },
+      failures: this.#failures().recent(FAILURE_LIMIT),
+      tasks: projectTasks(inspection),
     });
   }
 
@@ -430,6 +477,11 @@ export class Bot extends DurableObject<Env> {
   #approvals(): ApprovalStore {
     this.#approvalStore ??= createApprovalStore(this.ctx.storage);
     return this.#approvalStore;
+  }
+
+  #failures(): FailureStore {
+    this.#failureStore ??= createFailureStore(this.ctx.storage);
+    return this.#failureStore;
   }
 
   /**
