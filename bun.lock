@@ -20,6 +20,7 @@
       },
       "devDependencies": {
         "@cloudflare/workers-types": "5.20261013.1",
+        "@ism0080/oxlint-plugin-forge": "workspace:*",
         "@oxlint/plugins": "^1.82.0",
         "oxfmt": "^0.67.0",
         "oxlint": "^1.82.0",
@@ -38,6 +39,23 @@
       "devDependencies": {
         "typescript": "^5.9.3",
       },
+    },
+    "tools/oxlint": {
+      "name": "@ism0080/oxlint-plugin-forge",
+      "version": "0.3.5",
+      "dependencies": {
+        "@oxlint/plugins": "^1.82.0",
+      },
+      "devDependencies": {
+        "typescript": "^5.9.3",
+        "vitest": "^5.0.0",
+      },
+      "peerDependencies": {
+        "oxlint": ">=1.69.0",
+      },
+      "optionalPeers": [
+        "oxlint",
+      ],
     },
     "web": {
       "name": "@mackbot/web",
@@ -388,6 +406,8 @@
     "@img/sharp-win32-ia32": ["@img/sharp-win32-ia32@0.35.5", "", { "os": "win32", "cpu": "ia32" }, "sha512-5Zm82LoBc43nhwNybZlG7Y1KO//Zhsn306fQl29ZOuStHLGTo3BWL83q3cznX0poxSAMuYL1On/BHBxkBeKr6A=="],
 
     "@img/sharp-win32-x64": ["@img/sharp-win32-x64@0.35.5", "", { "os": "win32", "cpu": "x64" }, "sha512-x76eH0vEiHlcMQu8Y8IenntaACtddpT6W0wmXtWrnKcnKI7ME5DdgqhAD6SEWOEl1v2zDvkZDhFA9KnURwpfqg=="],
+
+    "@ism0080/oxlint-plugin-forge": ["@ism0080/oxlint-plugin-forge@workspace:tools/oxlint"],
 
     "@jridgewell/gen-mapping": ["@jridgewell/gen-mapping@0.4.0-beta.0", "", { "dependencies": { "@jridgewell/sourcemap-codec": "^1.6.0-beta.0", "@jridgewell/trace-mapping": "^0.3.24" } }, "sha512-JdGNkbE4GlNPYQhM0L95fBQr7ctLZJ276QXQLTad4t1oSdnnCI3fDq9DW3BqYAWv8Wc3+HS+4Gsii1oPMCfz1w=="],
 

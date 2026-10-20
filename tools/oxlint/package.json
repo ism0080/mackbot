@@ -28,8 +28,7 @@
   "scripts": {
     "build": "tsc -b --clean && tsc -b",
     "typecheck": "tsc -b --pretty false",
-    "test": "pnpm build && vitest run --config vitest.config.ts && node tests/smoke.mjs",
-    "publish:local": "pnpm build && pnpm publish --registry http://localhost:4873 --no-git-checks --tag local"
+    "test": "bun run build && vitest run --config vitest.config.ts && node tests/smoke.mjs"
   },
   "dependencies": {
     "@oxlint/plugins": "^1.82.0"
@@ -45,8 +44,5 @@
     "oxlint": {
       "optional": true
     }
-  },
-  "engines": {
-    "node": ">=26"
   }
 }
