@@ -69,10 +69,11 @@ mackbot/
 ├── alchemy.run.ts       # Worker, Bot DO binding, AI binding, crons, secrets (Config.Redacted)
 ├── bots.json            # bot registry (typed loader in src/bots.ts)
 ├── oxlint.config.ts     # lint config — core profile on everything, effect profile on alchemy.run.ts only
-├── package.json         # lint/format/test/tools:oxlint scripts + deps
+├── package.json         # the Worker app + the workspace root (lint/format/test scripts + deps)
 ├── .env.example         # documented secret names (copy to .env; never commit .env)
-├── tools/oxlint/        # vendored @ism0080/oxlint-plugin-forge (self-contained, builds + tests green)
+├── tools/oxlint/        # vendored @ism0080/oxlint-plugin-forge (a workspace member, builds + tests green)
 ├── tests/               # smoke tests + runner (bots, chat-request, operation, audit-log, bot-delegation, executor-mcp)
+├── packages/contract/   # @mackbot/contract — the wire vocabulary the Worker and the web app share
 └── src/
     ├── index.ts         # Bot class (PiHarness + ensureBot) + front door fetch + scheduled
     ├── bots.ts          # typed bots.json loader (parseBotRegistry) + modelRef resolution
@@ -80,7 +81,7 @@ mackbot/
     ├── executor-mcp.ts  # Executor v2 bridge (6 meta-tools, MCP TS SDK streamable HTTP)
     ├── bot-delegation.ts# delegate_to_bot pi tool (guards + long-poll)
     ├── chat-request.ts  # front-door request contract (bearer, byte cap, body schema)
-    ├── operation.ts     # operation ids and the origin they encode
+    ├── operation.ts     # operation id builders (the prefixes and the origin reader live in the contract)
     ├── audit-log.ts     # append-only SQLite audit seam
     ├── runtime.ts       # ManagedRuntime bridge for Pi/Cloudflare callbacks
     └── services/        # BotRegistryService, DelegationPolicy
@@ -90,7 +91,9 @@ mackbot/
 
 Dependencies (all pinned): `alchemy`, `effect`, `agents`, `@earendil-works/pi-durable`, `@earendil-works/pi-ai`, `@earendil-works/chord`, `@modelcontextprotocol/sdk`. No hono/grammy — plain `fetch` handlers.
 
-Lint tooling (vendored from the forge repo, already in place): `tools/oxlint/` holds the `@ism0080/oxlint-plugin-forge` rule set (anti-slop / effect / react / xstate profiles). Root `oxlint.config.ts` enables the core profile on everything and the effect profile on `alchemy.run.ts` only (src/ wraps the Pi/Cloudflare promise+callback SDKs at its boundaries, where Effect-idiom rules like `no-direct-fetch`/`no-try-catch` would fight deliberate boundary code); the plugin's own source is ignored by the root config and verifies itself via `bun run tools:oxlint` (tsc build + vitest + smoke). The react/xstate profiles come into play if the first-party webapp lands. Scripts: `lint` / `format` (oxfmt) / `tools:oxlint`.
+Lint tooling (vendored from the forge repo, already in place): `tools/oxlint/` holds the `@ism0080/oxlint-plugin-forge` rule set (anti-slop / effect / react / xstate profiles) and is a workspace member, so one `bun install` manages it. Root `oxlint.config.ts` enables the core profile on everything and the effect profile on `alchemy.run.ts` only (src/ wraps the Pi/Cloudflare promise+callback SDKs at its boundaries, where Effect-idiom rules like `no-direct-fetch`/`no-try-catch` would fight deliberate boundary code); the plugin's own source is ignored by the root config and verifies itself via `bun run tools:oxlint` (tsc build + vitest + smoke). The react/xstate profiles come into play if the first-party webapp lands. Scripts: `lint` / `format` (oxfmt) / `tools:oxlint`.
+
+The wire vocabulary the Worker and the web app share lives in `packages/contract/` (`@mackbot/contract`), a source-only workspace package: no build step, and the browser and the Worker read the same Schemas. It owns the wire enums (operation origins, thinking levels) and the paging rule; the Worker owns the id builders and the model catalog.
 
 `bots.json` sketch:
 

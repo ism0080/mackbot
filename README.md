@@ -9,27 +9,38 @@ real tooling routed through one Executor v2 MCP endpoint.
 
 ## Layout
 
+This is a bun workspace. The root package is the Worker app and the workspace
+root; every other package is a member of it.
+
 - `alchemy.run.ts` — Worker + `Bot` Durable Object binding, `AI` binding, crons, secrets.
 - `bots.json` — the bot registry (model, thinking level, system prompt, delegates).
 - `src/` — the front-door Worker, the `Bot` Durable Object, the Executor bridge, and the seams
   (delegation, audit).
 - `tests/` — smoke tests plus a runner.
+- `packages/contract/` — `@mackbot/contract`, the wire vocabulary the Worker and
+  the web app share.
+- `web/` — `@mackbot/web`, the Foldkit browser app.
+- `tools/oxlint/` — the vendored `@ism0080/oxlint-plugin-forge` lint plugin.
 
 ## Development
 
 ```sh
 bun install
 
-bun run typecheck   # tsc --noEmit
+bun run check       # every check below, in one command
+bun run typecheck   # tsc --noEmit, for every workspace member
 bun run lint        # oxlint (core profile + vendored forge plugin)
 bun run lint:css    # stylelint — the good-css rules over every stylesheet under web/src
 bun run format      # oxfmt
-bun run test        # every tests/*.smoke.mjs in its own process
+bun run test        # every workspace member's tests
 bun run test:css    # prove each good-css rule still fires (web/stylelint/fixtures)
 bun run tools:oxlint # build + test the vendored lint plugin
 ```
 
-There is no CI workflow: run the checks above locally before pushing. `lint:css`
+`bun run check` is the gate: it asserts the deploy shape, then typechecks,
+lints, and tests every workspace member.
+
+There is no CI workflow: run `bun run check` locally before pushing. `lint:css`
 enforces the [good-css](https://good-css.com) rules that a stylesheet can be
 checked for — logical properties, OKLCH colours, focus, hover, press, reduced
 motion and `overflow: clip` — with the rules core stylelint cannot express
@@ -69,9 +80,9 @@ is case-insensitive.
   restarts. The answer is `{ bot, taskId, retried }`, where `retried` is false
   when nothing was parked under that id.
 
-The Worker and the web app share one vocabulary in
-[`src/web-contract.ts`](./src/web-contract.ts). Every route decodes its input and
-its output against a Schema there, so the two cannot drift apart.
+The Worker and the web app share one vocabulary in the
+[`@mackbot/contract`](./packages/contract) package. Every route decodes its
+input and its output against a Schema there, so the two cannot drift apart.
 
 ## Deploy
 
