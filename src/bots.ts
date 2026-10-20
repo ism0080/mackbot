@@ -3,6 +3,9 @@ import botsJson from "../bots.json";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { MODEL_VARIANTS } from "@mackbot/contract/catalog";
+import type { ThinkingLevel } from "@mackbot/contract/catalog";
+
 export interface RawObject {
   readonly [key: string]: RawJson;
 }
@@ -22,21 +25,6 @@ export interface ModelRef {
 export type ModelDecl =
   | string
   | { readonly provider: typeof OPENCODE_GO_PROVIDER_ID; readonly modelId: string };
-
-export const MODEL_VARIANTS = {
-  "deepseek-v4-pro": ["high", "max"],
-  "deepseek-v4.1-flash": ["low", "high", "max"],
-  "deepseek-v4-flash": ["low", "high", "max"],
-  "glm-5.3": ["low", "high", "max"],
-  "glm-5.3-flash": ["low", "high", "max"],
-  "kimi-k2.7-code": [],
-  "claude-haiku-5-5": ["none", "low", "medium", "high", "xhigh", "max"],
-  "gpt-6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
-  "longcat-2.5-preview-free": [],
-  "step-5-preview-free": ["low", "medium", "high"],
-} as const;
-
-export type ThinkingLevel = (typeof MODEL_VARIANTS)[keyof typeof MODEL_VARIANTS][number];
 
 /** The run policy a bot declares for itself, in `bots.json`. */
 export interface BotRuntimeConfig {

@@ -21,8 +21,8 @@ import { Effect, Option, Predicate, Schema } from "effect";
 
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage, SqlValue } from "./sql.ts";
-import { FailureViewSchema } from "./web-contract.ts";
-import type { FailureView } from "./web-contract.ts";
+import { FailureViewSchema } from "@mackbot/contract";
+import type { FailureView } from "@mackbot/contract";
 
 /** The detail's cap, marker included. */
 const MAX_DETAIL = 500;

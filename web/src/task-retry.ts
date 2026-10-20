@@ -10,7 +10,7 @@
  * offers it. The Command that makes the request lives in `api.ts`, with the
  * app's other Commands.
  */
-import type { RetryRequest, TaskView } from "@mackbot/web-contract";
+import type { RetryRequest, TaskView } from "@mackbot/contract";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { Message } from "./message.ts";

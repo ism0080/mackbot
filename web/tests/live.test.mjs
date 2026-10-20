@@ -9,7 +9,7 @@
  */
 import { Effect, Schema } from "effect";
 
-import { BotViewSchema, FrameSchema } from "../../src/web-contract.ts";
+import { BotViewSchema, FrameSchema } from "@mackbot/contract";
 import { HERMES_STATUS, HERMES_TRANSCRIPT, SCRIBE_STATUS, SCRIBE_TRANSCRIPT } from "./fixture.mjs";
 import { boot, makeChecker } from "./support/app.mjs";
 import { startStub } from "./support/stub.mjs";

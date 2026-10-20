@@ -1,4 +1,4 @@
-import type { ActiveRunView, ApprovalView } from "@mackbot/web-contract";
+import type { ActiveRunView, ApprovalView } from "@mackbot/contract";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { elapsedOf } from "./format.ts";

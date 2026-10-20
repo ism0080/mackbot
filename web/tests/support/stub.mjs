@@ -8,7 +8,7 @@
  * them; the default is an `up-to-date` control frame on a connection that holds,
  * which is what a running, quiet bot looks like.
  */
-import { slicePage } from "../../../src/transcript.ts";
+import { slicePage } from "@mackbot/contract";
 
 /**
  * A faithful implementation of `GET /transcript/:bot`: the same backwards walk

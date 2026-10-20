@@ -1,4 +1,4 @@
-import type { ActiveRunView, BotView } from "@mackbot/web-contract";
+import type { ActiveRunView, BotView } from "@mackbot/contract";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { Message } from "./message.ts";

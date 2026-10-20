@@ -1,5 +1,5 @@
-import { FrameSchema } from "@mackbot/web-contract";
-import type { BotView, Frame } from "@mackbot/web-contract";
+import { FrameSchema } from "@mackbot/contract";
+import type { BotView, Frame } from "@mackbot/contract";
 import { Duration, Effect, Equivalence, Option, Queue, Schema, Stream } from "effect";
 import { Subscription } from "foldkit";
 import { AsyncData } from "foldkit";

@@ -1,11 +1,11 @@
 /**
- * web-contract — the vocabulary the Worker and the browser bundle share.
+ * contract — the vocabulary the Worker and the browser bundle share.
  *
  * One place defines what a `Frame` is, what a bot's status view looks like, and
  * how the new routes' query strings and bodies decode, so the server encodes and
  * the client decodes the same shapes rather than re-encoding them by hand. The
  * module is imported by the browser bundle, so it must stay free of
- * Workers-only APIs and of `src/feed.ts` / `src/approvals.ts`.
+ * Workers-only APIs and of the Worker's own modules.
  *
  * Request decoding happens at exactly two boundaries: the HTTP front door
  * decodes the `*Schema`s below, and the event bridge builds Frames with
@@ -23,22 +23,17 @@ import type {
 import type { ImagesInputContent, Message, Usage } from "@earendil-works/pi-ai";
 import * as Schema from "effect/Schema";
 
-import { trimmedNonEmpty } from "./chat-request.ts";
-import type { OperationOrigin } from "./operation.ts";
-import { originOf } from "./operation.ts";
-import type { ThinkingLevel } from "./bots.ts";
+import type { ThinkingLevel } from "./catalog.ts";
+import { OPERATION_ORIGINS, originOf } from "./operation.ts";
+
+export { OPERATION_ORIGINS, OPERATION_PREFIXES, originOf } from "./operation.ts";
+export type { OperationOrigin } from "./operation.ts";
 
 // ---------------------------------------------------------------------------
 // Enumerations mirrored across the Worker and the browser
 // ---------------------------------------------------------------------------
 
-const ORIGIN_VALUES = {
-  http: "http",
-  cron: "cron",
-  delegate: "delegate",
-} as const satisfies Record<OperationOrigin, OperationOrigin>;
-
-export const OperationOriginSchema = Schema.Literals(Object.values(ORIGIN_VALUES));
+export const OperationOriginSchema = Schema.Literals(Object.values(OPERATION_ORIGINS));
 
 const THINKING_LEVEL_VALUES = {
   none: "none",
@@ -410,11 +405,34 @@ const nonNegativeInt = Schema.NumberFromString.check(
   Schema.isGreaterThanOrEqualTo(0),
 );
 
+/**
+ * A non-empty string with its surrounding whitespace removed. The Worker's
+ * chat body and the transcript and events queries all accept the same shape, so
+ * the filter lives with the vocabulary they share.
+ */
+export const trimmedNonEmpty = Schema.String.check(
+  Schema.makeFilter((input: string) => input.trim().length > 0),
+);
+
+/**
+ * The page size the transcript route asks for when the client names none.
+ */
+export const DEFAULT_LIMIT = 50;
+
+/**
+ * The page size ceiling. {@link TranscriptQuerySchema} reads this constant
+ * rather than repeating the number, so the route and its query agree.
+ */
+export const MAX_LIMIT = 200;
+
 export const TranscriptQuerySchema = Schema.Struct({
   thread: Schema.optional(trimmedNonEmpty),
   before: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0))),
   limit: Schema.optional(
-    Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
+    Schema.NumberFromString.check(
+      Schema.isInt(),
+      Schema.isBetween({ minimum: 1, maximum: MAX_LIMIT }),
+    ),
   ),
 });
 export type TranscriptQuery = typeof TranscriptQuerySchema.Type;
@@ -439,6 +457,56 @@ export const EventsQuerySchema = Schema.Struct({
   from: Schema.optional(nonNegativeInt),
 });
 export type EventsQuery = typeof EventsQuerySchema.Type;
+
+// ---------------------------------------------------------------------------
+// Paging
+// ---------------------------------------------------------------------------
+
+export interface PageQuery {
+  readonly before?: number;
+  readonly limit?: number;
+}
+
+/**
+ * Clamp rather than reject, because the Durable Object's RPC surface is reachable
+ * without the front door's Schema.
+ */
+export const clampLimit = (limit: number | undefined): number => {
+  if (limit === undefined || !Number.isSafeInteger(limit)) return DEFAULT_LIMIT;
+  return Math.min(Math.max(limit, 1), MAX_LIMIT);
+};
+
+/**
+ * One page of entries, and the exclusive bound of the next one.
+ */
+export interface EntrySlice<T> {
+  readonly entries: readonly T[];
+  readonly nextBefore?: number;
+}
+
+/**
+ * The newest `limit` entries strictly older than `before`, oldest first.
+ *
+ * The oldest id of a page is the exclusive bound of the next one, so a page
+ * never repeats or skips an entry. The rule works on any entry with a numeric
+ * id, so the Worker pages its own records and the browser pages the wire
+ * views with the same code.
+ */
+export const slicePage = <T extends { readonly id: number }>(
+  entries: readonly T[],
+  query: PageQuery,
+): EntrySlice<T> => {
+  const before = query.before ?? Number.POSITIVE_INFINITY;
+  const window = [...entries]
+    .sort((left, right) => Number(left.id) - Number(right.id))
+    .filter((entry) => Number(entry.id) < before);
+  const page = window.slice(Math.max(window.length - clampLimit(query.limit), 0));
+  const oldest = page[0];
+  return {
+    entries: page,
+    nextBefore: window.length > page.length && oldest !== undefined ? Number(oldest.id) : undefined,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Projections

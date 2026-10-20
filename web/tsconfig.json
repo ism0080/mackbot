@@ -13,10 +13,7 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "skipLibCheck": true,
-    "paths": {
-      "@mackbot/web-contract": ["../src/web-contract.ts"]
-    }
+    "skipLibCheck": true
   },
   "include": ["src", "vite.config.ts"]
 }

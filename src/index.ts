@@ -28,14 +28,14 @@ import { parkedTasks } from "./task-retry.ts";
 import { settingsFor } from "./runtime-policy.ts";
 import { createFeed } from "./feed.ts";
 import type { Feed } from "./feed.ts";
-import { cronOperationId, httpOperationId, originOf, abortOperationId } from "./operation.ts";
+import { cronOperationId, httpOperationId, abortOperationId } from "./operation.ts";
 import { readChatRequest, tokensMatch } from "./chat-request.ts";
 import { loginDocument } from "./login-page.ts";
 import { authenticate, csrfAllows, issueSession, sessionCookie } from "./session.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
-import type { ThinkingLevel } from "./bots.ts";
+import type { ThinkingLevel } from "@mackbot/contract/catalog";
 import { ApprovalWait, createApprovalStore } from "./approvals.ts";
 import type { ApprovalStore, ApprovalWaitInput, DecidedApproval } from "./approvals.ts";
 import { createRunStore, streamViewOf } from "./runs.ts";
@@ -45,9 +45,10 @@ import { emptyTranscriptPage, highestEntryId, transcriptPage } from "./transcrip
 import {
   AbortRequestSchema,
   ApprovalDecisionSchema,
+  originOf,
   RetryRequestSchema,
   TranscriptQuerySchema,
-} from "./web-contract.ts";
+} from "@mackbot/contract";
 import type {
   AbortRequest,
   AbortResult,
@@ -58,7 +59,7 @@ import type {
   RetryResult,
   TranscriptPage,
   TranscriptQuery,
-} from "./web-contract.ts";
+} from "@mackbot/contract";
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";

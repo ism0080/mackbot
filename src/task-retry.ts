@@ -15,7 +15,7 @@
 import type { HarnessInspection } from "@earendil-works/pi-durable";
 
 import { projectTasks } from "./liveness.ts";
-import type { TaskView } from "./web-contract.ts";
+import type { TaskView } from "@mackbot/contract";
 
 /** The harness's own reason for a task it parked instead of running again. */
 const PARKED_REASON = "restart_limit";

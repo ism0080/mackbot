@@ -18,7 +18,7 @@
  */
 import { Effect, Schema } from "effect";
 
-import { BotViewSchema } from "../../src/web-contract.ts";
+import { BotViewSchema } from "@mackbot/contract";
 import { FIXTURE_NOW, HERMES_STATUS, HERMES_TRANSCRIPT } from "./fixture.mjs";
 import { boot, makeChecker } from "./support/app.mjs";
 import { startStub } from "./support/stub.mjs";

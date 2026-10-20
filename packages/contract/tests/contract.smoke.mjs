@@ -1,7 +1,7 @@
 /**
- * Smoke test for the shared wire contract (src/web-contract.ts).
+ * Smoke test for the shared wire contract (packages/contract).
  *
- * Run with: bun tests/web-contract.smoke.mjs
+ * Run with: bun packages/contract/tests/contract.smoke.mjs
  *
  * Two claims, both checkable without a Worker or a browser:
  *   1. `encodeFrame` is total over the harness event vocabulary — every
@@ -11,7 +11,7 @@
  *      survives a JSON round trip, which is what makes it a `StreamJson` chunk.
  */
 const { FrameSchema, encodeFrame, encodeSnapshot, projectEntry, usageView } =
-  await import("../src/web-contract.ts");
+  await import("@mackbot/contract");
 const Schema = await import("effect/Schema");
 
 const failures = [];
@@ -207,7 +207,7 @@ check("usageView sums the model ledger", usageView(usageState).inputTokens === 1
 check("usageView counts the model ledgers", usageView(usageState).exchanges === 1);
 
 const { TranscriptQuerySchema, EventsQuerySchema, ApprovalDecisionSchema, SessionRequestSchema } =
-  await import("../src/web-contract.ts");
+  await import("@mackbot/contract");
 
 check(
   "transcript limit accepts 200",
@@ -227,9 +227,9 @@ check("approval decision rejects maybe", !Schema.is(ApprovalDecisionSchema)({ ac
 check("session code is non-empty", !Schema.is(SessionRequestSchema)({ code: "" }));
 
 if (failures.length > 0) {
-  console.error("web-contract smoke FAILED:");
+  console.error("contract smoke FAILED:");
   for (const failure of failures) console.error(" -", failure);
   process.exit(1);
 }
-console.log("web-contract smoke passed");
+console.log("contract smoke passed");
 process.exit(0);

@@ -1,4 +1,4 @@
-import { BotViewSchema, FrameSchema, TranscriptPageSchema } from "@mackbot/web-contract";
+import { BotViewSchema, FrameSchema, TranscriptPageSchema } from "@mackbot/contract";
 import { AsyncData } from "foldkit";
 import { defineTaggedUnion } from "foldkit/schema";
 import * as Schema from "effect/Schema";

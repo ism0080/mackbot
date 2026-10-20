@@ -2,7 +2,7 @@
  * The payloads the two documented routes used to be faked by. They are test
  * data now: `support/stub.mjs` serves them over a real HTTP boundary, and the
  * test harness decodes them with the same Schemas the app decodes with, so the
- * fixture cannot drift from `src/web-contract.ts` without failing.
+ * fixture cannot drift from the contract package without failing.
  *
  * The clock is anchored so every rendered clock label is the same on every run.
  * Hermes' `cron` entry deliberately has no `at`: pi's entries outside a run

@@ -9,7 +9,7 @@
  */
 import { Effect, Schema } from "effect";
 
-import { BotViewSchema, TranscriptPageSchema } from "../../src/web-contract.ts";
+import { BotViewSchema, TranscriptPageSchema } from "@mackbot/contract";
 import { FIXTURE_NOW, STATUS_RESPONSE, TRANSCRIPTS } from "./fixture.mjs";
 import { boot, makeChecker } from "./support/app.mjs";
 import { startStub } from "./support/stub.mjs";

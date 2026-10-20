@@ -1,5 +1,5 @@
 /**
- * Smoke test for transcript paging (src/transcript.ts).
+ * Smoke test for transcript paging (the wire contract's paging rule).
  *
  * Run with: bun tests/transcript-paging.smoke.mjs
  *
@@ -9,7 +9,7 @@
  *   2. `nextBefore` is present exactly while older entries remain.
  *   3. `limit` is honoured and clamped to [1, 200].
  */
-const { DEFAULT_LIMIT, MAX_LIMIT, clampLimit, slicePage } = await import("../src/transcript.ts");
+const { DEFAULT_LIMIT, MAX_LIMIT, clampLimit, slicePage } = await import("@mackbot/contract");
 
 const failures = [];
 const check = (label, condition, detail = "") => {

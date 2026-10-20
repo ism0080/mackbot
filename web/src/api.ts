@@ -3,9 +3,9 @@ import {
   BotViewSchema,
   RetryResultSchema,
   TranscriptPageSchema,
-} from "@mackbot/web-contract";
-import type { AbortRequest } from "@mackbot/web-contract";
-import type { ApprovalDecision } from "@mackbot/web-contract";
+} from "@mackbot/contract";
+import type { AbortRequest } from "@mackbot/contract";
+import type { ApprovalDecision } from "@mackbot/contract";
 import { Clock, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Command, Http } from "foldkit";

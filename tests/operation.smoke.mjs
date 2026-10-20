@@ -1,5 +1,6 @@
 /**
- * Smoke test for the operation-id builders (src/operation.ts).
+ * Smoke test for the operation-id builders (src/operation.ts) and the origin
+ * vocabulary they share with the wire contract (@mackbot/contract).
  *
  * Run with: bun tests/operation.smoke.mjs
  *
@@ -7,8 +8,9 @@
  * namespacing that makes an echoed id reuse the same operation. No credentials
  * needed.
  */
-const { cronOperationId, delegateOperationId, httpOperationId, originOf } =
+const { cronOperationId, delegateOperationId, httpOperationId } =
   await import("../src/operation.ts");
+const { originOf } = await import("@mackbot/contract");
 
 const failures = [];
 

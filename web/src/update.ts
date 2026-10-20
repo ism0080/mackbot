@@ -1,10 +1,4 @@
-import type {
-  ApprovalView,
-  BotView,
-  EntryView,
-  Frame,
-  TranscriptPage,
-} from "@mackbot/web-contract";
+import type { ApprovalView, BotView, EntryView, Frame, TranscriptPage } from "@mackbot/contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
