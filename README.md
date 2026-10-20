@@ -13,7 +13,7 @@ This is a bun workspace. The root package is the Worker app and the workspace
 root; every other package is a member of it.
 
 - `alchemy.run.ts` — Worker + `Bot` Durable Object binding, `AI` binding, crons, secrets.
-- `bots.json` — the bot registry (model, thinking level, system prompt, delegates).
+- `bots.json` — the seed roster (model, thinking level, system prompt, delegates).
 - `src/` — the front-door Worker, the `Bot` Durable Object, the Executor bridge, and the seams
   (delegation, audit).
 - `tests/` — smoke tests plus a runner.
@@ -79,6 +79,32 @@ is case-insensitive.
   `{"taskId": "<id>"}`, naming a task the harness parked after too many
   restarts. The answer is `{ bot, taskId, retried }`, where `retried` is false
   when nothing was parked under that id.
+- `GET /bots` — the roster: one configuration per bot, keyed by bot id.
+- `POST /bots` — add a bot. The body is `{"id": "<slug>", "bot": <configuration>}`.
+- `PUT /bots/:id` — replace a bot's configuration. The body is
+  `{"bot": <configuration>}`.
+- `GET /models` — the models the Worker knows, and the thinking levels each one
+  supports.
+
+## The bot roster
+
+The roster lives in the `Registry` Durable Object, not in the bundle. The web
+app reads it at `GET /bots` and writes to it, so a bot's prompt, model or
+brief changes without a redeploy.
+
+`bots.json` is the seed. A registry that has never been seeded takes its bots
+from the file; after that the registry is the only truth, and the file is
+inert. Deleting a bot is not offered yet, so an empty registry means a fresh
+one.
+
+A bot's id is a slug, `^[a-z0-9][a-z0-9-]{0,62}$`: it is the Durable Object's
+name, the path segment the routes carry it in, and the key its transcript is
+filed under.
+
+A bot's model is one id. A Workers AI model is named by its own `@cf/...`
+path; every other model is named by its id in the OpenCode Go catalog. The
+catalog crosses the wire at `GET /models` rather than reaching the browser's
+module graph, so the Worker stays the one that knows which models exist.
 
 The Worker and the web app share one vocabulary in the
 [`@mackbot/contract`](./packages/contract) package. Every route decodes its

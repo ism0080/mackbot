@@ -52,7 +52,7 @@ POST /chat/:bot (v1 interface)  ·  cron (hourly)  ·  Telegram webhooks (option
 | Runtime / durability      | Pi Durable via Cloudflare Agents SDK `PiHarness` (beta) in SQLite-backed Durable Objects                                                                                                                                                                                                                   |
 | Deploy tooling            | **Alchemy v2** (async Worker + `Cloudflare.DurableObject` binding — auto SQLite class migrations; no wrangler)                                                                                                                                                                                             |
 | Bot topology              | **One DO instance per bot** (`getByName(botId)`), root session each                                                                                                                                                                                                                                        |
-| Per-bot config            | **`bots.json` in code** (model, thinking level, system prompt, telegramTokenEnv); applied idempotently via `pi()` → `root.configure()`                                                                                                                                                                     |
+| Per-bot config            | **The `Registry` Durable Object** holds the roster (model, thinking level, system prompt, delegates); `bots.json` seeds a fresh registry and is inert afterwards; the web app writes to it; applied per session, idempotently, via `pi()` → `root.configure()`                                             |
 | Models                    | **OpenCode Go** (`opencode-go` provider, `OPENCODE_API_KEY`); cheap tier: Workers AI (`@cf/...`) or free catalog models (`longcat-2.5-preview-free`, `step-5-preview-free`)                                                                                                                                |
 | Tooling                   | **Executor v2 meta-tools only** — bots never talk to apps directly                                                                                                                                                                                                                                         |
 | Channels                  | **HTTP API first** (`POST /chat/:bot` + bearer auth); first-party webapp later (SSE events); **Telegram last, optional**                                                                                                                                                                                   |
@@ -67,7 +67,7 @@ POST /chat/:bot (v1 interface)  ·  cron (hourly)  ·  Telegram webhooks (option
 ```
 mackbot/
 ├── alchemy.run.ts       # Worker, Bot DO binding, AI binding, crons, secrets (Config.Redacted)
-├── bots.json            # bot registry (typed loader in src/bots.ts)
+├── bots.json            # the seed roster (the durable roster lives in the Registry DO)
 ├── oxlint.config.ts     # lint config — core profile on everything, effect profile on alchemy.run.ts only
 ├── package.json         # the Worker app + the workspace root (lint/format/test scripts + deps)
 ├── .env.example         # documented secret names (copy to .env; never commit .env)
@@ -76,7 +76,7 @@ mackbot/
 ├── packages/contract/   # @mackbot/contract — the wire vocabulary the Worker and the web app share
 └── src/
     ├── index.ts         # Bot class (PiHarness + ensureBot) + front door fetch + scheduled
-    ├── bots.ts          # typed bots.json loader (parseBotRegistry) + modelRef resolution
+    ├── bots.ts          # the registry's rules (model, thinking level, roster) + modelRef resolution
     ├── constants.ts     # shared values (LONG_POLL_TIMEOUT_MS)
     ├── executor-mcp.ts  # Executor v2 bridge (6 meta-tools, MCP TS SDK streamable HTTP)
     ├── bot-delegation.ts# delegate_to_bot pi tool (guards + long-poll)
@@ -140,7 +140,8 @@ Implementation: `@modelcontextprotocol/sdk` `StreamableHTTPClientTransport` (wor
 ## Key mechanics
 
 - **Per-bot config lives in the conversation**, never the class/factory (DO instances of one class share isolates): `ensureBot()` → `pi().root()` → `configure({ model, instructions })`, re-applied idempotently after eviction; persists in `pi.agent`.
-- **Per-bot run policy** comes from the same declaration (`bots.json` → `runtime`): pi reads `HarnessSettings` at every use and never stores it, so a bot that knows its context window compacts at thresholds scaled to it. One settings object for the whole fleet cannot suit a 32k and a 1M window alike.
+- **The roster is durable, the file is a seed.** The `Registry` Durable Object holds the fleet's bots and is the only writer: the web app reads it at `GET /bots` and writes to it, so a bot's prompt changes without a redeploy. `bots.json` fills a registry that has never been seeded and is inert afterwards.
+- **Per-bot run policy** comes from the same declaration (the roster's `runtime`): pi reads `HarnessSettings` at every use and never stores it, so a bot that knows its context window compacts at thresholds scaled to it. One settings object for the whole fleet cannot suit a 32k and a 1M window alike.
 - **What the harness reported is durable**: `onReport` writes to the bot's own table, and `/status` carries it beside the work the harness still has live. A bot that is stuck has to be able to say why.
 - **Recovery is free**: eviction/crash/deploy mid-run → wake-up job alarm restarts the DO → Pi reopens storage, resumes from last checkpoint; `replay: "safe"` tools rerun, others surface as interrupted.
 - **A crash-looping task parks.** The harness counts a task's restarts and parks it at `settings.restartLimit` instead of running it again, so a bot whose every turn crashes stops costing the fleet alarm invocations. `POST /retry/:bot` runs it again.

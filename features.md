@@ -21,6 +21,10 @@ foundation pieces are already implemented and are intentionally omitted here:
   `POST /retry/:bot` runs it again.
 - A durable wait for an approval, so a decision cannot be lost between the
   row being written and the call being resumed.
+- A durable bot roster: the `Registry` Durable Object holds the fleet's bots,
+  and the web app edits a bot's prompt, model, brief and thinking level and
+  adds a bot without a redeploy. `bots.json` seeds a fresh registry and is
+  inert afterwards.
 
 ## Product and UX
 
@@ -33,9 +37,21 @@ foundation pieces are already implemented and are intentionally omitted here:
   as a fallback.
 - **Saved routines (“show me once”).** Allow a user to record a workflow and
   store it as a reusable routine, then run it on a schedule with approval gates.
-- **Bot presets / marketplace config.** Evolve `bots.json` into versioned presets
-  with model, prompt, delegates, approved tools, and channel
-  bindings.
+- **Bot presets / marketplace config.** The roster is durable now and the web
+  app edits it. Still open: versioned presets a bot can be restored to, the
+  approved-tools list, and channel bindings.
+- **Deleting a bot.** The roster's write path can add and replace a bot, but
+  not remove one. A removed bot leaves its Durable Object with its transcripts,
+  audit rows and commitments, and the Worker cannot delete an instance, so the
+  delete route has to decide what happens to that history first.
+- **Editing a bot's delegate list and run policy.** The web app edits the
+  model, the thinking level, the prompt and the brief. The delegate list and
+  the `commitments` flag are carried through a save untouched, so they cannot
+  be changed there yet. The delegate list has a rule of its own: absent means
+  the bot may delegate to any bot, an empty list means it may delegate to
+  none. The commitments extension is installed when the harness opens, so
+  flipping that flag needs a restart, while a run policy edit lands on the
+  bot's next submit.
 - **Shared workspaces across bots.** Add a real shared file/workspace capability
   with provenance fields identifying the bot that created or changed each
   artifact.
