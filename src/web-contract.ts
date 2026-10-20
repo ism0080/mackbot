@@ -140,12 +140,30 @@ export type StreamStatusView = typeof StreamStatusViewSchema.Type;
  * One failure the bot's harness reported. `at` is when the harness reported
  * it, not when the underlying fault happened; `name` is the error's own class
  * name, so a reader can tell a `TypeError` from a `RangeError`.
+ *
+ * `kind` is the harness's own word for the failure, not a guess. A parked task
+ * and a failed session are different problems and want different responses.
  */
 export const FailureViewSchema = Schema.Struct({
   at: Schema.Number,
-  kind: Schema.Literals(["session_failed", "harness_failure"]),
+  kind: Schema.Literals([
+    "session_failed",
+    "task_faulted",
+    "task_parked",
+    "migration_failed",
+    "task_outdated",
+    "task_error",
+    "extension_error",
+    "host_error",
+    "listener_error",
+  ]),
   name: Schema.String,
   detail: Schema.String,
+  taskId: Schema.optional(Schema.String),
+  taskKind: Schema.optional(Schema.String),
+  extension: Schema.optional(Schema.String),
+  /** The host callback that failed, when the failure was one. */
+  callback: Schema.optional(Schema.String),
 });
 export type FailureView = typeof FailureViewSchema.Type;
 
@@ -173,6 +191,26 @@ export const TaskViewSchema = Schema.Struct({
   reason: Schema.optional(Schema.String),
 });
 export type TaskView = typeof TaskViewSchema.Type;
+
+/**
+ * A request to run a parked task again. `taskId` names the task the harness
+ * parked, which it reports as blocked with the reason `restart_limit`.
+ */
+export const RetryRequestSchema = Schema.Struct({
+  taskId: Schema.String,
+});
+export type RetryRequest = typeof RetryRequestSchema.Type;
+
+/**
+ * What a retry did. `retried` is false when the task was not parked, so a
+ * retry that had nothing to do says so rather than claiming success.
+ */
+export const RetryResultSchema = Schema.Struct({
+  bot: Schema.String,
+  taskId: Schema.String,
+  retried: Schema.Boolean,
+});
+export type RetryResult = typeof RetryResultSchema.Type;
 
 /**
  * A request to stop a bot's current work. `session` names the conversation to

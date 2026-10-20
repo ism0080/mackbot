@@ -184,8 +184,8 @@ export class Bot extends DurableObject<Env> {
           models,
           registry,
           settings: settingsFor(bot),
-          onReport: (cause) => {
-            this.#failures().record(cause);
+          onReport: (cause, info) => {
+            this.#failures().record(cause, info);
           },
         },
         context,
