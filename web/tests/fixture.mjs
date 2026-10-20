@@ -8,6 +8,9 @@
  * Hermes' `cron` entry deliberately has no `at`: pi's entries outside a run
  * window have no timestamp, and the transcript must render that as no time
  * rather than a substituted one.
+ *
+ * Hermes carries one parked task too: the harness blocked it after too many
+ * restarts, and it is the one row the home offers a button for.
  */
 export const FIXTURE_NOW = 1_792_145_100_000;
 
@@ -32,9 +35,7 @@ export const HERMES_STATUS = {
   model: { provider: "opencode-go", id: "deepseek-v4-pro" },
   thinkingLevel: "high",
   busy: true,
-  pending: [
-    { operationId: "cron:hermes:2026-10-16T09:00", origin: "cron", status: "running" },
-  ],
+  pending: [{ operationId: "cron:hermes:2026-10-16T09:00", origin: "cron", status: "running" }],
   usage: { inputTokens: 12_400, outputTokens: 3_100, exchanges: 2 },
   approvals: [
     {
@@ -71,7 +72,7 @@ export const HERMES_STATUS = {
   failures: [
     {
       at: at(9),
-      kind: "harness_failure",
+      kind: "task_faulted",
       name: "TypeError",
       detail: "Cannot read properties of undefined (reading 'amount')",
     },
@@ -84,6 +85,14 @@ export const HERMES_STATUS = {
       status: "running",
       phase: "matching March invoices against the ledger",
       background: true,
+    },
+    {
+      id: "task_payroll_run",
+      kind: "payroll",
+      session: "hermes",
+      status: "blocked",
+      reason: "restart_limit",
+      background: false,
     },
   ],
 };

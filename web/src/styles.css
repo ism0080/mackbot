@@ -157,7 +157,13 @@ html,
 body {
   background: var(--bg-deep);
   color: var(--text);
-  font: 1rem/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", sans-serif;
+  font:
+    1rem/1.45 -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    system-ui,
+    "Segoe UI",
+    sans-serif;
 }
 
 html {
@@ -736,6 +742,29 @@ details[open]::details-content {
 .sp-foot {
   font-size: var(--step--3);
   color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- parked tasks ---------- */
+
+/* A parked task is work the harness will not start on its own, so its row wears
+   the warn ramp like a failure and carries the button that runs it again. */
+.sp-parked {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  text-align: start;
+  padding: 11px 12px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--warn-quiet);
+  color: var(--warn-strong);
+}
+
+/* The harness's own reason for the park, in its own words. */
+.sp-reason {
+  font-size: var(--step--3);
+  color: var(--warn-muted);
   font-variant-numeric: tabular-nums;
 }
 

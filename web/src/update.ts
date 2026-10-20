@@ -1,10 +1,16 @@
-import type { ApprovalView, BotView, EntryView, Frame, TranscriptPage } from "@mackbot/web-contract";
+import type {
+  ApprovalView,
+  BotView,
+  EntryView,
+  Frame,
+  TranscriptPage,
+} from "@mackbot/web-contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
 import type { Update } from "foldkit";
 
-import { DecideApproval, Status, StopBot, Transcript } from "./api.ts";
+import { DecideApproval, RetryTask, Status, StopBot, Transcript } from "./api.ts";
 import { Message } from "./message.ts";
 import { botName } from "./partials.ts";
 import { FRAME_WINDOW, Screen } from "./model.ts";
@@ -242,9 +248,7 @@ const reconnect = (channel: Channel): Channel => {
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
     PolledStatus: () =>
-      model.polling
-        ? { model }
-        : { model: { ...model, polling: true }, commands: [Status()] },
+      model.polling ? { model } : { model: { ...model, polling: true }, commands: [Status()] },
     FrameReceived: ({ bot, frame, seq, at }) => ({
       model: withChannel(model, bot, (channel) => applyFrame(channel, frame, seq, at)),
     }),
@@ -317,9 +321,7 @@ export const update = (model: Model, message: Message) =>
     StoppedBot: ({ bot, aborted }) => ({
       model: modifyFields(model, {
         toast: () => ({
-          text: aborted
-            ? `Stopped ${botName(bot)}.`
-            : `${botName(bot)} was already idle.`,
+          text: aborted ? `Stopped ${botName(bot)}.` : `${botName(bot)} was already idle.`,
         }),
       }),
       // The run that just stopped is gone from the server's view of the world,
@@ -329,6 +331,29 @@ export const update = (model: Model, message: Message) =>
     StopFailed: ({ bot, error }) => ({
       model: modifyFields(model, {
         toast: () => ({ text: `Couldn't stop ${botName(bot)} (${error}). Try again.` }),
+      }),
+    }),
+    ClickedRetry: ({ bot, taskId }) => ({
+      // The retry is a request, not a fact: the task stays parked until the
+      // server says it ran it again, so the model changes only on the answer.
+      model,
+      commands: [RetryTask({ bot, taskId })],
+    }),
+    TaskRetried: ({ bot, retried }) => ({
+      model: modifyFields(model, {
+        toast: () => ({
+          text: retried
+            ? `Reran ${botName(bot)}'s parked task.`
+            : `${botName(bot)}'s task was no longer parked.`,
+        }),
+      }),
+      // The task that just ran is no longer parked, so the status that named it
+      // as parked has to be read again.
+      commands: [Status()],
+    }),
+    RetryFailed: ({ bot, error }) => ({
+      model: modifyFields(model, {
+        toast: () => ({ text: `Couldn't rerun ${botName(bot)}'s task (${error}). Try again.` }),
       }),
     }),
     DismissedToast: () => ({ model: modifyFields(model, { toast: () => null }) }),
@@ -364,7 +389,10 @@ export const update = (model: Model, message: Message) =>
         .filter((id) => dataOf(transcriptOf(model, id)) === undefined)
         .map((id) => Transcript({ bot: id }));
 
-      return { model: { ...model, roster: AsyncData.succeed(null), now: at, channels, polling: false }, commands };
+      return {
+        model: { ...model, roster: AsyncData.succeed(null), now: at, channels, polling: false },
+        commands,
+      };
     },
     StatusFailed: ({ error, at }) => ({
       model: { ...model, roster: AsyncData.fail(error), now: at, polling: false },

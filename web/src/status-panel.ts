@@ -14,6 +14,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { elapsedOf } from "./format.ts";
 import { Message } from "./message.ts";
 import { avatar, botName } from "./partials.ts";
+import { isParked, parkedTaskRow } from "./task-retry.ts";
 
 /** A failure names its bot: a fault belongs to a bot, not to the fleet. */
 const failureRow = (
@@ -24,11 +25,7 @@ const failureRow = (
 ): Html =>
   h.keyed("div")(
     `${bot}/${failure.kind}/${failure.at}/${failure.name}`,
-    [
-      h.Class("sp-fail"),
-      h.DataAttribute("bot", bot),
-      h.DataAttribute("failure", failure.name),
-    ],
+    [h.Class("sp-fail"), h.DataAttribute("bot", bot), h.DataAttribute("failure", failure.name)],
     [
       avatar(bot, h),
       h.div(
@@ -71,9 +68,7 @@ const taskRow = (bot: string, task: TaskView, h: HtmlBuilder<Message>): Html =>
         [h.Class("runit-main")],
         [
           h.span([h.Class("rt")], [task.kind]),
-          ...(task.phase === undefined
-            ? []
-            : [h.span([h.Class("rmeta")], [task.phase])]),
+          ...(task.phase === undefined ? [] : [h.span([h.Class("rmeta")], [task.phase])]),
           h.span([h.Class("sp-foot")], [botName(bot)]),
         ],
       ),
@@ -98,3 +93,15 @@ export const taskPanel = (
   tasks: readonly TaskView[],
   h: HtmlBuilder<Message>,
 ): readonly Html[] => tasks.map((task) => taskRow(bot, task, h));
+
+/**
+ * The parked task rows of one bot: the work the harness will not start on its
+ * own, each with the button that runs it again. A parked task has its own
+ * section rather than a row in the live work, because it is the one kind of
+ * task an operator has to act on.
+ */
+export const parkedPanel = (
+  bot: string,
+  tasks: readonly TaskView[],
+  h: HtmlBuilder<Message>,
+): readonly Html[] => tasks.filter(isParked).map((task) => parkedTaskRow(bot, task, h));

@@ -22,10 +22,24 @@ const DEFAULT_MAX_RETRIES = 3;
 const DEFAULT_RESERVE_TOKENS = 16_384;
 const DEFAULT_KEEP_RECENT_TOKENS = 20_000;
 const DEFAULT_BACKGROUND_TOKENS = 32_768;
+/** A task cut off this many times in a row without progress is parked instead of run again. */
+const DEFAULT_RESTART_LIMIT = 5;
+
+/**
+ * The bot's runtime block with the crash-loop guard's limit.
+ *
+ * `BotRuntimeConfig` in `src/bots.ts` has no `restartLimit` field yet, and that
+ * file is not this module's to change: `src/bots.ts` needs the field added to
+ * the runtime block it decodes. Until then the policy reads it from this
+ * temporary widening of the block, and the widening goes away with the field.
+ */
+type RuntimeWithRestartLimit = NonNullable<BotConfig["runtime"]> & {
+  readonly restartLimit?: number;
+};
 
 /** The run policy one bot runs under. */
 export const settingsFor = (bot: BotConfig): HarnessSettings => {
-  const runtime = bot.runtime;
+  const runtime: RuntimeWithRestartLimit | undefined = bot.runtime;
   const contextWindow = runtime?.contextWindow;
   const knownWindow = Predicate.isNumber(contextWindow) && contextWindow > 0;
   return {
@@ -45,5 +59,6 @@ export const settingsFor = (bot: BotConfig): HarnessSettings => {
     toolExecution: runtime?.parallelTools === false ? "sequential" : "parallel",
     contextRetentionMs: RETENTION_MS,
     documentRetentionMs: RETENTION_MS,
+    restartLimit: runtime?.restartLimit ?? DEFAULT_RESTART_LIMIT,
   };
 };

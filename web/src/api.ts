@@ -1,4 +1,9 @@
-import { AbortResultSchema, BotViewSchema, TranscriptPageSchema } from "@mackbot/web-contract";
+import {
+  AbortResultSchema,
+  BotViewSchema,
+  RetryResultSchema,
+  TranscriptPageSchema,
+} from "@mackbot/web-contract";
 import type { AbortRequest } from "@mackbot/web-contract";
 import type { ApprovalDecision } from "@mackbot/web-contract";
 import { Clock, Effect, Schema } from "effect";
@@ -6,6 +11,7 @@ import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Command, Http } from "foldkit";
 
 import { Message } from "./message.ts";
+import { retryRequest, retryRoute } from "./task-retry.ts";
 
 /**
  * The Commands that are the app's whole data source. Each one decodes its
@@ -46,9 +52,8 @@ export const Status = Command.define("Status", {
   execute: Effect.gen(function* () {
     const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
     const response = yield* client.get(apiUrl("/status"));
-    const { bots, errors } = yield* HttpClientResponse.schemaBodyJson(StatusResponseSchema)(
-      response,
-    );
+    const { bots, errors } =
+      yield* HttpClientResponse.schemaBodyJson(StatusResponseSchema)(response);
     return Message.StatusLoaded({ bots, errors, at: yield* Clock.currentTimeMillis });
   }).pipe(
     Effect.catch((cause) =>
@@ -126,9 +131,7 @@ export const StopBot = Command.define("StopBot", {
         aborted: stopped.aborted,
       });
     }).pipe(
-      Effect.catch((cause) =>
-        Effect.succeed(Message.StopFailed({ bot, error: describe(cause) })),
-      ),
+      Effect.catch((cause) => Effect.succeed(Message.StopFailed({ bot, error: describe(cause) }))),
       Effect.provide(Http.layer),
     ),
 });
@@ -175,6 +178,41 @@ export const DecideApproval = Command.define("DecideApproval", {
     }).pipe(
       Effect.catch((cause) =>
         Effect.succeed(Message.ApprovalFailed({ bot, approvalId, error: describe(cause) })),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/**
+ * `POST /retry/:bot` with the contract's retry body. The route runs a task the
+ * harness parked, so the answer says whether it did: a task that was not
+ * parked any more is answered `retried: false` rather than as a failure.
+ */
+export const RetryTask = Command.define("RetryTask", {
+  args: { bot: Schema.String, taskId: Schema.String },
+  messages: [Message.TaskRetried, Message.RetryFailed],
+  execute: ({ bot, taskId }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.post(apiUrl(retryRoute(bot))).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson(retryRequest(taskId)),
+      );
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(`the retry route answered ${response.status}`);
+      }
+      const retried = yield* HttpClientResponse.schemaBodyJson(RetryResultSchema)(response);
+      return Message.TaskRetried({
+        bot: retried.bot,
+        taskId: retried.taskId,
+        retried: retried.retried,
+      });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.RetryFailed({ bot, taskId, error: describe(cause) })),
       ),
       Effect.provide(Http.layer),
     ),

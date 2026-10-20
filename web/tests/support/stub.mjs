@@ -41,6 +41,7 @@ export const startStub = ({
   events = {},
   decisions = {},
   aborts = {},
+  retries = {},
 }) => {
   const requests = [];
   const held = new Set();
@@ -68,9 +69,17 @@ export const startStub = ({
       const connections = requests.filter((entry) => entry.path === url.pathname).length;
       const decision = /^\/approvals\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       const abort = /^\/abort\/([^/]+)$/.exec(url.pathname);
-      const hasBody = decision !== null || abort !== null;
+      const retry = /^\/retry\/([^/]+)$/.exec(url.pathname);
+      const hasBody = decision !== null || abort !== null || retry !== null;
       const body = hasBody ? await request.json().catch(() => undefined) : undefined;
-      requests.push({ method: request.method, path: url.pathname, query, connections, body });
+      requests.push({
+        method: request.method,
+        path: url.pathname,
+        query,
+        connections,
+        body,
+        headers: Object.fromEntries(request.headers),
+      });
 
       if (failing.includes(url.pathname)) return new Response("boom", { status: 500 });
       if (url.pathname === "/status") {
@@ -90,10 +99,16 @@ export const startStub = ({
       if (abort !== null) {
         const handler = aborts[url.pathname];
         const spec =
-          handler === undefined
-            ? undefined
-            : await handler({ body, query, bot: abort[1] });
+          handler === undefined ? undefined : await handler({ body, query, bot: abort[1] });
         const answer = spec ?? { status: 404, body: { error: "no abort handler" } };
+        return Response.json(answer.body, { status: answer.status });
+      }
+
+      if (retry !== null) {
+        const handler = retries[url.pathname];
+        const spec =
+          handler === undefined ? undefined : await handler({ body, query, bot: retry[1] });
+        const answer = spec ?? { status: 404, body: { error: "no retry handler" } };
         return Response.json(answer.body, { status: answer.status });
       }
 

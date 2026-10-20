@@ -6,7 +6,8 @@ import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, runTitle, toast } from "./partials.ts";
 import { entryStampOf, selectHome, selectStatusPanel } from "./select.ts";
-import { failurePanel, taskPanel } from "./status-panel.ts";
+import { failurePanel, parkedPanel, taskPanel } from "./status-panel.ts";
+import { isParked } from "./task-retry.ts";
 
 const draftOf = (approval: ApprovalView, h: HtmlBuilder<Message>): readonly Html[] => {
   const artifact = approval.artifact;
@@ -49,10 +50,7 @@ const approvalCard = (
           h.span([h.Class("tag warn")], ["approval"]),
           h.span([h.Class("ap-tool")], [approval.toolPath]),
           h.button(
-            [
-              h.Class("ap-review"),
-              h.OnClick(Message.ClickedOpenTranscript({ bot })),
-            ],
+            [h.Class("ap-review"), h.OnClick(Message.ClickedOpenTranscript({ bot }))],
             ["Review ›"],
           ),
         ],
@@ -90,19 +88,11 @@ const approvalCard = (
           ),
         ],
       ),
-      h.div(
-        [h.Class("ap-foot")],
-        [`waiting ${elapsedOf(approval.requestedAt, now)} · ${bot}`],
-      ),
+      h.div([h.Class("ap-foot")], [`waiting ${elapsedOf(approval.requestedAt, now)} · ${bot}`]),
     ],
   );
 
-const runningRow = (
-  bot: string,
-  run: ActiveRunView,
-  now: number,
-  h: HtmlBuilder<Message>,
-): Html =>
+const runningRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder<Message>): Html =>
   h.keyed("div")(
     bot,
     [h.Class("runit"), h.DataAttribute("bot", bot)],
@@ -130,12 +120,7 @@ const runningRow = (
     ],
   );
 
-const recentRow = (
-  bot: string,
-  text: string,
-  stamp: string,
-  h: HtmlBuilder<Message>,
-): Html =>
+const recentRow = (bot: string, text: string, stamp: string, h: HtmlBuilder<Message>): Html =>
   h.keyed("button")(
     bot,
     [
@@ -160,15 +145,27 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
   const triage = selectHome(model);
   const panel = selectStatusPanel(model);
 
+  // A parked task has its own section, so the live work lists only the tasks
+  // the harness will pick up on its own.
+  const live = panel.tasks.flatMap(({ bot, tasks }) => {
+    const rows = taskPanel(
+      bot,
+      tasks.filter((task) => !isParked(task)),
+      h,
+    );
+    return rows.length === 0 ? [] : [{ bot, rows }];
+  });
+  const parked = panel.tasks.flatMap(({ bot, tasks }) => {
+    const rows = parkedPanel(bot, tasks, h);
+    return rows.length === 0 ? [] : [{ bot, rows }];
+  });
+
   return h.div(
     [h.Class("screen")],
     [
       h.header(
         [h.Class("hdr tall")],
-        [
-          h.h1([], [triage.headline]),
-          h.span([h.Class("hdr-sub")], [triage.sub]),
-        ],
+        [h.h1([], [triage.headline]), h.span([h.Class("hdr-sub")], [triage.sub])],
       ),
       h.main(
         [h.Class("scroll")],
@@ -191,10 +188,16 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
             ],
           ),
           h.section(
-            [h.Class("grp"), h.DataAttribute("group", "blocked"), h.Hidden(triage.blocked.length === 0)],
+            [
+              h.Class("grp"),
+              h.DataAttribute("group", "blocked"),
+              h.Hidden(triage.blocked.length === 0),
+            ],
             [
               h.h2([], ["Blocked on you"]),
-              ...triage.blocked.map(({ bot, approval }) => approvalCard(bot, approval, model.now, h)),
+              ...triage.blocked.map(({ bot, approval }) =>
+                approvalCard(bot, approval, model.now, h),
+              ),
             ],
           ),
           h.section(
@@ -211,21 +214,30 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
             ],
           ),
           h.section(
-            [h.Class("grp"), h.DataAttribute("group", "running"), h.Hidden(triage.running.length === 0)],
+            [
+              h.Class("grp"),
+              h.DataAttribute("group", "running"),
+              h.Hidden(triage.running.length === 0),
+            ],
             [
               h.h2([], ["Running now"]),
               ...triage.running.map(({ bot, run }) => runningRow(bot, run, model.now, h)),
             ],
           ),
           h.section(
-            [h.Class("grp"), h.DataAttribute("group", "tasks"), h.Hidden(panel.tasks.length === 0)],
-            [
-              h.h2([], ["Live work"]),
-              ...panel.tasks.flatMap(({ bot, tasks }) => taskPanel(bot, tasks, h)),
-            ],
+            [h.Class("grp"), h.DataAttribute("group", "tasks"), h.Hidden(live.length === 0)],
+            [h.h2([], ["Live work"]), ...live.flatMap(({ rows }) => rows)],
           ),
           h.section(
-            [h.Class("grp"), h.DataAttribute("group", "recent"), h.Hidden(triage.recent.length === 0)],
+            [h.Class("grp"), h.DataAttribute("group", "parked"), h.Hidden(parked.length === 0)],
+            [h.h2([], ["Parked"]), ...parked.flatMap(({ rows }) => rows)],
+          ),
+          h.section(
+            [
+              h.Class("grp"),
+              h.DataAttribute("group", "recent"),
+              h.Hidden(triage.recent.length === 0),
+            ],
             [
               h.h2([], ["Since you last looked"]),
               ...triage.recent.map(({ bot, entry }) =>

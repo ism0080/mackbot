@@ -62,6 +62,23 @@ export const Message = defineMessageUnion({
     bot: Schema.String,
     error: Schema.String,
   },
+  /** The user asked for a task the harness parked to run again. */
+  ClickedRetry: {
+    bot: Schema.String,
+    taskId: Schema.String,
+  },
+  /** The server ran the parked task again, and says whether it did. */
+  TaskRetried: {
+    bot: Schema.String,
+    taskId: Schema.String,
+    retried: Schema.Boolean,
+  },
+  /** The retry did not reach the server, so the task is still parked. */
+  RetryFailed: {
+    bot: Schema.String,
+    taskId: Schema.String,
+    error: Schema.String,
+  },
   DismissedToast: {},
   StatusLoaded: {
     bots: Schema.Record(Schema.String, BotViewSchema),
