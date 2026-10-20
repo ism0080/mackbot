@@ -1,6 +1,6 @@
 /**
- * approvals — the `mackbot_approvals` table and the path from a decision to a
- * resumed call.
+ * approvals — the `mackbot_approvals` table, the path from a decision to a
+ * resumed call, and the durable wait that keeps a decision from being lost.
  *
  * The executor bridge detects a paused call and records it here through
  * {@link ApprovalStore.recordPaused}. Recording is idempotent on Executor's
@@ -15,6 +15,14 @@
  * with unsafe replay, and a resume the transcript never records would authorize
  * an effect nobody can audit.
  *
+ * Two steps are two chances to lose the second one. A Durable Object that
+ * dies between the decision and the steer leaves a decided approval and a
+ * paused call nobody resumes: the human's answer is on record and the call
+ * waits forever. The wait is the recovery. {@link ApprovalWait} is a durable
+ * task that polls for the decision and submits the HTTP path's own steer under
+ * the same operation id, so pi's request-id idempotency joins the second
+ * submission to the first instead of starting a second run.
+ *
  * `request_id` and `session_id` are Executor's and pi's, and stay here. The
  * `ApprovalView` the browser sees is this module's projection of the row, and
  * it carries neither.
@@ -22,6 +30,8 @@
 
 import { Option, Schema } from "effect";
 import type { PiWhenBusy } from "agents/harness/pi";
+import { defineTask } from "@earendil-works/pi-durable";
+import type { NextTaskState, Task } from "@earendil-works/pi-durable";
 
 import type { ApprovalState } from "./executor-policy.ts";
 import { approvalOperationId } from "./operation.ts";
@@ -64,8 +74,15 @@ const DECIDE_SQL =
   "UPDATE mackbot_approvals SET status = ?, decided_at = ? WHERE approval_id = ? AND status = 'pending'";
 
 // The state of one paused call, by the id Executor knows it by.
-const REQUEST_STATE_SQL =
-  "SELECT status FROM mackbot_approvals WHERE request_id = ?";
+const REQUEST_STATE_SQL = "SELECT status FROM mackbot_approvals WHERE request_id = ?";
+
+// The approval a requestId already has. A pause the bridge sees again is the
+// same row, and the same wait: the wait starts with the first sighting.
+const REQUEST_APPROVAL_SQL = "SELECT approval_id FROM mackbot_approvals WHERE request_id = ?";
+
+// The row a delivery reads: the decision it carries, and where to steer it.
+const DELIVERY_SQL =
+  "SELECT request_id, session_id, status FROM mackbot_approvals WHERE approval_id = ?";
 
 const RequestStateSchema = Schema.Struct({
   status: Schema.Literals(["pending", "allowed", "denied", "expired"]),
@@ -86,6 +103,12 @@ const ApprovalRecordSchema = Schema.Struct({
 const DecidableRecordSchema = Schema.Struct({
   approval_id: Schema.String,
   bot_id: Schema.String,
+  request_id: Schema.NullOr(Schema.String),
+  session_id: Schema.NullOr(Schema.String),
+  status: Schema.Literals(["pending", "allowed", "denied", "expired"]),
+});
+
+const DeliveryRecordSchema = Schema.Struct({
   request_id: Schema.NullOr(Schema.String),
   session_id: Schema.NullOr(Schema.String),
   status: Schema.Literals(["pending", "allowed", "denied", "expired"]),
@@ -165,6 +188,47 @@ export type ApprovalSubmitter = (
   session: string,
 ) => Promise<{ readonly accepted: boolean }>;
 
+/**
+ * The seams the store needs beyond its SQL. Both are optional: a store
+ * without them behaves exactly as it did before the wait existed, and a host
+ * that wires neither keeps the HTTP path as the only way a decision resumes.
+ */
+export interface ApprovalStoreOptions {
+  /**
+   * Starts the durable wait for a recorded pause. The host supplies it,
+   * because the harness is what can create the task and the store does not
+   * know the harness's type. The task belongs to the conversation of the
+   * session it waits for, and it is a background task: a wait nobody answers
+   * must not hold that conversation's idle wait open.
+   */
+  readonly startWait?: (wait: ApprovalWaitInput) => void;
+  /**
+   * Submits the steer a decision admits. The wait needs one of its own: the
+   * HTTP path's steer is exactly what may have been lost.
+   */
+  readonly submit?: ApprovalSubmitter;
+}
+
+/** What one delivery attempt found. */
+export type ApprovalDelivery =
+  /** The steer went out. */
+  | "delivered"
+  /** The approval is still waiting for a human. */
+  | "pending"
+  /** This store does not hold the approval. */
+  | "unknown";
+
+/** What the row says about a delivery. */
+type Delivery =
+  | {
+      readonly kind: "decided";
+      readonly requestId: string;
+      readonly session: string;
+      readonly decision: ApprovalDecision;
+    }
+  | { readonly kind: "pending" }
+  | { readonly kind: "unknown" };
+
 export type ApprovalStore = {
   readonly record: (approval: ApprovalView) => void;
   readonly recordPaused: (paused: PausedApproval) => void;
@@ -180,6 +244,13 @@ export type ApprovalStore = {
     decision: ApprovalDecision,
     submit: ApprovalSubmitter,
   ) => Promise<DecidedApproval | undefined>;
+  /**
+   * Submit the steer a decided approval is waiting for. The wait calls this:
+   * the HTTP path may have recorded the decision and lost the steer, and the
+   * steer it submits again carries the same operation id, so pi admits one
+   * submission per approval.
+   */
+  readonly deliver: (approvalId: string) => Promise<ApprovalDelivery>;
 };
 
 const envelopeOf = (raw: string): Envelope | undefined =>
@@ -218,7 +289,8 @@ const summaryOf = (
   if (tool === undefined) {
     return "Executor paused a call for your approval. The pause carried no tool name or draft to show.";
   }
-  if (artifact === undefined) return `Approve ${tool}? The pause carried no draft input to preview.`;
+  if (artifact === undefined)
+    return `Approve ${tool}? The pause carried no draft input to preview.`;
   return `Approve ${tool}?`;
 };
 
@@ -234,7 +306,10 @@ const resumeText = (requestId: string, decision: ApprovalDecision): string => {
   ].join(" ");
 };
 
-export function createApprovalStore(storage: SqlStorage): ApprovalStore {
+export function createApprovalStore(
+  storage: SqlStorage,
+  options?: ApprovalStoreOptions,
+): ApprovalStore {
   const executor: SqlExecutor = storage.sql;
   let migrated = false;
 
@@ -291,19 +366,31 @@ export function createApprovalStore(storage: SqlStorage): ApprovalStore {
     const envelope = envelopeOf(paused.envelope);
     const tool = toolOf(envelope);
     const artifact = artifactOf(tool, envelope);
+    const approvalId = crypto.randomUUID();
+    const now = Date.now();
+    // A pause the bridge sees again is the same row, and the same wait: the
+    // wait starts with the first sighting, not with every one of them.
+    const known = read(executor, REQUEST_APPROVAL_SQL, paused.requestId);
     insert(
       Schema.decodeUnknownSync(ApprovalViewSchema)({
-        approvalId: crypto.randomUUID(),
+        approvalId,
         bot: paused.bot,
         toolPath: tool ?? "executor",
         summary: summaryOf(tool, artifact),
         artifact,
         status: "pending",
-        requestedAt: Date.now(),
+        requestedAt: now,
       }),
       paused.requestId,
       paused.session,
     );
+    if (known.length > 0) return;
+    options?.startWait?.({
+      approvalId,
+      requestId: paused.requestId,
+      session: paused.session,
+      deadline: now + WAIT_DEADLINE_MS,
+    });
   };
 
   const pending = (): readonly ApprovalView[] => {
@@ -314,9 +401,7 @@ export function createApprovalStore(storage: SqlStorage): ApprovalStore {
   const stateOf = (requestId: string): ApprovalState => {
     ensureMigrated();
     const rows = read(executor, REQUEST_STATE_SQL, requestId);
-    const record = Option.getOrUndefined(
-      Schema.decodeUnknownOption(RequestStateSchema)(rows[0]),
-    );
+    const record = Option.getOrUndefined(Schema.decodeUnknownOption(RequestStateSchema)(rows[0]));
     if (record === undefined) return "unknown";
     return record.status === "pending" ? "pending" : "decided";
   };
@@ -329,9 +414,7 @@ export function createApprovalStore(storage: SqlStorage): ApprovalStore {
           read(executor, DECIDABLE_SQL, approvalId)[0],
         ),
         (record) =>
-          record.status === "pending" &&
-          record.request_id !== null &&
-          record.session_id !== null
+          record.status === "pending" && record.request_id !== null && record.session_id !== null
             ? Option.some({
                 bot: record.bot_id,
                 requestId: record.request_id,
@@ -363,7 +446,60 @@ export function createApprovalStore(storage: SqlStorage): ApprovalStore {
     return { approvalId, bot: row.bot, status, decidedAt };
   };
 
-  return { record, recordPaused, pending, stateOf, decide };
+  /** What the row says about a delivery: a decision to carry, or none yet. */
+  const deliveryOf = (approvalId: string): Delivery => {
+    const record = Option.getOrUndefined(
+      Schema.decodeUnknownOption(DeliveryRecordSchema)(read(executor, DELIVERY_SQL, approvalId)[0]),
+    );
+    if (record === undefined) return { kind: "unknown" };
+    if (record.status !== "allowed" && record.status !== "denied") {
+      return { kind: "pending" };
+    }
+    if (record.request_id === null || record.session_id === null) {
+      return { kind: "unknown" };
+    }
+    return {
+      kind: "decided",
+      requestId: record.request_id,
+      session: record.session_id,
+      decision: { action: record.status === "allowed" ? "allow" : "deny" },
+    };
+  };
+
+  /**
+   * The steer a decided approval is waiting for. The decision comes from the
+   * row, so the recovery carries the answer the human gave; the content a
+   * human may have attached to it is not in the row and does not travel with
+   * it.
+   */
+  const deliver = async (approvalId: string): Promise<ApprovalDelivery> => {
+    ensureMigrated();
+    const row = deliveryOf(approvalId);
+    if (row.kind === "unknown") return "unknown";
+    if (row.kind === "pending") return "pending";
+    const submit = options?.submit;
+    // Without a submitter the decision stands and the steer waits for one:
+    // the wait keeps looking rather than giving up on a decided approval.
+    if (submit === undefined) return "pending";
+    await submit(
+      resumeText(row.requestId, row.decision),
+      approvalOperationId(approvalId),
+      "steer",
+      row.session,
+    );
+    return "delivered";
+  };
+
+  const store: ApprovalStore = {
+    record,
+    recordPaused,
+    pending,
+    stateOf,
+    decide,
+    deliver,
+  };
+  stores.add(store);
+  return store;
 }
 
 /** The bot and addressing a pending approval needs; kept off {@link DecidedApproval}. */
@@ -372,3 +508,145 @@ interface DecidableApproval {
   readonly requestId: string;
   readonly session: string;
 }
+
+// ---------------------------------------------------------------------------
+// The wait: the pause leaves a durable task behind, and the task delivers.
+// ---------------------------------------------------------------------------
+
+/**
+ * How long the wait sleeps between two looks at the approval. Short enough
+ * that a human who pressed the button sees the effect at once, long enough
+ * that a bot nobody answers does not churn.
+ */
+const WAIT_POLL_MS = 30_000;
+
+/**
+ * How long the wait keeps looking. A day is long enough that a human who
+ * comes back to an approval still finds the wait alive; after that the
+ * approval is stale, and the HTTP path is the only way left to decide it.
+ */
+const WAIT_DEADLINE_MS = 24 * 60 * 60 * 1000;
+
+/** The approval a wait watches, and the clock at which it stops watching. */
+export interface ApprovalWaitInput {
+  readonly approvalId: string;
+  /** Executor's id for the paused call. */
+  readonly requestId: string;
+  /** The pi conversation the call paused in. */
+  readonly session: string;
+  /** The clock at which the wait gives up. */
+  readonly deadline: number;
+}
+
+/** Where the wait is: asleep, or looking at the approval. */
+export type ApprovalWaitCheckpoint =
+  | { readonly phase: "wait" }
+  | { readonly phase: "deliver"; readonly delivered: boolean };
+
+/** The receipt of a wait that delivered its decision. */
+export interface ApprovalWaitOutcome {
+  /** The approval whose decision was delivered. */
+  readonly approvalId: string;
+  /** The operation id the steer carried: pi admits one submission under it. */
+  readonly operationId: string;
+}
+
+/**
+ * The stores this isolate holds. The wait runs inside the harness, which knows
+ * nothing of the store that minted its input, so the wait asks here for the
+ * store that holds the approval. One Durable Object is one bot, so an isolate
+ * holds one store; the lookup asks each of them and stops at the one that
+ * holds the approval.
+ */
+const stores = new Set<ApprovalStore>();
+
+/** The delivery a wait asks for: the store that holds the approval answers. */
+const deliverApproval = async (approvalId: string): Promise<ApprovalDelivery> => {
+  for (const store of stores) {
+    const delivery = await store.deliver(approvalId);
+    if (delivery !== "unknown") return delivery;
+  }
+  return "unknown";
+};
+
+/** The clock of the next look, or the deadline when that comes first. */
+const nextPoll = (now: number, deadline: number): number => Math.min(now + WAIT_POLL_MS, deadline);
+
+/** The outcome of a wait that delivered the decision. */
+const delivered = (
+  approvalId: string,
+): NextTaskState<ApprovalWaitCheckpoint, ApprovalWaitOutcome> => ({
+  status: "terminal",
+  outcome: {
+    status: "completed",
+    result: { approvalId, operationId: approvalOperationId(approvalId) },
+  },
+});
+
+/** The outcome of a wait that nobody decided in time. */
+const expired = (
+  approvalId: string,
+): NextTaskState<ApprovalWaitCheckpoint, ApprovalWaitOutcome> => ({
+  status: "terminal",
+  outcome: {
+    status: "failed",
+    error: { message: `the approval ${approvalId} was not decided before its deadline` },
+  },
+});
+
+/**
+ * The wait a paused call leaves behind.
+ *
+ * The wait holds no invocation between its polls: it sleeps until the next
+ * one, and the Harness clock wakes it. The sleep is durable, so a Durable
+ * Object that dies between a decision and its steer finds the wait when it
+ * comes back, and the wait delivers what the HTTP path never got to.
+ *
+ * The delivery is the HTTP path's own steer under the same operation id, so
+ * pi's request-id idempotency joins it to the first submission instead of
+ * starting a second run.
+ *
+ * The wait phase owns the sleep: the deliver phase hands the wait over to it
+ * when the approval is still undecided, so one poll is one sleep long.
+ */
+export const ApprovalWait: Task<
+  ApprovalWaitInput,
+  ApprovalWaitCheckpoint,
+  ApprovalWaitOutcome,
+  object
+> = defineTask<ApprovalWaitInput, ApprovalWaitCheckpoint, ApprovalWaitOutcome>({
+  name: "mackbot.approval-wait",
+  version: 1,
+  initial: () => ({ phase: "wait" }),
+  phases: {
+    wait: async (task, runtime, context) => {
+      const until = nextPoll(runtime.now(), task.input.deadline);
+      if (until <= runtime.now()) {
+        await runtime.commit(() => expired(task.input.approvalId), context);
+        return;
+      }
+      await runtime.sleepUntil(until, { phase: "deliver", delivered: false }, context);
+    },
+    deliver: async (task, runtime, context) => {
+      if (task.state.checkpoint.delivered) {
+        await runtime.commit(() => delivered(task.input.approvalId), context);
+        return;
+      }
+      if ((await deliverApproval(task.input.approvalId)) === "delivered") {
+        await runtime.commit(
+          () => ({ status: "running", checkpoint: { phase: "deliver", delivered: true } }),
+          context,
+        );
+        return;
+      }
+      if (runtime.now() >= task.input.deadline) {
+        await runtime.commit(() => expired(task.input.approvalId), context);
+        return;
+      }
+      await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait" } }), context);
+    },
+  },
+  abort: async (task, runtime, context) => {
+    await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
+  },
+});
