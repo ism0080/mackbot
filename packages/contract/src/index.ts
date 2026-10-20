@@ -46,13 +46,122 @@ const THINKING_LEVEL_VALUES = {
 
 export const ThinkingLevelSchema = Schema.Literals(Object.values(THINKING_LEVEL_VALUES));
 
+/**
+ * The provider a model comes from. The same two ids the model view carries,
+ * named once so the registry's declaration and the view's reference cannot
+ * drift apart.
+ */
+export const ProviderIdSchema = Schema.Literals(["opencode-go", "cloudflare"]);
+
 export const ModelRefSchema = Schema.Struct({
-  provider: Schema.Literals(["opencode-go", "cloudflare"]),
+  provider: ProviderIdSchema,
   id: Schema.String,
 });
+export type ModelRef = typeof ModelRefSchema.Type;
 
 const ENTRY_ROLES = ["user", "assistant", "tool", "system"] as const;
 export type EntryRole = (typeof ENTRY_ROLES)[number];
+
+/**
+ * A string with something in it. The Worker's chat body and the transcript
+ * and events queries all accept the same shape, so the filter lives with the
+ * vocabulary they share.
+ */
+export const trimmedNonEmpty = Schema.String.check(
+  Schema.makeFilter((input: string) => input.trim().length > 0),
+);
+
+// ---------------------------------------------------------------------------
+// Bot configuration — the registry's vocabulary
+// ---------------------------------------------------------------------------
+
+/**
+ * The model a bot declares: the model's id.
+ *
+ * One spelling for every provider. A Workers AI model is named by its own
+ * `@cf/...` path and any other model by its catalog id, so the browser renders
+ * and writes a model the same way whichever provider it names.
+ */
+export const ModelDeclSchema = trimmedNonEmpty;
+export type ModelDecl = typeof ModelDeclSchema.Type;
+
+/**
+ * A bot's id. It is the Durable Object's name, the path segment the routes
+ * carry it in, and the key its transcript is filed under, so it is a slug: a
+ * lowercase word, a digit, and dashes between them.
+ */
+export const BotIdSchema = Schema.String.check(
+  Schema.makeFilter((input: string) => /^[a-z0-9][a-z0-9-]{0,62}$/u.test(input)),
+);
+export type BotId = typeof BotIdSchema.Type;
+
+/**
+ * The run policy one bot runs under. Every field is optional: a bot that
+ * declares none falls back to the harness's own defaults.
+ */
+export const BotRuntimeSchema = Schema.Struct({
+  contextWindow: Schema.optional(Schema.Number),
+  reserveTokens: Schema.optional(Schema.Number),
+  maxRetries: Schema.optional(Schema.Number),
+  parallelTools: Schema.optional(Schema.Boolean),
+  restartLimit: Schema.optional(Schema.Number),
+});
+export type BotRuntime = typeof BotRuntimeSchema.Type;
+
+/**
+ * One bot's declaration: what it is, how it thinks, what it is told, and who
+ * it may hand work to.
+ *
+ * This is the whole configuration of a bot, so the browser can edit it and the
+ * Worker can apply it without a second shape that has to be kept in step.
+ */
+export const BotConfigSchema = Schema.Struct({
+  model: ModelDeclSchema,
+  systemPrompt: trimmedNonEmpty,
+  thinkingLevel: Schema.optional(ThinkingLevelSchema),
+  brief: Schema.optional(trimmedNonEmpty),
+  delegatesTo: Schema.optional(Schema.Array(trimmedNonEmpty)),
+  runtime: Schema.optional(BotRuntimeSchema),
+  commitments: Schema.optional(Schema.Boolean),
+});
+export type BotConfig = typeof BotConfigSchema.Type;
+
+/**
+ * The roster: every bot the fleet runs, keyed by bot id.
+ */
+export const RosterSchema = Schema.Struct({
+  bots: Schema.Record(Schema.String, BotConfigSchema),
+});
+export type Roster = typeof RosterSchema.Type;
+
+/**
+ * The models the Worker knows, and the thinking levels each one supports.
+ *
+ * The catalog lives in the Worker, so the browser reads it over the wire
+ * rather than bundling a second copy that could fall behind it.
+ */
+export const ModelCatalogSchema = Schema.Struct({
+  models: Schema.Record(Schema.String, Schema.Array(ThinkingLevelSchema)),
+});
+export type ModelCatalog = typeof ModelCatalogSchema.Type;
+
+/** The body of a bot write: the whole configuration of one bot. */
+export const BotWriteSchema = Schema.Struct({ bot: BotConfigSchema });
+export type BotWrite = typeof BotWriteSchema.Type;
+
+/** The body of a bot create: the id to give the new bot, and its configuration. */
+export const BotCreateSchema = Schema.Struct({
+  id: BotIdSchema,
+  bot: BotConfigSchema,
+});
+export type BotCreate = typeof BotCreateSchema.Type;
+
+/** What a write or a create answers: the bot as it is now stored. */
+export const BotWriteResultSchema = Schema.Struct({
+  id: Schema.String,
+  bot: BotConfigSchema,
+});
+export type BotWriteResult = typeof BotWriteResultSchema.Type;
 
 // ---------------------------------------------------------------------------
 // Views — the renderable projections of harness state
@@ -403,15 +512,6 @@ export type Frame = typeof FrameSchema.Type;
 const nonNegativeInt = Schema.NumberFromString.check(
   Schema.isInt(),
   Schema.isGreaterThanOrEqualTo(0),
-);
-
-/**
- * A non-empty string with its surrounding whitespace removed. The Worker's
- * chat body and the transcript and events queries all accept the same shape, so
- * the filter lives with the vocabulary they share.
- */
-export const trimmedNonEmpty = Schema.String.check(
-  Schema.makeFilter((input: string) => input.trim().length > 0),
 );
 
 /**
