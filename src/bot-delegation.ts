@@ -9,8 +9,9 @@
  *
  * ## Front door semantics
  *
- * `target` is validated against the live `bots.json` roster, so an unknown or
- * typo'd bot id comes back as a tool error instead of a Cloudflare RPC failure.
+ * `target` is validated against the live roster the registry holds, so an
+ * unknown or typo'd bot id comes back as a tool error instead of a Cloudflare
+ * RPC failure.
  * Self-delegation is rejected to avoid accidental runaway recursion; v1 also
  * warns the model never to hand work back to a bot that delegated to it
  * (mutual delegation livelocks on the 55s tool timeout).
@@ -52,9 +53,9 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
 import type { Extension, ToolExecutionResult } from "@earendil-works/pi-durable";
-import { loadBots } from "./bots.ts";
 import { delegateOperationId } from "./operation.ts";
 import { createDelegationPolicy } from "./services/delegation.ts";
+import { REGISTRY_NAME } from "./services/bot-registry.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { maybeApprovalNotice } from "./executor-mcp.ts";
 import type { Env } from "./index.ts";
@@ -75,7 +76,7 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
         description:
           "Hand a task to another bot in the fleet and get its answer. Validates the target against the declared roster. A bot cannot delegate to itself, and must never hand work back to a bot that delegated to it (mutual delegation livelocks). By default waits up to ~55s for the result. If the result is a timeout, call delegate_to_bot again with the same target and operationId to keep waiting; never resubmit the task with a new operationId. Set wait=false to receive a receipt immediately; to check on it later, call delegate_to_bot again with the same target and operationId. Approval links the target bot surfaces may appear in its answer text and should be relayed upstream. Idempotency key: reuse operationId to retry without double-running the task.",
         parameters: Type.Object({
-          target: Type.String({ description: "Bot id to delegate to (from bots.json)." }),
+          target: Type.String({ description: "Bot id to delegate to (from the fleet's roster)." }),
           task: Type.String({ description: "The message/instructions to send to the target bot." }),
           operationId: Type.Optional(
             Type.String({ description: "Idempotency key; reuse to retry without double-running." }),
@@ -94,7 +95,11 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
           Effect.runPromise(
             // SAFETY: the Effect result is typed as ToolExecutionResult
             Effect.gen(function* () {
-              const bots = loadBots();
+              // The roster is read on every call, because a human may have
+              // changed it since the last one.
+              const bots = yield* Effect.tryPromise(() =>
+                env.Registry.getByName(REGISTRY_NAME).roster(),
+              );
               if (!Object.hasOwn(bots, args.target)) {
                 return {
                   output: [

@@ -35,6 +35,7 @@ import { authenticate, csrfAllows, issueSession, sessionCookie } from "./session
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
+import { MODEL_VARIANTS } from "@mackbot/contract/catalog";
 import type { ThinkingLevel } from "@mackbot/contract/catalog";
 import { ApprovalWait, createApprovalStore } from "./approvals.ts";
 import type { ApprovalStore, ApprovalWaitInput, DecidedApproval } from "./approvals.ts";
@@ -45,6 +46,8 @@ import { emptyTranscriptPage, highestEntryId, transcriptPage } from "./transcrip
 import {
   AbortRequestSchema,
   ApprovalDecisionSchema,
+  BotCreateSchema,
+  BotWriteSchema,
   originOf,
   RetryRequestSchema,
   TranscriptQuerySchema,
@@ -53,7 +56,9 @@ import type {
   AbortRequest,
   AbortResult,
   ApprovalDecision,
+  BotCreate,
   BotView,
+  BotWrite,
   PendingOperationView,
   RetryRequest,
   RetryResult,
@@ -66,11 +71,20 @@ import * as Schema from "effect/Schema";
 
 import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
 import { BotRegistryService } from "./services/bot-registry.ts";
+import { Registry } from "./registry.ts";
+import type { RegistryWrite } from "./registry-store.ts";
 import { createAuditLog } from "./audit-log.ts";
 import type { AuditEvent, AuditLog } from "./audit-log.ts";
 
+/**
+ * The Worker entry module is where Cloudflare looks for a Durable Object
+ * class, and the class name has to match the binding name.
+ */
+export { Registry };
+
 export interface Env {
   readonly Bot: DurableObjectNamespace<Bot>;
+  readonly Registry: DurableObjectNamespace<Registry>;
   readonly AI: Ai;
   readonly ASSETS: Fetcher;
   readonly EXECUTOR_URL: string;
@@ -96,13 +110,15 @@ const toThinkingLevel = (level: ThinkingLevel): ModelThinkingLevel =>
 const agentChange = (bot: BotConfig): AgentChange => {
   const model = resolveModelRef(bot);
   const target = { provider: model.provider, modelId: model.id };
-  return bot.thinkingLevel === undefined
-    ? { model: target, instructions: bot.systemPrompt }
-    : {
-        model: target,
-        thinkingLevel: toThinkingLevel(bot.thinkingLevel),
-        instructions: bot.systemPrompt,
-      };
+  return {
+    model: target,
+    // pi's `applyChange` skips `undefined` and deletes on `null`, so a bot
+    // that declares no level has to send `null`: an omitted level would leave
+    // the old one in place, and a person who removes the level in the browser
+    // would not see it take effect.
+    thinkingLevel: bot.thinkingLevel === undefined ? null : toThinkingLevel(bot.thinkingLevel),
+    instructions: bot.systemPrompt,
+  };
 };
 
 const conversationIdOf = (sessionId: string): ConversationId => {
@@ -137,7 +153,19 @@ export class Bot extends DurableObject<Env> {
   #approvalStore: ApprovalStore | undefined;
   #failureStore: FailureStore | undefined;
   #feedService: Feed | undefined;
-  #botReady: Promise<void> | undefined;
+  /**
+   * The configuration each session was last configured with, by session id.
+   *
+   * The comparison is the configuration's own text, so there is no version
+   * counter to keep in step with the roster.
+   */
+  readonly #applied = new Map<string, string>();
+  /**
+   * The configuration the bot last loaded from the registry. The harness
+   * reads its settings at every use, so the run policy is computed from this
+   * rather than from one settings object captured when the harness opened.
+   */
+  #loaded: BotConfig | undefined;
   /** In-flight thread→session creations, so concurrent requests share one. */
   readonly #threadSessions = new Map<string, Promise<string>>();
 
@@ -152,7 +180,7 @@ export class Bot extends DurableObject<Env> {
     this.streams = new Streams();
     this.lifecycle.use(this.harness);
     this.lifecycle.use(this.streams);
-    this.runtime = makeManagedRuntime(BotRegistryService.layer);
+    this.runtime = makeManagedRuntime(BotRegistryService.layerFor(env));
   }
 
   /**
@@ -170,6 +198,7 @@ export class Bot extends DurableObject<Env> {
   #makeHarnessFactory(env: Env, botId: string, onPaused: PausedSink): PiHarnessFactory {
     return async ({ storage, context }) => {
       const bot = await this.#botConfig();
+      this.#loaded = bot;
       const registry = createRegistry();
       // The bridge detects the pause; `onPaused` turns it into the approval row.
       registry.install(
@@ -200,7 +229,10 @@ export class Bot extends DurableObject<Env> {
         {
           models,
           registry,
-          settings: settingsFor(bot),
+          // pi reads the settings at every use when it is given a function,
+          // so the run policy follows the configuration the bot last loaded:
+          // a `runtime` edit lands without reopening the harness.
+          settings: () => settingsFor(this.#loaded ?? bot),
           onReport: (cause, info) => {
             this.#failures().record(cause, info);
           },
@@ -232,9 +264,7 @@ export class Bot extends DurableObject<Env> {
       (thread === undefined
         ? ROOT_SESSION
         : await Effect.runPromise(Effect.tryPromise(() => this.#sessionForThread(thread))));
-    if (sessionId === ROOT_SESSION) {
-      await Effect.runPromise(Effect.tryPromise(() => this.#ensureBot()));
-    }
+    await Effect.runPromise(Effect.tryPromise(() => this.#applyConfiguration(sessionId)));
     // Attach before the submission is durable, so no harness event of the run
     // it admits can be produced before the watcher is listening.
     await this.#feed().attach(sessionId);
@@ -622,13 +652,10 @@ export class Bot extends DurableObject<Env> {
     const existing = this.#sessionIdForThread(thread);
     if (existing !== undefined) return existing;
 
-    await Effect.runPromise(Effect.tryPromise(() => this.#ensureBot()));
     const session = await Effect.runPromise(
       Effect.tryPromise(() => this.harness.sessions.create()),
     );
     const sessionId = session.id;
-    const bot = await this.#botConfig();
-    await Effect.runPromise(Effect.tryPromise(() => this.#configureSession(sessionId, bot)));
     // Defense in depth: if a row already exists (for example across isolates),
     // IGNORE + re-read keeps the first session id instead of throwing.
     this.ctx.storage.sql.exec(
@@ -639,11 +666,47 @@ export class Bot extends DurableObject<Env> {
     return this.#sessionIdForThread(thread) ?? sessionId;
   }
 
+  /**
+   * Configure the conversations a submit touches, when the configuration has
+   * changed.
+   *
+   * The root conversation is configured first, the way it always was, and then
+   * the session the submit names, so a thread session gets its own
+   * configuration. A thread session that is new has no applied configuration,
+   * so the same path configures it.
+   */
+  async #applyConfiguration(sessionId: string): Promise<void> {
+    const bot = await this.#botConfig();
+    this.#loaded = bot;
+    // The configuration is a small object that is decoded the same way every
+    // time, so its JSON text is a faithful comparison of two configurations.
+    const applied = JSON.stringify(bot);
+    await this.#configure(ROOT_SESSION, bot, applied);
+    if (sessionId !== ROOT_SESSION) {
+      await this.#configure(sessionId, bot, applied);
+    }
+  }
+
+  /**
+   * Configure one session, unless it already runs the configuration the bot
+   * has just loaded.
+   */
+  async #configure(sessionId: string, bot: BotConfig, applied: string): Promise<void> {
+    if (this.#applied.get(sessionId) === applied) return;
+    await this.#configureSession(sessionId, bot);
+    this.#applied.set(sessionId, applied);
+  }
+
   async #configureSession(sessionId: string, bot: BotConfig): Promise<void> {
     const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    const conversation = await Effect.runPromise(
-      Effect.tryPromise(() => pi.conversation(conversationIdOf(sessionId), BACKGROUND_CONTEXT)),
-    );
+    const conversation =
+      sessionId === ROOT_SESSION
+        ? await Effect.runPromise(Effect.tryPromise(() => pi.root(BACKGROUND_CONTEXT)))
+        : await Effect.runPromise(
+            Effect.tryPromise(() =>
+              pi.conversation(conversationIdOf(sessionId), BACKGROUND_CONTEXT),
+            ),
+          );
     if (conversation === undefined) {
       throw new Error(`session ${sessionId} not found`);
     }
@@ -652,28 +715,20 @@ export class Bot extends DurableObject<Env> {
     );
   }
 
+  /**
+   * This bot's own configuration, as the registry holds it.
+   *
+   * The registry is the truth about who exists, so a bot that is not in it
+   * has nothing to run with.
+   */
   async #botConfig(): Promise<BotConfig> {
-    return this.runtime.runPromise(
-      Effect.flatMap(BotRegistryService, (registry) => registry.getBot(this.lifecycle.name)),
+    const bot = await this.runtime.runPromise(
+      Effect.flatMap(BotRegistryService, (registry) => registry.bot(this.lifecycle.name)),
     );
-  }
-
-  #ensureBot(): Promise<void> {
-    this.#botReady ??= this.#applyBot().catch((cause: unknown) => {
-      // Do not cache a rejected readiness promise: let the next call retry.
-      this.#botReady = undefined;
-      throw cause;
-    });
-    return this.#botReady;
-  }
-
-  async #applyBot(): Promise<void> {
-    const bot = await this.#botConfig();
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    const root = await Effect.runPromise(Effect.tryPromise(() => pi.root(BACKGROUND_CONTEXT)));
-    await Effect.runPromise(
-      Effect.tryPromise(() => root.configure(agentChange(bot), BACKGROUND_CONTEXT)),
-    );
+    if (bot === undefined) {
+      throw new Error(`no bot "${this.lifecycle.name}" in the registry`);
+    }
+    return bot;
   }
 
   /**
@@ -711,6 +766,7 @@ const TRANSCRIPT_ROUTE = /^\/transcript\/([^/]+)$/u;
 const APPROVAL_ROUTE = /^\/approvals\/([^/]+)\/([^/]+)$/u;
 const ABORT_ROUTE = /^\/abort\/([^/]+)$/u;
 const RETRY_ROUTE = /^\/retry\/([^/]+)$/u;
+const BOT_ROUTE = /^\/bots\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
@@ -765,10 +821,20 @@ const API_ROUTES = [
   APPROVAL_ROUTE,
   ABORT_ROUTE,
   RETRY_ROUTE,
+  BOT_ROUTE,
 ];
 
+/**
+ * The paths that answer with JSON rather than with the login page.
+ *
+ * The registry's own routes are API routes: a browser that asks for the
+ * roster without a credential is a broken client, not a navigation, and a
+ * redirect would decode as one.
+ */
+const API_PATHS = new Set(["/status", "/bots", "/models"]);
+
 const isApiRoute = (pathname: string): boolean =>
-  pathname === "/status" || API_ROUTES.some((route) => route.test(pathname));
+  API_PATHS.has(pathname) || API_ROUTES.some((route) => route.test(pathname));
 
 /**
  * The refusal for a request that may not continue, or `undefined` when it may.
@@ -803,9 +869,26 @@ const authorize = async (request: Request, env: Env): Promise<Response | undefin
   return undefined;
 };
 
-const loadBotsEffect = (): Effect.Effect<Record<string, BotConfig>> =>
-  Effect.flatMap(BotRegistryService, (registry) => registry.loadBots()).pipe(
-    Effect.provide(BotRegistryService.layer),
+/**
+ * The roster, read through the registry.
+ *
+ * The registry is the truth about who exists, so every route that asks
+ * whether a bot is there asks the registry and not a module cache.
+ */
+const rosterEffect = (env: Env): Effect.Effect<Record<string, BotConfig>> =>
+  Effect.flatMap(BotRegistryService, (registry) => registry.roster()).pipe(
+    Effect.provide(BotRegistryService.layerFor(env)),
+  );
+
+/** The one write, through the registry. */
+const writeEffect = (
+  env: Env,
+  name: string,
+  bot: BotConfig,
+  mode: "create" | "replace",
+): Effect.Effect<RegistryWrite> =>
+  Effect.flatMap(BotRegistryService, (registry) => registry.write(name, bot, mode)).pipe(
+    Effect.provide(BotRegistryService.layerFor(env)),
   );
 
 const handleChat = async (
@@ -814,7 +897,7 @@ const handleChat = async (
   botId: string,
   immediate: boolean,
 ): Promise<Response> => {
-  const bots = await Effect.runPromise(loadBotsEffect());
+  const bots = await Effect.runPromise(rosterEffect(env));
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
   }
@@ -856,7 +939,7 @@ interface BotStatusResult {
 }
 
 const handleStatus = async (env: Env): Promise<Response> => {
-  const bots = await Effect.runPromise(loadBotsEffect());
+  const bots = await Effect.runPromise(rosterEffect(env));
   const statusFor = (id: string): Effect.Effect<BotStatusResult> =>
     Effect.tryPromise(() => env.Bot.getByName(id).status()).pipe(
       Effect.map((status): BotStatusResult => ({ id, status })),
@@ -883,7 +966,7 @@ const handleStatus = async (env: Env): Promise<Response> => {
 };
 
 const handleTranscript = async (url: URL, env: Env, botId: string): Promise<Response> => {
-  const bots = await Effect.runPromise(loadBotsEffect());
+  const bots = await Effect.runPromise(rosterEffect(env));
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
   }
@@ -948,7 +1031,7 @@ const handleApproval = async (
   botId: string,
   approvalId: string,
 ): Promise<Response> => {
-  const bots = await Effect.runPromise(loadBotsEffect());
+  const bots = await Effect.runPromise(rosterEffect(env));
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
   }
@@ -973,7 +1056,7 @@ const handleApproval = async (
  * authorization and CSRF gate as any other.
  */
 const handleAbort = async (request: Request, env: Env, botId: string): Promise<Response> => {
-  const bots = await Effect.runPromise(loadBotsEffect());
+  const bots = await Effect.runPromise(rosterEffect(env));
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
   }
@@ -993,7 +1076,7 @@ const handleAbort = async (request: Request, env: Env, botId: string): Promise<R
  * chance without waiting for the crash limit to expire.
  */
 const handleRetry = async (request: Request, env: Env, botId: string): Promise<Response> => {
-  const bots = await Effect.runPromise(loadBotsEffect());
+  const bots = await Effect.runPromise(rosterEffect(env));
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
   }
@@ -1005,6 +1088,114 @@ const handleRetry = async (request: Request, env: Env, botId: string): Promise<R
     Effect.tryPromise(() => env.Bot.getByName(botId).retry(body.taskId)),
   );
   return Response.json(result);
+};
+
+/**
+ * The roster: every bot the fleet runs, as the browser edits it.
+ */
+const handleRoster = async (env: Env): Promise<Response> => {
+  const bots = await Effect.runPromise(rosterEffect(env));
+  return Response.json({ bots });
+};
+
+/**
+ * The models the Worker knows, and the thinking levels each one supports.
+ *
+ * The catalog lives in the Worker, so it crosses the wire rather than
+ * reaching the browser's module graph: the browser offers a picker, and the
+ * Worker is what knows which models exist.
+ */
+const handleModels = (): Response => Response.json({ models: MODEL_VARIANTS });
+
+/**
+ * The create's body: the id to give the new bot, and its whole configuration.
+ *
+ * A body that does not decode is not a create, so the registry never sees it.
+ */
+const readBotCreate = (request: Request): Promise<BotCreate | undefined> =>
+  Effect.runPromise(
+    Effect.tryPromise(() => request.text()).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(BotCreateSchema))),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+
+/** The write's body: the whole configuration of one bot. */
+const readBotWrite = (request: Request): Promise<BotWrite | undefined> =>
+  Effect.runPromise(
+    Effect.tryPromise(() => request.text()).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(BotWriteSchema))),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+
+/**
+ * A refused write, in the status code its refusal means: a rule's own message
+ * for a bot that breaks a rule, a 404 for a bot that is not there and a 409
+ * for one that already is.
+ */
+const writeRefusal = (refusal: RegistryWrite & { readonly ok: false }): Response => {
+  switch (refusal.code) {
+    case "invalid":
+      return Response.json({ error: refusal.error }, { status: 400 });
+    case "unknown":
+      return Response.json({ error: refusal.error }, { status: 404 });
+    case "exists":
+      return Response.json({ error: refusal.error }, { status: 409 });
+  }
+};
+
+/**
+ * Add a bot. The body carries the id to give the new bot and the whole
+ * configuration it runs with.
+ */
+const handleBotCreate = async (request: Request, env: Env): Promise<Response> => {
+  const body = await readBotCreate(request);
+  if (body === undefined) {
+    return Response.json({ error: "invalid request body" }, { status: 400 });
+  }
+  const result = await Effect.runPromise(writeEffect(env, body.id, body.bot, "create"));
+  if (!result.ok) return writeRefusal(result);
+  return Response.json({ id: body.id, bot: result.roster[body.id] }, { status: 201 });
+};
+
+/**
+ * Replace a bot's configuration. The body carries the whole configuration, so
+ * the fields the form does not show survive the round trip.
+ */
+const handleBotWrite = async (request: Request, env: Env, botId: string): Promise<Response> => {
+  const body = await readBotWrite(request);
+  if (body === undefined) {
+    return Response.json({ error: "invalid request body" }, { status: 400 });
+  }
+  const result = await Effect.runPromise(writeEffect(env, botId, body.bot, "replace"));
+  if (!result.ok) return writeRefusal(result);
+  return Response.json({ id: botId, bot: result.roster[botId] });
+};
+
+/**
+ * The registry's own routes: the roster, the models the Worker knows, and a
+ * bot's configuration.
+ *
+ * `undefined` means the path is not one of them.
+ */
+const handleRegistryRoute = async (
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response | undefined> => {
+  if (url.pathname === "/bots") {
+    if (request.method === "GET") return await handleRoster(env);
+    return request.method === "POST" ? await handleBotCreate(request, env) : methodNotAllowed();
+  }
+  if (url.pathname === "/models") {
+    return request.method === "GET" ? handleModels() : methodNotAllowed();
+  }
+  const bot = BOT_ROUTE.exec(url.pathname);
+  if (bot === null) return undefined;
+  return request.method === "PUT"
+    ? await handleBotWrite(request, env, bot[1]!)
+    : methodNotAllowed();
 };
 
 export default {
@@ -1019,6 +1210,8 @@ export default {
       if (url.pathname === "/status") {
         return request.method === "GET" ? await handleStatus(env) : methodNotAllowed();
       }
+      const registry = await handleRegistryRoute(request, env, url);
+      if (registry !== undefined) return registry;
       const match = CHAT_ROUTE.exec(url.pathname);
       if (match !== null) {
         return request.method === "POST"
@@ -1069,7 +1262,7 @@ export default {
 
   async scheduled(controller: ScheduledController, env: Env): Promise<void> {
     const scheduledTime = controller.scheduledTime;
-    const bots = await Effect.runPromise(loadBotsEffect());
+    const bots = await Effect.runPromise(rosterEffect(env));
     const admissions: Effect.Effect<void>[] = [];
     for (const [id, bot] of Object.entries(bots)) {
       const brief = bot.brief;

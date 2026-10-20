@@ -1,11 +1,12 @@
 /**
  * mackbot infrastructure — Alchemy v2 (Infrastructure-as-Effects).
  *
- * One async Worker hosts the front door and the exported `Bot` Durable Object
- * class. `Cloudflare.DurableObject<Bot>("Bot")` binds the class and drives
- * Cloudflare's `new_sqlite_classes` migration, so each `Bot` instance is
- * SQLite-backed — what pi-durable's storage needs. `Cloudflare.Workers.AI()`
- * binds Workers AI for the cheap `@cf/…` model tier.
+ * One async Worker hosts the front door and the exported `Bot` and `Registry`
+ * Durable Object classes. `Cloudflare.DurableObject<Bot>("Bot")` binds the
+ * class and drives Cloudflare's `new_sqlite_classes` migration, so each `Bot`
+ * instance is SQLite-backed — what pi-durable's storage needs. The `Registry`
+ * binding is the same: one instance holds the roster, in one SQLite table.
+ * `Cloudflare.Workers.AI()` binds Workers AI for the cheap `@cf/…` model tier.
  *
  * Secrets (`EXECUTOR_URL`, `EXECUTOR_TOKEN`, `OPENCODE_API_KEY`,
  * `CHAT_BEARER_TOKEN`) resolve from the environment via `Config.Redacted` and
@@ -27,6 +28,7 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
 import type { Bot } from "./src/index.ts";
+import type { Registry } from "./src/registry.ts";
 
 export default Alchemy.Stack(
   "mackbot",
@@ -51,6 +53,7 @@ export default Alchemy.Stack(
       },
       env: {
         Bot: Cloudflare.DurableObject<Bot>("Bot"),
+        Registry: Cloudflare.DurableObject<Registry>("Registry"),
         AI: Cloudflare.Workers.AI(),
         EXECUTOR_URL: Config.Redacted("EXECUTOR_URL"),
         EXECUTOR_TOKEN: Config.Redacted("EXECUTOR_TOKEN"),

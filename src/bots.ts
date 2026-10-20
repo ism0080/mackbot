@@ -1,301 +1,106 @@
-import botsJson from "../bots.json";
+/**
+ * bots — the bot registry's rules.
+ *
+ * The shape of a bot lives in the contract package, because the browser reads
+ * it as well as the Worker: a bot's model, prompt, thinking level, brief,
+ * delegate list and run policy are one vocabulary that the Worker applies and
+ * the browser edits.
+ *
+ * What lives here is what the shape cannot say. A model has to be one the
+ * provider knows, a thinking level has to be one that model supports, and a
+ * delegate list has to name bots that exist. Those are the rules, and they are
+ * the same rules whether a bot arrives in the seed file or through a write
+ * from the browser.
+ */
 
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { BotConfigSchema } from "@mackbot/contract";
+import type { BotConfig, ModelRef } from "@mackbot/contract";
 import { MODEL_VARIANTS } from "@mackbot/contract/catalog";
 import type { ThinkingLevel } from "@mackbot/contract/catalog";
 
-export interface RawObject {
-  readonly [key: string]: RawJson;
-}
-export type RawJson = string | number | boolean | null | readonly RawJson[] | RawObject;
+export type { BotConfig, ModelRef };
 
-const OPENCODE_GO_PROVIDER_ID = "opencode-go";
-const CLOUDFLARE_PROVIDER_ID = "cloudflare";
 const WORKERS_AI_PREFIX = "@cf/";
 
-export type ProviderId = typeof OPENCODE_GO_PROVIDER_ID | typeof CLOUDFLARE_PROVIDER_ID;
-
-export interface ModelRef {
-  readonly provider: ProviderId;
-  readonly id: string;
-}
-
-export type ModelDecl =
-  | string
-  | { readonly provider: typeof OPENCODE_GO_PROVIDER_ID; readonly modelId: string };
-
-/** The run policy a bot declares for itself, in `bots.json`. */
-export interface BotRuntimeConfig {
-  readonly contextWindow?: number;
-  readonly reserveTokens?: number;
-  readonly maxRetries?: number;
-  readonly parallelTools?: boolean;
-  /**
-   * How many times in a row a task may be cut off before the harness parks it.
-   * A bot that keeps crashing stops costing the fleet alarm invocations.
-   */
-  readonly restartLimit?: number;
-}
-
-export interface BotConfig {
-  readonly model: ModelDecl;
-  readonly thinkingLevel?: ThinkingLevel;
-  readonly systemPrompt: string;
-  readonly brief?: string;
-  readonly delegatesTo?: string[];
-  readonly runtime?: BotRuntimeConfig;
-  readonly commitments?: boolean;
-}
-
 const VARIANT_INDEX = new Map<string, readonly ThinkingLevel[]>(Object.entries(MODEL_VARIANTS));
-const ALL_THINKING_LEVELS = new Set<string>(Object.values(MODEL_VARIANTS).flat());
 const KNOWN_MODEL_IDS = Object.keys(MODEL_VARIANTS).join(", ");
-const RUNTIME_FIELDS = [
-  "contextWindow",
-  "reserveTokens",
-  "maxRetries",
-  "parallelTools",
-  "restartLimit",
-] as const;
-const RUNTIME_FIELD_SET = new Set<string>(RUNTIME_FIELDS);
 
-const isString = Schema.is(Schema.String);
-const isNumber = Schema.is(Schema.Number);
-const isBoolean = Schema.is(Schema.Boolean);
-const isObject = (value: RawJson | undefined): value is RawObject =>
-  Object.prototype.toString.call(value) === "[object Object]";
+const fail = (message: string): Effect.Effect<never, Error> => Effect.fail(new Error(message));
 
-const isThinkingLevel = (value: RawJson | undefined): value is ThinkingLevel =>
-  isString(value) && ALL_THINKING_LEVELS.has(value);
-
-const field = (raw: RawObject, key: string): RawJson | undefined =>
-  Object.hasOwn(raw, key) ? raw[key] : undefined;
-
-const fail = (message: string): Effect.Effect<never, Error> =>
-  Effect.fail(new Error(`bots.json: ${message}`));
-
-const requireField = (
-  botId: string,
-  raw: RawObject,
-  key: string,
-): Effect.Effect<RawJson, Error> => {
-  const value = field(raw, key);
-  return value === undefined ? fail(`bot "${botId}" is missing "${key}"`) : Effect.succeed(value);
-};
-
-const decodeText = (botId: string, key: string, value: RawJson): Effect.Effect<string, Error> => {
-  if (!isString(value) || value.trim().length === 0) {
-    return fail(`bot "${botId}" field "${key}" must be a non-empty string`);
-  }
-  return Effect.succeed(value);
-};
-
-const assertKnownOpenCodeModel = (botId: string, modelId: string): Effect.Effect<void, Error> =>
-  VARIANT_INDEX.has(modelId)
+/**
+ * The model a bot declares has to be one the provider can actually serve.
+ *
+ * A Workers AI model is named by its own `@cf/...` path, which the catalog
+ * does not list, so the path's shape is the rule there. Every other model is
+ * named by its catalog id, so an unknown id is a mistake worth naming.
+ */
+const checkModel = (botId: string, model: string): Effect.Effect<void, Error> => {
+  if (model.startsWith(WORKERS_AI_PREFIX)) return Effect.void;
+  return VARIANT_INDEX.has(model)
     ? Effect.void
     : fail(
-        `bot "${botId}" model "${modelId}" is not in the OpenCode Go catalog. Known ids: ${KNOWN_MODEL_IDS}`,
+        `bot "${botId}" model "${model}" is not in the OpenCode Go catalog. Known ids: ${KNOWN_MODEL_IDS}`,
       );
-
-const openCodeModelId = (model: ModelDecl): string | undefined => {
-  if (isString(model)) {
-    return model.startsWith(WORKERS_AI_PREFIX) ? undefined : model;
-  }
-  return model.modelId;
 };
 
-const decodeModel = (botId: string, value: RawJson): Effect.Effect<ModelDecl, Error> =>
-  Effect.gen(function* () {
-    if (isString(value)) {
-      const trimmed = value.trim();
-      if (trimmed.startsWith(WORKERS_AI_PREFIX)) return trimmed;
-      yield* assertKnownOpenCodeModel(botId, trimmed);
-      return trimmed;
-    }
-    if (isObject(value)) {
-      const provider = field(value, "provider");
-      const modelId = field(value, "modelId");
-      if (!isString(provider) || !isString(modelId)) {
-        return yield* fail(
-          `bot "${botId}" field "model" must be a string or an object with string "provider" and "modelId"`,
-        );
-      }
-      if (provider !== OPENCODE_GO_PROVIDER_ID) {
-        return yield* fail(
-          `bot "${botId}" model.provider "${provider}" is not supported; use "${OPENCODE_GO_PROVIDER_ID}" or a "${WORKERS_AI_PREFIX}..." string`,
-        );
-      }
-      const trimmed = modelId.trim();
-      if (trimmed.length === 0)
-        return yield* fail(`bot "${botId}" model.modelId must be a non-empty string`);
-      yield* assertKnownOpenCodeModel(botId, trimmed);
-      return { provider: OPENCODE_GO_PROVIDER_ID, modelId: trimmed };
-    }
-    return yield* fail(
-      `bot "${botId}" field "model" must be a string or an object with string "provider" and "modelId"`,
+/**
+ * A thinking level is only meaningful for a model that has thinking variants,
+ * and only the ones that model lists.
+ */
+const checkThinkingLevel = (
+  botId: string,
+  model: string,
+  level: ThinkingLevel,
+): Effect.Effect<void, Error> => {
+  if (model.startsWith(WORKERS_AI_PREFIX)) return Effect.void;
+  const variants = VARIANT_INDEX.get(model);
+  if (variants === undefined) {
+    return fail(`bot "${botId}" model "${model}" is not in the OpenCode Go catalog`);
+  }
+  if (variants.length === 0) {
+    return fail(`bot "${botId}" model "${model}" has no thinking variants; omit "thinkingLevel"`);
+  }
+  if (!variants.includes(level)) {
+    return fail(
+      `bot "${botId}" thinkingLevel "${level}" is not supported by "${model}" (allowed: ${variants.join(", ")})`,
     );
-  });
-
-const decodeThinkingLevel = (
-  botId: string,
-  model: ModelDecl,
-  value: RawJson,
-): Effect.Effect<ThinkingLevel, Error> =>
-  Effect.gen(function* () {
-    if (!isThinkingLevel(value)) {
-      return yield* fail(
-        `bot "${botId}" field "thinkingLevel" must be one of: ${[...ALL_THINKING_LEVELS].join(", ")}`,
-      );
-    }
-    const modelId = openCodeModelId(model);
-    if (modelId === undefined) return value;
-    const variants = VARIANT_INDEX.get(modelId);
-    if (variants === undefined) {
-      return yield* fail(`bot "${botId}" model "${modelId}" is not in the OpenCode Go catalog`);
-    }
-    if (variants.length === 0) {
-      return yield* fail(
-        `bot "${botId}" model "${modelId}" has no thinking variants; omit "thinkingLevel"`,
-      );
-    }
-    if (!variants.includes(value)) {
-      return yield* fail(
-        `bot "${botId}" thinkingLevel "${value}" is not supported by "${modelId}" (allowed: ${variants.join(", ")})`,
-      );
-    }
-    return value;
-  });
-
-const decodeStringArray = (
-  botId: string,
-  key: string,
-  value: RawJson,
-): Effect.Effect<string[], Error> => {
-  if (!Array.isArray(value)) {
-    return fail(`bot "${botId}" field "${key}" must be an array of strings`);
   }
-  const out: string[] = [];
-  for (const entry of value) {
-    if (!isString(entry) || entry.trim().length === 0) {
-      return fail(`bot "${botId}" field "${key}" must contain non-empty strings`);
-    }
-    out.push(entry);
-  }
-  return Effect.succeed(out);
+  return Effect.void;
 };
 
-const decodeNumber = (botId: string, key: string, value: RawJson): Effect.Effect<number, Error> =>
-  isNumber(value) ? Effect.succeed(value) : fail(`bot "${botId}" field "${key}" must be a number`);
-
-const decodeBoolean = (
-  botId: string,
-  key: string,
-  value: RawJson,
-): Effect.Effect<boolean, Error> =>
-  isBoolean(value)
-    ? Effect.succeed(value)
-    : fail(`bot "${botId}" field "${key}" must be a boolean`);
-
-interface DraftRuntimeConfig {
-  contextWindow?: number;
-  reserveTokens?: number;
-  maxRetries?: number;
-  parallelTools?: boolean;
-  restartLimit?: number;
-}
-
-const decodeRuntime = (botId: string, value: RawJson): Effect.Effect<BotRuntimeConfig, Error> =>
+/**
+ * The rules one bot's configuration has to satisfy.
+ *
+ * The shape has already been decoded by the time this runs, so what is left is
+ * the part the shape cannot carry: a model the provider knows, and a thinking
+ * level that model supports.
+ */
+export const checkBotConfig = (botId: string, bot: BotConfig): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
-    if (!isObject(value)) {
-      return yield* fail(`bot "${botId}" field "runtime" must be an object`);
+    yield* checkModel(botId, bot.model);
+    if (bot.thinkingLevel !== undefined) {
+      yield* checkThinkingLevel(botId, bot.model, bot.thinkingLevel);
     }
-    for (const key of Object.keys(value)) {
-      if (!RUNTIME_FIELD_SET.has(key)) {
-        return yield* fail(
-          `bot "${botId}" field "runtime.${key}" is not a known runtime field (known: ${RUNTIME_FIELDS.join(", ")})`,
-        );
-      }
-    }
-    const runtime: DraftRuntimeConfig = {};
-    const contextWindow = field(value, "contextWindow");
-    if (contextWindow !== undefined) {
-      runtime.contextWindow = yield* decodeNumber(botId, "runtime.contextWindow", contextWindow);
-    }
-    const reserveTokens = field(value, "reserveTokens");
-    if (reserveTokens !== undefined) {
-      runtime.reserveTokens = yield* decodeNumber(botId, "runtime.reserveTokens", reserveTokens);
-    }
-    const maxRetries = field(value, "maxRetries");
-    if (maxRetries !== undefined) {
-      runtime.maxRetries = yield* decodeNumber(botId, "runtime.maxRetries", maxRetries);
-    }
-    const parallelTools = field(value, "parallelTools");
-    if (parallelTools !== undefined) {
-      runtime.parallelTools = yield* decodeBoolean(botId, "runtime.parallelTools", parallelTools);
-    }
-    const restartLimit = field(value, "restartLimit");
-    if (restartLimit !== undefined) {
-      runtime.restartLimit = yield* decodeNumber(botId, "runtime.restartLimit", restartLimit);
-    }
-    return runtime;
   });
 
-interface DraftBotConfig {
-  model: ModelDecl;
-  systemPrompt: string;
-  thinkingLevel?: ThinkingLevel;
-  brief?: string;
-  delegatesTo?: string[];
-  runtime?: BotRuntimeConfig;
-  commitments?: boolean;
-}
-
-const decodeBot = (botId: string, raw: RawJson): Effect.Effect<BotConfig, Error> =>
+/**
+ * The rules the roster has to satisfy as a whole.
+ *
+ * A bot's delegate list names bots that must exist, because a list naming a
+ * bot that is not there is a delegation that can only fail. A bot may not
+ * delegate to itself, and the roster may not be empty, because a fleet with no
+ * bots has nothing to run.
+ */
+export const validateRoster = (
+  bots: Readonly<Record<string, BotConfig>>,
+): Effect.Effect<void, Error> =>
   Effect.gen(function* () {
-    if (!isObject(raw)) return yield* fail(`bot "${botId}" must be an object`);
-    const config: DraftBotConfig = {
-      model: yield* decodeModel(botId, yield* requireField(botId, raw, "model")),
-      systemPrompt: yield* decodeText(
-        botId,
-        "systemPrompt",
-        yield* requireField(botId, raw, "systemPrompt"),
-      ),
-    };
-    const thinkingLevel = field(raw, "thinkingLevel");
-    if (thinkingLevel !== undefined) {
-      config.thinkingLevel = yield* decodeThinkingLevel(botId, config.model, thinkingLevel);
-    }
-    const brief = field(raw, "brief");
-    if (brief !== undefined) {
-      config.brief = yield* decodeText(botId, "brief", brief);
-    }
-    const delegatesTo = field(raw, "delegatesTo");
-    if (delegatesTo !== undefined) {
-      config.delegatesTo = yield* decodeStringArray(botId, "delegatesTo", delegatesTo);
-    }
-    const runtime = field(raw, "runtime");
-    if (runtime !== undefined) {
-      config.runtime = yield* decodeRuntime(botId, runtime);
-    }
-    const commitments = field(raw, "commitments");
-    if (commitments !== undefined) {
-      config.commitments = yield* decodeBoolean(botId, "commitments", commitments);
-    }
-    return config;
-  });
-
-const decodeRegistry = (raw: RawJson): Effect.Effect<Record<string, BotConfig>, Error> =>
-  Effect.gen(function* () {
-    if (!isObject(raw)) return yield* fail("the registry must be a JSON object keyed by bot id");
-    const bots: Record<string, BotConfig> = {};
-    for (const [botId, rawBot] of Object.entries(raw)) {
-      if (botId.trim().length === 0) return yield* fail("bot ids must be non-empty strings");
-      bots[botId] = yield* decodeBot(botId, rawBot);
-    }
-    if (Object.keys(bots).length === 0)
+    if (Object.keys(bots).length === 0) {
       return yield* fail("the registry is empty; declare at least one bot");
+    }
     for (const [botId, bot] of Object.entries(bots)) {
       for (const target of bot.delegatesTo ?? []) {
         if (!Object.hasOwn(bots, target)) {
@@ -308,51 +113,68 @@ const decodeRegistry = (raw: RawJson): Effect.Effect<Record<string, BotConfig>, 
         }
       }
     }
-    return bots;
   });
 
 export type BotRegistryParse =
   | { readonly ok: true; readonly bots: Record<string, BotConfig> }
   | { readonly ok: false; readonly error: string };
 
-export function parseBotRegistry(raw: RawJson): BotRegistryParse {
-  return Effect.runSync(
-    decodeRegistry(raw).pipe(
+/**
+ * A JSON value, as the seed file holds it.
+ *
+ * A bot's own shape is the contract's, but the document around it is read
+ * before it is known, so it arrives as JSON.
+ */
+export type RawJson =
+  | string
+  | number
+  | boolean
+  | null
+  | readonly RawJson[]
+  | { readonly [key: string]: RawJson };
+
+/** A JSON object, and not an array or a scalar. */
+const isRawObject = (value: RawJson): value is { readonly [key: string]: RawJson } =>
+  Object.prototype.toString.call(value) === "[object Object]";
+
+/**
+ * Decode a roster that arrived as raw JSON, the way the seed file does.
+ *
+ * The shape comes from the contract and the rules from this module, so a seed
+ * file and a write from the browser are held to the same standard.
+ */
+export const parseBotRegistry = (raw: RawJson): BotRegistryParse =>
+  Effect.runSync(
+    Effect.gen(function* () {
+      if (!isRawObject(raw)) {
+        return yield* fail("the registry must be a JSON object keyed by bot id");
+      }
+      const bots: Record<string, BotConfig> = {};
+      for (const [botId, rawBot] of Object.entries(raw)) {
+        if (botId.trim().length === 0) return yield* fail("bot ids must be non-empty strings");
+        const bot = yield* Schema.decodeUnknownEffect(BotConfigSchema)(rawBot).pipe(
+          Effect.mapError((cause) => new Error(`bot "${botId}": ${cause.message}`)),
+        );
+        yield* checkBotConfig(botId, bot);
+        bots[botId] = bot;
+      }
+      yield* validateRoster(bots);
+      return bots;
+    }).pipe(
       Effect.match({
         onSuccess: (bots): BotRegistryParse => ({ ok: true, bots }),
         onFailure: (error): BotRegistryParse => ({ ok: false, error: error.message }),
       }),
     ),
   );
-}
 
-let cached: Record<string, BotConfig> | undefined;
-
-export function loadBots(): Record<string, BotConfig> {
-  cached ??= (() => {
-    // SAFETY: the bundled JSON import decodes to a JSON value at runtime.
-    const parsed = parseBotRegistry(botsJson as RawJson);
-    if (!parsed.ok) throw new Error(parsed.error);
-    return parsed.bots;
-  })();
-  return cached;
-}
-
-export function getBot(name: string): BotConfig {
-  const bots = loadBots();
-  if (!Object.hasOwn(bots, name)) {
-    Effect.runSync(fail(`no bot "${name}". Declared bots: ${Object.keys(bots).join(", ")}`));
-  }
-  // SAFETY: hasOwn check above guarantees this key exists.
-  return bots[name] as BotConfig;
-}
-
-export function resolveModelRef(bot: BotConfig): ModelRef {
-  const model = bot.model;
-  if (isString(model)) {
-    return model.startsWith(WORKERS_AI_PREFIX)
-      ? { provider: CLOUDFLARE_PROVIDER_ID, id: model }
-      : { provider: OPENCODE_GO_PROVIDER_ID, id: model };
-  }
-  return { provider: OPENCODE_GO_PROVIDER_ID, id: model.modelId };
-}
+/**
+ * The model a bot runs on, in the shape the status view carries.
+ *
+ * A Workers AI model is named by its `@cf/...` path; every other model comes
+ * from the OpenCode Go catalog.
+ */
+export const resolveModelRef = (bot: BotConfig): ModelRef => ({
+  provider: bot.model.startsWith(WORKERS_AI_PREFIX) ? "cloudflare" : "opencode-go",
+  id: bot.model,
+});

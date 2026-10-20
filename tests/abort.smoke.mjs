@@ -27,6 +27,7 @@ if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
 }
 
 const worker = (await import("../src/index.ts")).default;
+const { registryBinding } = await import("./support/registry.mjs");
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -38,6 +39,7 @@ const TOKEN = "test-token";
 const calls = [];
 const env = {
   CHAT_BEARER_TOKEN: TOKEN,
+  Registry: registryBinding(),
   Bot: {
     getByName: (name) => ({
       abort: async (session) => {

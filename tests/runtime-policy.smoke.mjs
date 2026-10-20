@@ -1,15 +1,17 @@
 /**
  * Smoke test for the per-bot run policy (src/runtime-policy.ts) and for the
- * `runtime` and `commitments` fields of the bots.json decoder (src/bots.ts).
+ * `runtime` and `commitments` fields of the registry decoder (src/bots.ts).
  *
  * Run with: bun tests/runtime-policy.smoke.mjs
  *
  * Pure logic: checks the policy derived from a bot's own declaration and the
- * decoder's guards through `parseBotRegistry`, so no crafted bots.json on disk
+ * decoder's guards through `parseBotRegistry`, so no crafted registry on disk
  * is needed. No credentials required.
  */
+import { readFileSync } from "node:fs";
+
 const { settingsFor } = await import("../src/runtime-policy.ts");
-const { loadBots, parseBotRegistry } = await import("../src/bots.ts");
+const { parseBotRegistry } = await import("../src/bots.ts");
 
 const failures = [];
 
@@ -128,60 +130,74 @@ const rejects = (label, raw, needle) => {
     return;
   }
   const names = result.error.includes(needle);
-  const prefixed = result.error.includes("bots.json:");
   if (!names) failures.push(`${label}: error "${result.error}" does not include "${needle}"`);
-  if (!prefixed)
-    failures.push(`${label}: error "${result.error}" is missing the "bots.json:" prefix`);
-  console.log(`  ${names && prefixed ? "ok  " : "FAIL"} ${label} (${result.error})`);
+  console.log(`  ${names ? "ok  " : "FAIL"} ${label} (${result.error})`);
 };
 
 rejects(
   "runtime is not an object",
   { a: { model: "glm-5.3", systemPrompt: "x", runtime: 5 } },
-  'field "runtime"',
+  'at ["runtime"]',
 );
 rejects(
   "runtime.maxRetries is not a number",
   { a: { model: "glm-5.3", systemPrompt: "x", runtime: { maxRetries: "three" } } },
-  'field "runtime.maxRetries"',
+  'at ["runtime"]["maxRetries"]',
 );
 rejects(
   "runtime.contextWindow is not a number",
   { a: { model: "glm-5.3", systemPrompt: "x", runtime: { contextWindow: "big" } } },
-  'field "runtime.contextWindow"',
+  'at ["runtime"]["contextWindow"]',
 );
 rejects(
   "runtime.reserveTokens is not a number",
   { a: { model: "glm-5.3", systemPrompt: "x", runtime: { reserveTokens: null } } },
-  'field "runtime.reserveTokens"',
+  'at ["runtime"]["reserveTokens"]',
 );
 rejects(
   "runtime.parallelTools is not a boolean",
   { a: { model: "glm-5.3", systemPrompt: "x", runtime: { parallelTools: "yes" } } },
-  'field "runtime.parallelTools"',
-);
-rejects(
-  "unknown runtime field",
-  { a: { model: "glm-5.3", systemPrompt: "x", runtime: { parallelTool: true } } },
-  'field "runtime.parallelTool"',
+  'at ["runtime"]["parallelTools"]',
 );
 rejects(
   "commitments is not a boolean",
   { a: { model: "glm-5.3", systemPrompt: "x", commitments: "yes" } },
-  'field "commitments"',
+  'at ["commitments"]',
 );
 
-// The bundled registry carries the policy Hermes runs under.
+// A field the shape does not know is dropped, not refused: the browser holds
+// the edits and sends the whole configuration back.
+{
+  const result = parseBotRegistry({
+    a: { model: "glm-5.3", systemPrompt: "x", runtime: { parallelTool: true } },
+  });
+  if (!result.ok) {
+    failures.push(`unknown runtime field refused: ${result.error}`);
+    console.log(`  FAIL unknown runtime field refused (${result.error})`);
+  } else {
+    console.log("  ok   unknown runtime field ignored");
+    expect("unknown runtime field is dropped", result.bots.a.runtime?.parallelTool, undefined);
+  }
+}
+
+// The bundled seed carries the policy Hermes runs under.
 try {
-  const bots = loadBots();
-  expect("hermes max retries", bots.hermes.runtime?.maxRetries, 3);
-  expect("hermes parallel tools", bots.hermes.runtime?.parallelTools, true);
-  expect("hermes commitments", bots.hermes.commitments, true);
-  expect("hermes has no context window", bots.hermes.runtime?.contextWindow, undefined);
-  expect("scribe has no runtime", bots.scribe.runtime, undefined);
+  const raw = JSON.parse(readFileSync(new URL("../bots.json", import.meta.url), "utf8"));
+  const seeded = parseBotRegistry(raw);
+  if (!seeded.ok) {
+    failures.push(`the bundled seed does not decode: ${seeded.error}`);
+    console.log(`  FAIL the bundled seed does not decode (${seeded.error})`);
+  } else {
+    const bots = seeded.bots;
+    expect("hermes max retries", bots.hermes.runtime?.maxRetries, 3);
+    expect("hermes parallel tools", bots.hermes.runtime?.parallelTools, true);
+    expect("hermes commitments", bots.hermes.commitments, true);
+    expect("hermes has no context window", bots.hermes.runtime?.contextWindow, undefined);
+    expect("scribe has no runtime", bots.scribe.runtime, undefined);
+  }
 } catch (error) {
-  failures.push(`loadBots threw: ${error?.message ?? error}`);
-  console.log(`  FAIL loadBots threw (${error?.message ?? error})`);
+  failures.push(`the bundled seed could not be read: ${error?.message ?? error}`);
+  console.log(`  FAIL the bundled seed could not be read (${error?.message ?? error})`);
 }
 
 if (failures.length > 0) {

@@ -9,7 +9,7 @@
 
 import type { UsageState } from "@earendil-works/pi-durable";
 
-import type { ModelRef } from "./bots.ts";
+import type { ModelRef } from "@mackbot/contract";
 import type { RunRow } from "./runs.ts";
 import { streamViewOf } from "./runs.ts";
 import { usageView } from "@mackbot/contract";
