@@ -1,5 +1,6 @@
 import type { Document, HtmlBuilder } from "foldkit/html";
 
+import { bots } from "./bots.ts";
 import { home } from "./home.ts";
 import type { Message } from "./message.ts";
 import { Screen } from "./model.ts";
@@ -16,4 +17,5 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document =>
       lang: "en",
       body: transcript(bot, model, h),
     }),
+    Bots: () => ({ title: "Bots · mackbot", lang: "en", body: bots(model, h) }),
   });

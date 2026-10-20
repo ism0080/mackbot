@@ -7,6 +7,9 @@
  * bot's connection should carry, and whether the connection stays open after
  * them; the default is an `up-to-date` control frame on a connection that holds,
  * which is what a running, quiet bot looks like.
+ *
+ * The roster routes answer the registry's own shapes. A write is echoed back as
+ * the bot it stored, unless a test scripts a refusal for that bot.
  */
 import { slicePage } from "@mackbot/contract";
 
@@ -42,6 +45,10 @@ export const startStub = ({
   decisions = {},
   aborts = {},
   retries = {},
+  roster = { bots: {} },
+  catalog = { models: {} },
+  writes = {},
+  create = undefined,
 }) => {
   const requests = [];
   const held = new Set();
@@ -70,7 +77,10 @@ export const startStub = ({
       const decision = /^\/approvals\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       const abort = /^\/abort\/([^/]+)$/.exec(url.pathname);
       const retry = /^\/retry\/([^/]+)$/.exec(url.pathname);
-      const hasBody = decision !== null || abort !== null || retry !== null;
+      const botWrite = /^\/bots\/([^/]+)$/.exec(url.pathname);
+      const isWrite = request.method === "PUT" && botWrite !== null;
+      const isCreate = request.method === "POST" && url.pathname === "/bots";
+      const hasBody = decision !== null || abort !== null || retry !== null || isWrite || isCreate;
       const body = hasBody ? await request.json().catch(() => undefined) : undefined;
       requests.push({
         method: request.method,
@@ -84,6 +94,29 @@ export const startStub = ({
       if (failing.includes(url.pathname)) return new Response("boom", { status: 500 });
       if (url.pathname === "/status") {
         return Response.json(typeof status === "function" ? status() : status);
+      }
+
+      if (url.pathname === "/models") {
+        return Response.json(typeof catalog === "function" ? catalog() : catalog);
+      }
+
+      if (url.pathname === "/bots" && request.method === "GET") {
+        return Response.json(typeof roster === "function" ? roster() : roster);
+      }
+
+      if (isCreate) {
+        const handler = create;
+        const spec = handler === undefined ? undefined : await handler({ body, query });
+        const answer = spec ?? { status: 201, body: { id: body.id, bot: body.bot } };
+        return Response.json(answer.body, { status: answer.status });
+      }
+
+      if (isWrite) {
+        const handler = writes[botWrite[1]];
+        const spec =
+          handler === undefined ? undefined : await handler({ body, query, bot: botWrite[1] });
+        const answer = spec ?? { status: 200, body: { id: botWrite[1], bot: body.bot } };
+        return Response.json(answer.body, { status: answer.status });
       }
 
       if (decision !== null) {

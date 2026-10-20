@@ -1,4 +1,12 @@
-import { BotViewSchema, FrameSchema, TranscriptPageSchema } from "@mackbot/contract";
+import {
+  BotConfigSchema,
+  BotViewSchema,
+  FrameSchema,
+  ModelCatalogSchema,
+  RosterSchema,
+  ThinkingLevelSchema,
+  TranscriptPageSchema,
+} from "@mackbot/contract";
 import { defineMessageUnion } from "foldkit/message";
 import * as Schema from "effect/Schema";
 
@@ -92,5 +100,39 @@ export const Message = defineMessageUnion({
     before: Schema.optional(Schema.Number),
   },
   TranscriptFailed: { bot: Schema.String, error: Schema.String },
+  /** The user asked for the roster, where the bots are edited. */
+  ClickedOpenBots: {},
+  /** The roster arrived, and its own values seed the screen's drafts. */
+  RosterLoaded: { roster: RosterSchema },
+  RosterFailed: { error: Schema.String },
+  /** The model catalog arrived, so the pickers know the models and the levels
+   *  each one supports. */
+  CatalogLoaded: { catalog: ModelCatalogSchema },
+  CatalogFailed: { error: Schema.String },
+  /**
+   * One editable field changed. `bot` names the bot whose draft changed, and
+   * is `null` for the bot being created, which has no id yet.
+   */
+  EditedBotModel: { bot: Schema.NullOr(Schema.String), model: Schema.String },
+  EditedBotLevel: {
+    bot: Schema.NullOr(Schema.String),
+    level: Schema.NullOr(ThinkingLevelSchema),
+  },
+  EditedBotPrompt: { bot: Schema.NullOr(Schema.String), prompt: Schema.String },
+  EditedBotBrief: { bot: Schema.NullOr(Schema.String), brief: Schema.String },
+  /** The id of the bot being created changed. */
+  EditedNewBotId: { id: Schema.String },
+  /** The user asked to store one bot's configuration. */
+  ClickedSaveBot: { bot: Schema.String },
+  /** The user asked to create the bot being drafted. */
+  ClickedCreateBot: {},
+  /** The server stored the bot, and says what it stored. */
+  BotSaved: { id: Schema.String, bot: BotConfigSchema },
+  /** The write did not reach the server, or the server refused it. */
+  BotSaveFailed: { bot: Schema.String, error: Schema.String },
+  /** The server created the bot, and says what it created. */
+  BotCreated: { id: Schema.String, bot: BotConfigSchema },
+  /** The create did not reach the server, or the server refused it. */
+  BotCreateFailed: { error: Schema.String },
 });
 export type Message = typeof Message.Type;

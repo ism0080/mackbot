@@ -165,7 +165,23 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
     [
       h.header(
         [h.Class("hdr tall")],
-        [h.h1([], [triage.headline]), h.span([h.Class("hdr-sub")], [triage.sub])],
+        [
+          h.h1([], [triage.headline]),
+          h.span([h.Class("hdr-sub")], [triage.sub]),
+          h.div(
+            [h.Class("hdr-actions")],
+            [
+              h.button(
+                [
+                  h.Class("btn ghost"),
+                  h.DataAttribute("open", "bots"),
+                  h.OnClick(Message.ClickedOpenBots()),
+                ],
+                ["Bots"],
+              ),
+            ],
+          ),
+        ],
       ),
       h.main(
         [h.Class("scroll")],

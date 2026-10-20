@@ -909,3 +909,101 @@ details[open]::details-content {
   font-size: var(--step-0);
   color: var(--text-soft);
 }
+
+/* ---------- roster screen ---------- */
+
+/* The way in to the roster is a button in the home's header, so it reads as a
+   control rather than as another line of the header's own text. */
+.hdr-actions {
+  display: flex;
+  gap: 8px;
+  margin-block-start: 10px;
+}
+
+.hdr-actions .btn {
+  flex: none;
+  padding-block: 8px;
+  padding-inline: 14px;
+  font-size: var(--step--1);
+}
+
+/* One bot, with the fields a human edits. */
+.botcard {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+/* The bot being created is not a bot yet, so its card is the dashed one the
+   empty state uses. */
+.botcard.new {
+  border-style: dashed;
+  background: transparent;
+}
+
+.botcard-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.botcard-id {
+  font-size: var(--step-0);
+  font-weight: 600;
+}
+
+.botcard-model {
+  font-size: var(--step--3);
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field-label {
+  font-size: var(--step--3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+/* The font size is the reset's own: below 16px a phone zooms the page when a
+   field takes the focus. */
+.input {
+  font-family: inherit;
+  font-size: max(16px, 1rem);
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg-deep);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding-block: 8px;
+  padding-inline: 10px;
+  inline-size: 100%;
+}
+
+.input option {
+  background: var(--bg-deep);
+  color: var(--text);
+}
+
+textarea.input {
+  min-block-size: 84px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: max(16px, 1rem);
+  line-height: 1.5;
+}
+
+.botcard-actions {
+  display: flex;
+  gap: 8px;
+}
