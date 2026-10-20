@@ -64,6 +64,10 @@ is case-insensitive.
   `{"session": "<id>"}` names the conversation to stop, and an empty body stops
   the bot's root conversation. The answer is `{ bot, session, aborted }`, where
   `aborted` is false when there was nothing running to stop.
+- `POST /retry/:bot` — run a parked task again. The body is
+  `{"taskId": "<id>"}`, naming a task the harness parked after too many
+  restarts. The answer is `{ bot, taskId, retried }`, where `retried` is false
+  when nothing was parked under that id.
 
 The Worker and the web app share one vocabulary in
 [`src/web-contract.ts`](./src/web-contract.ts). Every route decodes its input and
