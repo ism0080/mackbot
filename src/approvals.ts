@@ -403,7 +403,17 @@ export function createApprovalStore(
     const rows = read(executor, REQUEST_STATE_SQL, requestId);
     const record = Option.getOrUndefined(Schema.decodeUnknownOption(RequestStateSchema)(rows[0]));
     if (record === undefined) return "unknown";
-    return record.status === "pending" ? "pending" : "decided";
+    switch (record.status) {
+      case "pending":
+        return "pending";
+      case "allowed":
+        return "approved";
+      case "denied":
+        return "denied";
+      // An expired approval is not a decision, so nothing vouches for it.
+      case "expired":
+        return "unknown";
+    }
   };
 
   /** The approval a decision can act on, or `undefined` when it cannot. */

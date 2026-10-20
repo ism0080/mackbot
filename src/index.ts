@@ -5,7 +5,7 @@ import { PiHarness, ROOT_SESSION } from "agents/harness/pi";
 import type { PiHarnessFactory, PiReceipt, PiWhenBusy } from "agents/harness/pi";
 import { Streams } from "agents/streams";
 import { createAI } from "agents/models/pi-ai";
-import { Harness, createRegistry } from "@earendil-works/pi-durable";
+import { Harness, createRegistry, defineExtension } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
   ConversationId,
@@ -37,8 +37,8 @@ import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
 import type { ThinkingLevel } from "./bots.ts";
-import { createApprovalStore } from "./approvals.ts";
-import type { ApprovalStore, DecidedApproval } from "./approvals.ts";
+import { ApprovalWait, createApprovalStore } from "./approvals.ts";
+import type { ApprovalStore, ApprovalWaitInput, DecidedApproval } from "./approvals.ts";
 import { createRunStore, streamViewOf } from "./runs.ts";
 import type { RunStore } from "./runs.ts";
 import { activeRunOf, projectStatus } from "./status.ts";
@@ -194,6 +194,7 @@ export class Bot extends DurableObject<Env> {
         }),
       );
       if (bot.commitments === true) registry.install(commitmentsExtension);
+      registry.install(defineExtension({ name: "mackbot-approvals", tasks: [ApprovalWait] }));
       const models = createModels();
       models.setProvider(opencodeGoProvider());
       models.setProvider(createAI({ binding: env.AI }).provider);
@@ -525,8 +526,45 @@ export class Bot extends DurableObject<Env> {
   }
 
   #approvals(): ApprovalStore {
-    this.#approvalStore ??= createApprovalStore(this.ctx.storage);
+    this.#approvalStore ??= createApprovalStore(this.ctx.storage, {
+      // A pause leaves a durable wait behind, so a decision cannot be lost
+      // between the row being written and the steer being submitted.
+      startWait: (wait) => {
+        void this.#startWait(wait);
+      },
+      submit: (input, operationId, whenBusy, session) =>
+        this.submit(input, operationId, whenBusy, undefined, session),
+    });
     return this.#approvalStore;
+  }
+
+  /**
+   * Start the durable wait for a recorded pause.
+   *
+   * The wait is a background task of the conversation the call paused in: it
+   * must not hold that conversation's idle wait open, because a human may take
+   * hours to answer.
+   */
+  async #startWait(wait: ApprovalWaitInput): Promise<void> {
+    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+    const conversation = await Effect.runPromise(
+      Effect.tryPromise(() =>
+        pi.conversation(conversationIdOf(wait.session), BACKGROUND_CONTEXT),
+      ),
+    );
+    if (conversation === undefined) return;
+    await Effect.runPromise(
+      Effect.tryPromise(() =>
+        conversation.commit(
+          (tx) =>
+            tx.createTask(ApprovalWait, wait, {
+              ownership: { kind: "conversation" },
+              background: true,
+            }),
+          BACKGROUND_CONTEXT,
+        ),
+      ),
+    );
   }
 
   #failures(): FailureStore {

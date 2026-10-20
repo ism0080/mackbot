@@ -14,7 +14,8 @@ const { createExecutorPolicy } = await import("../src/executor-policy.ts");
 
 const states = new Map([
   ["req-pending", "pending"],
-  ["req-decided", "decided"],
+  ["req-approved", "approved"],
+  ["req-denied", "denied"],
 ]);
 const reports = [];
 const extension = createExecutorPolicy({
@@ -55,21 +56,56 @@ check(
   `block is ${JSON.stringify(unknown?.block)}`,
 );
 
-// A spent decision is refused too: only a pending approval may be resumed.
-const decided = beforeTool(call("executor_resume", { requestId: "req-decided" }), api, context);
-check("decided requestId blocked", isText(decided?.block), `block is ${JSON.stringify(decided)}`);
+// A human who has not answered yet cannot be pre-empted: resuming the call
+// would run the effect before the answer.
+const pending = beforeTool(call("executor_resume", { requestId: "req-pending" }), api, context);
+check("pending requestId blocked", isText(pending?.block), `block is ${JSON.stringify(pending)}`);
 check(
-  "decided requestId named",
-  (decided?.block ?? "").includes("req-decided"),
-  `block is ${JSON.stringify(decided?.block)}`,
+  "pending requestId named",
+  (pending?.block ?? "").includes("req-pending"),
+  `block is ${JSON.stringify(pending?.block)}`,
 );
 
-// A pending approval passes.
-const pending = beforeTool(call("executor_resume", { requestId: "req-pending" }), api, context);
+// An approval a human said yes to may be resumed: that is the decision being
+// carried out.
+const approved = beforeTool(
+  call("executor_resume", { requestId: "req-approved", response: { action: "accept" } }),
+  api,
+  context,
+);
 check(
-  "pending requestId allowed",
-  pending === undefined,
-  `hook returned ${JSON.stringify(pending)}`,
+  "approved requestId allowed",
+  approved === undefined,
+  `hook returned ${JSON.stringify(approved)}`,
+);
+
+// A refusal may not be carried out. Telling Executor the human said no is
+// fine; running the effect anyway is not.
+const deniedAccept = beforeTool(
+  call("executor_resume", { requestId: "req-denied", response: { action: "accept" } }),
+  api,
+  context,
+);
+check(
+  "a refusal cannot be carried out",
+  isText(deniedAccept?.block),
+  `block is ${JSON.stringify(deniedAccept)}`,
+);
+check(
+  "the refusal names the requestId",
+  (deniedAccept?.block ?? "").includes("req-denied"),
+  `block is ${JSON.stringify(deniedAccept?.block)}`,
+);
+
+const deniedDecline = beforeTool(
+  call("executor_resume", { requestId: "req-denied", response: { action: "decline" } }),
+  api,
+  context,
+);
+check(
+  "a refusal may be carried back to Executor",
+  deniedDecline === undefined,
+  `hook returned ${JSON.stringify(deniedDecline)}`,
 );
 
 // A requestId that is not a string names no approval.

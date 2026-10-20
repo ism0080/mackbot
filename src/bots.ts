@@ -44,6 +44,11 @@ export interface BotRuntimeConfig {
   readonly reserveTokens?: number;
   readonly maxRetries?: number;
   readonly parallelTools?: boolean;
+  /**
+   * How many times in a row a task may be cut off before the harness parks it.
+   * A bot that keeps crashing stops costing the fleet alarm invocations.
+   */
+  readonly restartLimit?: number;
 }
 
 export interface BotConfig {
@@ -59,7 +64,13 @@ export interface BotConfig {
 const VARIANT_INDEX = new Map<string, readonly ThinkingLevel[]>(Object.entries(MODEL_VARIANTS));
 const ALL_THINKING_LEVELS = new Set<string>(Object.values(MODEL_VARIANTS).flat());
 const KNOWN_MODEL_IDS = Object.keys(MODEL_VARIANTS).join(", ");
-const RUNTIME_FIELDS = ["contextWindow", "reserveTokens", "maxRetries", "parallelTools"] as const;
+const RUNTIME_FIELDS = [
+  "contextWindow",
+  "reserveTokens",
+  "maxRetries",
+  "parallelTools",
+  "restartLimit",
+] as const;
 const RUNTIME_FIELD_SET = new Set<string>(RUNTIME_FIELDS);
 
 const isString = Schema.is(Schema.String);
@@ -204,6 +215,7 @@ interface DraftRuntimeConfig {
   reserveTokens?: number;
   maxRetries?: number;
   parallelTools?: boolean;
+  restartLimit?: number;
 }
 
 const decodeRuntime = (botId: string, value: RawJson): Effect.Effect<BotRuntimeConfig, Error> =>
@@ -234,6 +246,10 @@ const decodeRuntime = (botId: string, value: RawJson): Effect.Effect<BotRuntimeC
     const parallelTools = field(value, "parallelTools");
     if (parallelTools !== undefined) {
       runtime.parallelTools = yield* decodeBoolean(botId, "runtime.parallelTools", parallelTools);
+    }
+    const restartLimit = field(value, "restartLimit");
+    if (restartLimit !== undefined) {
+      runtime.restartLimit = yield* decodeNumber(botId, "runtime.restartLimit", restartLimit);
     }
     return runtime;
   });

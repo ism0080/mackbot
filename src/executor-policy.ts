@@ -5,14 +5,16 @@
  * never to invent an approval, but a prompt is advice: the model can still call
  * `executor_resume` with a requestId nobody approved, and the effect then runs
  * with nobody's consent. This extension is the enforcement. A `ToolTask` hook
- * blocks every `executor_resume` whose requestId the host does not still hold
- * pending, so a paused call can only end by a human's decision.
+ * blocks every `executor_resume` that no human decision vouches for, so a
+ * paused call ends only the way a human said it should.
  *
  * The policy owns no approval state of its own: the host supplies
- * `approvalState`, which answers `pending` for a requestId that may still be
- * resumed, `decided` for one whose decision is spent, and `unknown` for one the
- * store never saw. Everything but `pending` blocks, so a host that lost track of
- * an approval fails closed instead of authorizing an effect nobody approved.
+ * `approvalState`, which answers `approved` for a requestId a human said yes to,
+ * `denied` for one a human said no to, `pending` for one a human has not
+ * answered yet, and `unknown` for one the store never saw. Everything but a
+ * decision blocks, so a host that lost track of an approval fails closed
+ * instead of authorizing an effect nobody approved. A denial blocks an
+ * "accept" too, so the model cannot carry out the effect a human refused.
  *
  * The second half is bookkeeping: a wrap times `executor_call` and
  * `executor_execute` and reports each call's duration to the host. The wrapper
@@ -32,8 +34,14 @@ const RESUME_TOOL = "executor_resume";
 /** The Executor tools whose duration the host wants to see. */
 const TIMED_TOOLS = ["executor_call", "executor_execute"] as const;
 
-/** What the approval store knows about one paused call. */
-export type ApprovalState = "pending" | "decided" | "unknown";
+/**
+ * What the approval store knows about one paused call.
+ *
+ * `approved` and `denied` are a human's decision. `pending` is a human who has
+ * not answered yet, and `unknown` is a requestId the store never saw. Only a
+ * decision may end a paused call.
+ */
+export type ApprovalState = "pending" | "approved" | "denied" | "unknown";
 
 export type ExecutorPolicyOptions = {
   /** The state of the approval for one requestId. */
@@ -53,37 +61,65 @@ type Refusal = { readonly block: string };
 const requestIdOf = (value: JsonValue | undefined): string | undefined =>
   Option.getOrUndefined(Schema.decodeUnknownOption(Schema.String)(value));
 
+/**
+ * The action a resume carries, when it carries one. A resume with no action is
+ * a plain continuation of a call a human approved.
+ */
+const actionOf = (value: JsonValue | undefined): string | undefined => {
+  const response = Option.getOrUndefined(
+    Schema.decodeUnknownOption(Schema.Struct({ action: Schema.String }))(value),
+  );
+  return response?.action;
+};
+
 /** How a requestId reads in a refusal, whatever shape the model sent. */
 const requestIdText = (requestId: JsonValue | undefined): string =>
   requestId === undefined ? "(missing)" : JSON.stringify(requestId);
 
 /**
  * The refusal itself. It names the requestId, so the model can tell which
- * approval it invented from the one it may still wait for.
+ * approval it invented from the one a human decided on.
  */
-const refuse = (requestId: JsonValue | undefined): Refusal => ({
+const refuse = (requestId: JsonValue | undefined, why: string): Refusal => ({
   block:
-    `executor_resume refused: no pending approval exists for requestId ${requestIdText(requestId)}. ` +
-    "Resume only a requestId a human is still deciding on, and never invent an approval.",
+    `executor_resume refused for requestId ${requestIdText(requestId)}: ${why} ` +
+    "Resume only a requestId a human has decided on, and carry that decision through.",
 });
 
 /**
  * The extension that enforces the approval rule and times the Executor calls.
  *
  * The host owns the approvals, so it owns the two seams: `approvalState` says
- * whether a requestId may still be resumed, and `onCall` receives what each
+ * whether a human has decided on a requestId, and `onCall` receives what each
  * wrapped call cost.
  */
 export const createExecutorPolicy = (options: ExecutorPolicyOptions): Extension => {
   /**
    * The hook that guards the approval rule. Every other tool passes untouched:
    * the policy governs what authorizes an effect, not what the effect does.
+   *
+   * A paused call ends only by a human's decision. A requestId nobody decided
+   * on is refused, and so is one a human is still deciding on: resuming it
+   * would run the effect before the answer. A refused decision may not be
+   * carried out either, so a denial the model would rather ignore stays a
+   * denial.
    */
   const beforeTool = (call: ToolHookCall): Refusal | undefined => {
     if (call.name !== RESUME_TOOL) return undefined;
     const requestId = requestIdOf(call.arguments.requestId);
-    if (requestId === undefined) return refuse(call.arguments.requestId);
-    if (options.approvalState(requestId) !== "pending") return refuse(requestId);
+    if (requestId === undefined) {
+      return refuse(call.arguments.requestId, "no requestId names an approval.");
+    }
+    const state = options.approvalState(requestId);
+    if (state === "pending") {
+      return refuse(requestId, "a human has not decided on it yet.");
+    }
+    if (state === "unknown") {
+      return refuse(requestId, "no human decision exists for it.");
+    }
+    if (state === "denied" && actionOf(call.arguments.response) === "accept") {
+      return refuse(requestId, "a human refused it.");
+    }
     return undefined;
   };
 

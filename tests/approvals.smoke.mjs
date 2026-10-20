@@ -55,6 +55,7 @@ const { Harness, MemoryStorage, createRegistry, defineExtension } =
 const { createModels } = await import("@earendil-works/pi-ai/models");
 const { sqliteStorage } = await import("./support/sqlite.mjs");
 const { createApprovalStore, ApprovalWait } = await import("../src/approvals.ts");
+const { createExecutorPolicy } = await import("../src/executor-policy.ts");
 const { createExecutorMcp } = await import("../src/executor-mcp.ts");
 const { projectStatus } = await import("../src/status.ts");
 const { FrameSchema } = await import("../src/web-contract.ts");
@@ -68,6 +69,9 @@ const check = (label, condition, detail = "") => {
 
 /** How many times `needle` appears in `haystack`: the measurement for "never". */
 const occurrences = (haystack, needle) => haystack.split(needle).length - 1;
+
+/** Whether a value is a string, without narrowing on its representation. */
+const isText = (value) => Object.prototype.toString.call(value) === "[object String]";
 
 const TOKEN = "test-token";
 const REQUEST_ID = "apr_round_trip_7";
@@ -385,6 +389,110 @@ const call = (tools) =>
   await store.decide(denyId, { action: "deny" }, submit);
   check("a deny steers a decline", submissions.at(-1)?.input.includes('"action":"decline"'));
   check("a deny leaves pending", store.pending().length === 0, `${store.pending().length}`);
+}
+
+// ---------------------------------------------------------------------------
+// The state the executor policy asks about, and what the policy does with it.
+// A paused call ends only by a human's decision, so the state has to say which
+// decision, not merely that one happened.
+// ---------------------------------------------------------------------------
+
+{
+  const { store } = fresh();
+  store.recordPaused({
+    bot: "hermes",
+    session: "7",
+    requestId: REQUEST_ID,
+    envelope: JSON.stringify(PAUSE),
+  });
+  const approvalId = store.pending()[0].approvalId;
+  const submit = async () => ({ accepted: true });
+
+  const policy = createExecutorPolicy({
+    approvalState: (requestId) => store.stateOf(requestId),
+    onCall: () => {},
+  });
+  const beforeTool = policy.hooks[0].handlers.beforeTool;
+  const resume = (requestId, response) =>
+    beforeTool(
+      {
+        type: "toolCall",
+        id: "call-1",
+        name: "executor_resume",
+        arguments: { requestId, response },
+      },
+      {},
+      BACKGROUND_CONTEXT,
+    );
+
+  check(
+    "a pause nobody answered is pending",
+    store.stateOf(REQUEST_ID) === "pending",
+    store.stateOf(REQUEST_ID),
+  );
+  check(
+    "an approval nobody saw is unknown",
+    store.stateOf("req-never-seen") === "unknown",
+    store.stateOf("req-never-seen"),
+  );
+  check(
+    "a pending approval cannot be resumed",
+    isText(resume(REQUEST_ID, { action: "accept" })?.block),
+    JSON.stringify(resume(REQUEST_ID, { action: "accept" })),
+  );
+
+  await store.decide(approvalId, { action: "allow" }, submit);
+  check(
+    "an approved approval says so",
+    store.stateOf(REQUEST_ID) === "approved",
+    store.stateOf(REQUEST_ID),
+  );
+  check(
+    "an approved approval can be resumed",
+    resume(REQUEST_ID, { action: "accept" }) === undefined,
+    JSON.stringify(resume(REQUEST_ID, { action: "accept" })),
+  );
+
+  const { store: other } = fresh();
+  other.recordPaused({
+    bot: "hermes",
+    session: "7",
+    requestId: DENIED_REQUEST_ID,
+    envelope: JSON.stringify(BARE_PAUSE),
+  });
+  const denyId = other.pending()[0].approvalId;
+  await other.decide(denyId, { action: "deny" }, submit);
+  check(
+    "a refused approval says so",
+    other.stateOf(DENIED_REQUEST_ID) === "denied",
+    other.stateOf(DENIED_REQUEST_ID),
+  );
+
+  const deniedPolicy = createExecutorPolicy({
+    approvalState: (requestId) => other.stateOf(requestId),
+    onCall: () => {},
+  });
+  const deniedResume = (requestId, response) =>
+    deniedPolicy.hooks[0].handlers.beforeTool(
+      {
+        type: "toolCall",
+        id: "call-1",
+        name: "executor_resume",
+        arguments: { requestId, response },
+      },
+      {},
+      BACKGROUND_CONTEXT,
+    );
+  check(
+    "a refusal cannot be carried out",
+    isText(deniedResume(DENIED_REQUEST_ID, { action: "accept" })?.block),
+    JSON.stringify(deniedResume(DENIED_REQUEST_ID, { action: "accept" })),
+  );
+  check(
+    "a refusal may be carried back to Executor",
+    deniedResume(DENIED_REQUEST_ID, { action: "decline" }) === undefined,
+    JSON.stringify(deniedResume(DENIED_REQUEST_ID, { action: "decline" })),
+  );
 }
 
 // ---------------------------------------------------------------------------

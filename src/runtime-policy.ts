@@ -25,21 +25,9 @@ const DEFAULT_BACKGROUND_TOKENS = 32_768;
 /** A task cut off this many times in a row without progress is parked instead of run again. */
 const DEFAULT_RESTART_LIMIT = 5;
 
-/**
- * The bot's runtime block with the crash-loop guard's limit.
- *
- * `BotRuntimeConfig` in `src/bots.ts` has no `restartLimit` field yet, and that
- * file is not this module's to change: `src/bots.ts` needs the field added to
- * the runtime block it decodes. Until then the policy reads it from this
- * temporary widening of the block, and the widening goes away with the field.
- */
-type RuntimeWithRestartLimit = NonNullable<BotConfig["runtime"]> & {
-  readonly restartLimit?: number;
-};
-
 /** The run policy one bot runs under. */
 export const settingsFor = (bot: BotConfig): HarnessSettings => {
-  const runtime: RuntimeWithRestartLimit | undefined = bot.runtime;
+  const runtime = bot.runtime;
   const contextWindow = runtime?.contextWindow;
   const knownWindow = Predicate.isNumber(contextWindow) && contextWindow > 0;
   return {
@@ -60,5 +48,10 @@ export const settingsFor = (bot: BotConfig): HarnessSettings => {
     contextRetentionMs: RETENTION_MS,
     documentRetentionMs: RETENTION_MS,
     restartLimit: runtime?.restartLimit ?? DEFAULT_RESTART_LIMIT,
+    // A message the user sent while the bot was busy deserves a run of its own.
+    // The harness's default keeps those messages queued until the user sends
+    // another one, which for a chat bot means a message nobody ever sees
+    // answered.
+    afterFailedRun: "continue",
   };
 };
