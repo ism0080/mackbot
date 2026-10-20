@@ -28,6 +28,7 @@ const STATUS_BY_KIND = {
   running: "running",
   ready: "pending",
   waiting: "waiting",
+  sleeping: "sleeping",
   completing: "completing",
   blocked: "blocked",
 } as const satisfies Record<InspectedTask["state"]["kind"], TaskView["status"]>;
