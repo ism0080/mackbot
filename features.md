@@ -17,6 +17,10 @@ foundation pieces are already implemented and are intentionally omitted here:
   the harness reported.
 - A stop: `POST /abort/:bot` ends a bot's current work, and the home screen
   has a Stop button.
+- A crash-loop guard: a task cut off too many times is parked, and
+  `POST /retry/:bot` runs it again.
+- A durable wait for an approval, so a decision cannot be lost between the
+  row being written and the call being resumed.
 
 ## Product and UX
 
@@ -46,12 +50,17 @@ foundation pieces are already implemented and are intentionally omitted here:
   expensive work so a restarted Durable Object can resume without restarting the
   whole turn.
 - **Explicit interrupted-state reporting.** `/status` now reports the failures
-  the harness reported and the work it still has live, so a stuck bot says why.
-  Still open: an interrupted unsafe call, as opposed to a harness failure, is
-  not yet a state of its own that a human can decide about.
+  the harness reported, in pi's own words (a failed session, a faulted task, a
+  parked one, a broken migration), and the work it still has live, so a stuck
+  bot says why. Still open: an interrupted unsafe call, as opposed to a harness
+  failure, is not yet a state of its own that a human can decide about.
 - **Asynchronous delegation.** Add async fire-and-poll delegation, richer thread
   lineage, and stronger anti-livelock behavior. The basic `delegatesTo`
   allowlist is implemented.
+- **Delegation that survives a crash.** `delegate_to_bot` is still an unsafe
+  replay: an eviction mid-delegation leaves the model with an interrupted
+  result. Its operation id makes the submission idempotent, so deriving it
+  from the tool call's own task id would make the delegation replay-safe.
 - **Remaining operation taxonomy.** Origin labelling covers `http`, `cron`, and
   `delegate` in `/status` and in audit records. Still open: a queryable `origin`
   column on the audit table (the value lives in `detail`, and the operation id
