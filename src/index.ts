@@ -10,6 +10,7 @@ import type {
   AgentChange,
   ConversationId,
   EntryRecord,
+  TaskId,
   UsageState,
 } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai";
@@ -24,6 +25,7 @@ import { commitmentsExtension } from "./commitments.ts";
 import { createFailureStore } from "./failures.ts";
 import type { FailureStore } from "./failures.ts";
 import { projectTasks } from "./liveness.ts";
+import { parkedTasks } from "./task-retry.ts";
 import { settingsFor } from "./runtime-policy.ts";
 import { createFeed } from "./feed.ts";
 import type { Feed } from "./feed.ts";
@@ -41,13 +43,20 @@ import { createRunStore, streamViewOf } from "./runs.ts";
 import type { RunStore } from "./runs.ts";
 import { activeRunOf, projectStatus } from "./status.ts";
 import { emptyTranscriptPage, highestEntryId, transcriptPage } from "./transcript.ts";
-import { ApprovalDecisionSchema, AbortRequestSchema, TranscriptQuerySchema } from "./web-contract.ts";
+import {
+  AbortRequestSchema,
+  ApprovalDecisionSchema,
+  RetryRequestSchema,
+  TranscriptQuerySchema,
+} from "./web-contract.ts";
 import type {
   AbortRequest,
   AbortResult,
   ApprovalDecision,
   BotView,
   PendingOperationView,
+  RetryRequest,
+  RetryResult,
   TranscriptPage,
   TranscriptQuery,
 } from "./web-contract.ts";
@@ -103,6 +112,16 @@ const conversationIdOf = (sessionId: string): ConversationId => {
   }
   // SAFETY: pi session ids are numeric conversation ids; validated above.
   return id as ConversationId;
+};
+
+/** pi's task id, which the view carries as a string. */
+const taskIdOf = (taskId: string): TaskId => {
+  const id = Number(taskId);
+  if (!Number.isSafeInteger(id) || id < 1) {
+    throw new Error(`invalid pi task id ${JSON.stringify(taskId)}`);
+  }
+  // SAFETY: pi task ids are numeric task ids; validated above.
+  return id as TaskId;
 };
 
 const describeCause = (cause: unknown): string =>
@@ -329,6 +348,37 @@ export class Bot extends DurableObject<Env> {
       detail: { session, stopped: live.length },
     });
     return { bot: this.lifecycle.name, session, aborted: live.length > 0 };
+  }
+
+  /**
+   * Run a parked task again.
+   *
+   * pi parks a task that was cut off too many times in a row, and refuses to
+   * run it until somebody says so. The answer says whether there was anything
+   * parked under that id, because a task that was never parked cannot be
+   * retried and the caller should not be told otherwise.
+   */
+  async retry(taskId: string): Promise<RetryResult> {
+    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+    const inspection = await Effect.runPromise(
+      Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
+    );
+    const parked = parkedTasks(inspection).find((task) => task.id === taskId);
+    if (parked === undefined) {
+      return { bot: this.lifecycle.name, taskId, retried: false };
+    }
+    await Effect.runPromise(
+      Effect.tryPromise(() => pi.retryTask(taskIdOf(taskId), BACKGROUND_CONTEXT)),
+    );
+    await this.#appendAudit({
+      timestamp: Date.now(),
+      botId: this.lifecycle.name,
+      kind: "task.retried",
+      operationId: `retry:${taskId}`,
+      detail: { taskId },
+    });
+    return { bot: this.lifecycle.name, taskId, retried: true };
   }
 
   async status(): Promise<BotView> {
@@ -629,6 +679,7 @@ const EVENTS_ROUTE = /^\/events\/([^/]+)$/u;
 const TRANSCRIPT_ROUTE = /^\/transcript\/([^/]+)$/u;
 const APPROVAL_ROUTE = /^\/approvals\/([^/]+)\/([^/]+)$/u;
 const ABORT_ROUTE = /^\/abort\/([^/]+)$/u;
+const RETRY_ROUTE = /^\/retry\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
@@ -676,7 +727,14 @@ const handleLogin = async (request: Request, env: Env): Promise<Response> => {
 const isMutation = (request: Request): boolean =>
   request.method !== "GET" && request.method !== "HEAD";
 
-const API_ROUTES = [CHAT_ROUTE, EVENTS_ROUTE, TRANSCRIPT_ROUTE, APPROVAL_ROUTE, ABORT_ROUTE];
+const API_ROUTES = [
+  CHAT_ROUTE,
+  EVENTS_ROUTE,
+  TRANSCRIPT_ROUTE,
+  APPROVAL_ROUTE,
+  ABORT_ROUTE,
+  RETRY_ROUTE,
+];
 
 const isApiRoute = (pathname: string): boolean =>
   pathname === "/status" || API_ROUTES.some((route) => route.test(pathname));
@@ -841,6 +899,18 @@ const readAbortRequest = async (request: Request): Promise<AbortRequest | undefi
   );
 };
 
+/** The retry's body: which task to run again. */
+const readRetryRequest = async (request: Request): Promise<RetryRequest | undefined> => {
+  const raw = await Effect.runPromise(
+    Effect.tryPromise(() => request.text()).pipe(Effect.orElseSucceed(() => "")),
+  );
+  return await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.fromJsonString(RetryRequestSchema))(raw).pipe(
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+};
+
 const handleApproval = async (
   request: Request,
   env: Env,
@@ -890,6 +960,30 @@ const handleAbort = async (
   return Response.json(result);
 };
 
+/**
+ * Run a parked task again. The harness parks a task that was cut off too many
+ * times in a row, so a bot that was crashing in a loop can be given another
+ * chance without waiting for the crash limit to expire.
+ */
+const handleRetry = async (
+  request: Request,
+  env: Env,
+  botId: string,
+): Promise<Response> => {
+  const bots = await Effect.runPromise(loadBotsEffect());
+  if (!Object.hasOwn(bots, botId)) {
+    return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
+  }
+  const body = await readRetryRequest(request);
+  if (body === undefined) {
+    return Response.json({ error: "invalid request body" }, { status: 400 });
+  }
+  const result = await Effect.runPromise(
+    Effect.tryPromise(() => env.Bot.getByName(botId).retry(body.taskId)),
+  );
+  return Response.json(result);
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
@@ -924,6 +1018,12 @@ export default {
       if (abort !== null) {
         return request.method === "POST"
           ? await handleAbort(request, env, abort[1]!)
+          : methodNotAllowed();
+      }
+      const retry = RETRY_ROUTE.exec(url.pathname);
+      if (retry !== null) {
+        return request.method === "POST"
+          ? await handleRetry(request, env, retry[1]!)
           : methodNotAllowed();
       }
       const events = EVENTS_ROUTE.exec(url.pathname);
