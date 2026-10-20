@@ -11,8 +11,7 @@
  * find them again.
  *
  * The Durable Object's storage is stood in for by bun:sqlite behind the same
- * shape pi's adapter uses: `sql.exec` with bindings, a cursor with `next` and
- * `toArray`, and `transaction`.
+ * shape pi's adapter uses; `tests/support/durable-sqlite.mjs` builds it.
  */
 import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -25,44 +24,13 @@ import { fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai/provid
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { openDurableObjectSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/cloudflare";
 
+import { durableStorage } from "./support/durable-sqlite.mjs";
+
 const failures = [];
 const check = (label, condition, detail = "") => {
   if (!condition) failures.push(`${label}${detail === "" ? "" : `: ${detail}`}`);
   console.log(`  ${condition ? "ok  " : "FAIL"} ${label}${detail === "" ? "" : ` (${detail})`}`);
 };
-
-/** A Durable Object's SQLite storage, over bun:sqlite. */
-const durableStorage = (database) => ({
-  sql: {
-    exec: (query, ...bindings) => {
-      const statement = database.query(query);
-      if (statement.columnNames.length > 0) {
-        const rows = statement.all(...bindings);
-        let index = 0;
-        return {
-          next: () =>
-            index < rows.length
-              ? { done: false, value: rows[index++] }
-              : { done: true, value: undefined },
-          toArray: () => rows,
-        };
-      }
-      statement.run(...bindings);
-      return { next: () => ({ done: true, value: undefined }), toArray: () => [] };
-    },
-  },
-  transaction: async (closure) => {
-    database.exec("BEGIN");
-    try {
-      const result = await closure();
-      database.exec("COMMIT");
-      return result;
-    } catch (cause) {
-      database.exec("ROLLBACK");
-      throw cause;
-    }
-  },
-});
 
 const directory = mkdtempSync(join(tmpdir(), "mackbot-durable-"));
 const path = join(directory, "session.sqlite");
