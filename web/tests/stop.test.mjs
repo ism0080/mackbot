@@ -42,9 +42,17 @@ try {
   const stop = stub.requests.find((request) => request.path === "/abort/hermes");
   check("the app posted to the abort route", stop !== undefined, JSON.stringify(stub.requests));
   check("it posted", stop?.method === "POST", stop?.method);
-  check("it named the session the run belongs to", stop?.body?.session === "1", JSON.stringify(stop?.body));
+  check(
+    "it named the session the run belongs to",
+    stop?.body?.session === "1",
+    JSON.stringify(stop?.body),
+  );
   check("the server saw one stop", stops.length === 1, `${stops.length}`);
-  check("the toast says the bot stopped", text(".toast").includes("Stopped Hermes"), text(".toast"));
+  check(
+    "the toast says the bot stopped",
+    text(".toast").includes("Stopped Hermes"),
+    text(".toast"),
+  );
 
   // The status is read again, because the run that just stopped is gone from
   // the server's view of the world.

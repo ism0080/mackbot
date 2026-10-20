@@ -74,11 +74,7 @@ const open = async () => {
   const storage = await openDurableObjectSqliteStorage(durableStorage(database), {
     prefix: "pi_",
   });
-  const harness = await Harness.open(
-    storage,
-    { models: createModels(), registry, now },
-    context,
-  );
+  const harness = await Harness.open(storage, { models: createModels(), registry, now }, context);
   return { harness, database };
 };
 

@@ -80,7 +80,7 @@ check(
 check(
   "protocol shows bracket form",
   protocol.includes('tools["'),
-  "protocol never shows tools[\"<app>\"]",
+  'protocol never shows tools["<app>"]',
 );
 
 if (failures.length > 0) {

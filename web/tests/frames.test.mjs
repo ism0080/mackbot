@@ -105,7 +105,10 @@ const main = () => {
       at: 13,
     }),
   );
-  report("a run-end frame clears the active run", dataOf(channelOf(model).status).activeRun === undefined);
+  report(
+    "a run-end frame clears the active run",
+    dataOf(channelOf(model).status).activeRun === undefined,
+  );
 
   model = apply(model, Message.StreamClosed({ bot: "hermes" }));
   report("a done control event closes the stream", channelOf(model).stream.phase === "closed");

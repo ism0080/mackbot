@@ -28,8 +28,7 @@ const { check, finish } = makeChecker();
 const app = await boot(stub.origin);
 const { query, text, waitFor, click, settle } = app;
 
-const statusCount = () =>
-  stub.requests.filter((request) => request.path === "/status").length;
+const statusCount = () => stub.requests.filter((request) => request.path === "/status").length;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 try {

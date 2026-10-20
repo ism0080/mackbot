@@ -62,7 +62,13 @@ const stub = startStub({
   events: {
     hermes: ({ index }) =>
       index === 0
-        ? { frames: [{ id: 0, data: snapshot }, { id: 1, data: usage(10) }, { id: 2, data: usage(20) }] }
+        ? {
+            frames: [
+              { id: 0, data: snapshot },
+              { id: 1, data: usage(10) },
+              { id: 2, data: usage(20) },
+            ],
+          }
         : { frames: [{ event: "up-to-date", data: {} }], hold: true },
   },
 });
@@ -74,14 +80,14 @@ const { text, waitFor } = app;
 const connections = () => stub.requests.filter((request) => request.path === "/events/hermes");
 
 try {
-  await waitFor(
-    () => connections().length >= 2,
-    "the dropped stream reconnected",
-    5_000,
-  );
+  await waitFor(() => connections().length >= 2, "the dropped stream reconnected", 5_000);
 
   const [first, second] = connections();
-  check("the first connection starts at zero", first.query.from === "0", JSON.stringify(first.query));
+  check(
+    "the first connection starts at zero",
+    first.query.from === "0",
+    JSON.stringify(first.query),
+  );
   check(
     "the reconnect resumes from the last sequence number it received",
     second.query.from === "2",
@@ -94,7 +100,11 @@ try {
   );
 
   await new Promise((resolve) => setTimeout(resolve, 200));
-  check("the resumed connection holds instead of looping", connections().length === 2, `${connections().length}`);
+  check(
+    "the resumed connection holds instead of looping",
+    connections().length === 2,
+    `${connections().length}`,
+  );
   check("the home still renders under the resumed stream", text(".hdr.tall h1") === "Needs you");
   check("no console errors", app.pageErrors.length === 0, app.pageErrors.join("; "));
 } finally {

@@ -176,14 +176,7 @@ export const TaskViewSchema = Schema.Struct({
   id: Schema.String,
   kind: Schema.String,
   session: Schema.String,
-  status: Schema.Literals([
-    "pending",
-    "running",
-    "waiting",
-    "sleeping",
-    "completing",
-    "blocked",
-  ]),
+  status: Schema.Literals(["pending", "running", "waiting", "sleeping", "completing", "blocked"]),
   phase: Schema.optional(Schema.String),
   owner: Schema.optional(Schema.String),
   background: Schema.Boolean,
@@ -419,14 +412,9 @@ const nonNegativeInt = Schema.NumberFromString.check(
 
 export const TranscriptQuerySchema = Schema.Struct({
   thread: Schema.optional(trimmedNonEmpty),
-  before: Schema.optional(
-    Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0)),
-  ),
+  before: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0))),
   limit: Schema.optional(
-    Schema.NumberFromString.check(
-      Schema.isInt(),
-      Schema.isBetween({ minimum: 1, maximum: 200 }),
-    ),
+    Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
   ),
 });
 export type TranscriptQuery = typeof TranscriptQuerySchema.Type;

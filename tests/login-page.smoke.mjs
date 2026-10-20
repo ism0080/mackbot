@@ -16,9 +16,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { loginDocument } from "../src/login-page.ts";
 
 const webRequire = createRequire(new URL("../web/package.json", import.meta.url));
-const stylelint = (
-  await import(pathToFileURL(webRequire.resolve("stylelint")).href)
-).default;
+const stylelint = (await import(pathToFileURL(webRequire.resolve("stylelint")).href)).default;
 const configFile = fileURLToPath(new URL("../web/stylelint.config.mjs", import.meta.url));
 
 const failures = [];
@@ -31,7 +29,10 @@ for (const failed of [false, true]) {
   const document = loginDocument(failed);
   const stylesheet = /<style>([\s\S]*?)<\/style>/u.exec(document)?.[1];
 
-  check(`the ${failed ? "failed" : "fresh"} page has one inline stylesheet`, stylesheet !== undefined);
+  check(
+    `the ${failed ? "failed" : "fresh"} page has one inline stylesheet`,
+    stylesheet !== undefined,
+  );
   check("it has no script", !/<script\b/iu.test(document));
   check("it has no token value", !/name="token"[^>]*\bvalue=/iu.test(document));
 

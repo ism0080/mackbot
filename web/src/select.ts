@@ -105,9 +105,7 @@ const noticeOf = (roster: Model["roster"], failed: readonly string[]): string | 
  *  transcript together without any of them being updated. */
 export const selectHome = (model: Model): Home => {
   const channels = Object.entries(model.channels);
-  const statuses = channels.map(
-    ([bot, channel]) => [bot, statusOf(channel)] as const,
-  );
+  const statuses = channels.map(([bot, channel]) => [bot, statusOf(channel)] as const);
   const blocked = statuses.flatMap(([bot, status]) =>
     Option.match(status, { onNone: () => [], onSome: (view) => blockedOf(bot, view) }),
   );
@@ -135,11 +133,7 @@ export const selectHome = (model: Model): Home => {
 
   return {
     headline:
-      blocked.length > 0
-        ? "Needs you"
-        : faults > 0
-          ? "Needs attention"
-          : "Nothing needs you",
+      blocked.length > 0 ? "Needs you" : faults > 0 ? "Needs attention" : "Nothing needs you",
     sub: subOf(channels.length, blocked.length, running.length),
     allClear: blocked.length === 0 && faults === 0 && notice === null,
     clearNote: clearNoteOf(running),

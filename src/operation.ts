@@ -55,10 +55,7 @@ export const cronOperationId = (botId: string, scheduledTime: number): string =>
  */
 export const abortOperationId = (session: string): string => `abort:${session}`;
 
-export const delegateOperationId = (
-  sourceBotId: string,
-  supplied: string | undefined,
-): string => {
+export const delegateOperationId = (sourceBotId: string, supplied: string | undefined): string => {
   if (supplied === undefined) return `${DELEGATE_PREFIX}${sourceBotId}:${crypto.randomUUID()}`;
   // Honoring an id the tool already returned is what makes a timed-out
   // delegation safe to retry. Namespacing it again would run the task twice.

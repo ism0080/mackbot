@@ -6,9 +6,7 @@ export default defineConfig({
   plugins: foldkit(),
   resolve: {
     alias: {
-      "@mackbot/web-contract": fileURLToPath(
-        new URL("../src/web-contract.ts", import.meta.url),
-      ),
+      "@mackbot/web-contract": fileURLToPath(new URL("../src/web-contract.ts", import.meta.url)),
     },
   },
   server: {

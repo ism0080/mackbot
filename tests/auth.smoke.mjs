@@ -89,7 +89,10 @@ const approvalPost = (origin, headers, body = '{"action":"allow"}') =>
   const response = await request("https://mackbot.test", "/login");
   const body = await response.text();
   check("GET /login is 200", response.status === 200, `${response.status}`);
-  check("the login page is HTML", response.headers.get("content-type")?.startsWith("text/html") === true);
+  check(
+    "the login page is HTML",
+    response.headers.get("content-type")?.startsWith("text/html") === true,
+  );
   check("the login page does not contain the token", !body.includes(TOKEN));
   check("the login page has no script", !body.includes("<script"));
 }
@@ -115,9 +118,16 @@ check("a wrong token sets no cookie", wrong.headers.get("set-cookie") === null);
 const local = await login("http://127.0.0.1:8781", TOKEN);
 const localCookie = cookieFrom(local);
 check("the right token redirects to the app", local.status === 303, `${local.status}`);
-check("the redirect lands on /", local.headers.get("location") === "/", `${local.headers.get("location")}`);
+check(
+  "the redirect lands on /",
+  local.headers.get("location") === "/",
+  `${local.headers.get("location")}`,
+);
 check("the cookie is HttpOnly", local.headers.get("set-cookie")?.includes("HttpOnly") === true);
-check("the cookie is SameSite=Lax", local.headers.get("set-cookie")?.includes("SameSite=Lax") === true);
+check(
+  "the cookie is SameSite=Lax",
+  local.headers.get("set-cookie")?.includes("SameSite=Lax") === true,
+);
 check("the cookie is path-wide", local.headers.get("set-cookie")?.includes("Path=/") === true);
 check(
   "loopback http does not mark the cookie Secure",
@@ -140,7 +150,11 @@ check(
   });
   check("the cookie authorizes a read", response.status === 200, `${response.status}`);
   const body = await response.json();
-  check("the read is the real status envelope", body.bots?.hermes?.id === "hermes", JSON.stringify(body));
+  check(
+    "the read is the real status envelope",
+    body.bots?.hermes?.id === "hermes",
+    JSON.stringify(body),
+  );
 }
 
 {
@@ -157,7 +171,11 @@ check(
 
 {
   const response = await approvalPost("https://mackbot.test", { Cookie: localCookie });
-  check("a cookie POST without the CSRF header is 403", response.status === 403, `${response.status}`);
+  check(
+    "a cookie POST without the CSRF header is 403",
+    response.status === 403,
+    `${response.status}`,
+  );
   check("the unproven decision never reached the bot", decisions.length === 0);
 }
 
@@ -177,7 +195,11 @@ check(
     Origin: "https://mackbot.test",
     "X-Mackbot-CSRF": "1",
   });
-  check("a proven same-origin cookie POST reaches the route", response.status === 409, `${response.status}`);
+  check(
+    "a proven same-origin cookie POST reaches the route",
+    response.status === 409,
+    `${response.status}`,
+  );
   check("the proven decision reached the bot", decisions.length === 1, JSON.stringify(decisions));
 }
 
@@ -196,7 +218,11 @@ check(
 
 {
   const response = await request("https://mackbot.test", "/bot/hermes");
-  check("an unauthenticated deep link redirects to /login", response.status === 302, `${response.status}`);
+  check(
+    "an unauthenticated deep link redirects to /login",
+    response.status === 302,
+    `${response.status}`,
+  );
   check("the redirect names /login", response.headers.get("location")?.endsWith("/login") === true);
   check("the asset binding was not reached", assetRequests.length === 0);
 }
@@ -208,7 +234,11 @@ check(
   const body = await response.text();
   check("an authenticated deep link is 200", response.status === 200, `${response.status}`);
   check("the deep link returned the app", body.includes("mackbot app"));
-  check("the asset binding received the deep link", assetRequests.at(-1) === "/bot/hermes", `${assetRequests.at(-1)}`);
+  check(
+    "the asset binding received the deep link",
+    assetRequests.at(-1) === "/bot/hermes",
+    `${assetRequests.at(-1)}`,
+  );
 }
 
 {

@@ -52,7 +52,9 @@ const open = async () => {
 };
 
 const { harness, database } = await open();
-const root = await harness.root(context, { agent: { model: { provider: "faux", modelId: "faux-1" } } });
+const root = await harness.root(context, {
+  agent: { model: { provider: "faux", modelId: "faux-1" } },
+});
 
 const settled = await (
   await root.submit({ type: "input", content: "Remember this." }, context)

@@ -1,4 +1,10 @@
-import type { ActiveRunView, ApprovalView, BotView, EntryView, TranscriptPage } from "@mackbot/web-contract";
+import type {
+  ActiveRunView,
+  ApprovalView,
+  BotView,
+  EntryView,
+  TranscriptPage,
+} from "@mackbot/web-contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
@@ -27,17 +33,13 @@ const awaitingIn = (bot: string, channel: Channel | undefined): readonly Approva
   Option.match(statusIn(channel), {
     onNone: () => [],
     onSome: (status) =>
-      status.approvals.filter(
-        (approval) => approval.status === "pending" && approval.bot === bot,
-      ),
+      status.approvals.filter((approval) => approval.status === "pending" && approval.bot === bot),
   });
 
 const originOf = (entry: EntryView): string | undefined => {
   if (entry.role !== "assistant") return undefined;
   if (entry.origin === undefined || entry.origin === "http") return undefined;
-  return entry.at === undefined
-    ? entry.origin
-    : `${entry.origin} · ${clockOf(entry.at)}`;
+  return entry.at === undefined ? entry.origin : `${entry.origin} · ${clockOf(entry.at)}`;
 };
 
 const messageRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
@@ -80,10 +82,7 @@ const runRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder<Mes
       h.div(
         [h.Class("runit-main")],
         [
-          h.p(
-            [h.Class("live")],
-            [`${runTitle(run)} — running ${elapsedOf(run.startedAt, now)}`],
-          ),
+          h.p([h.Class("live")], [`${runTitle(run)} — running ${elapsedOf(run.startedAt, now)}`]),
           h.span([h.Class("bar indeterminate")], [h.i([])]),
         ],
       ),
@@ -137,11 +136,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
         [h.Class("hdr")],
         [
           h.button(
-            [
-              h.Class("icon"),
-              h.AriaLabel("Back to Needs you"),
-              h.OnClick(Message.ClickedBack()),
-            ],
+            [h.Class("icon"), h.AriaLabel("Back to Needs you"), h.OnClick(Message.ClickedBack())],
             ["‹"],
           ),
           avatar(bot, h),

@@ -297,7 +297,11 @@ const EVENTS = "https://mackbot.test/events/hermes";
   await currentFeed.attach("1");
 
   const seeded = await streams.status(streamIdFor("1", 1));
-  check("attach opens the admitted run's stream", seeded?.streamId === streamIdFor("1", 1), seeded?.streamId);
+  check(
+    "attach opens the admitted run's stream",
+    seeded?.streamId === streamIdFor("1", 1),
+    seeded?.streamId,
+  );
   check("attach seeds chunk zero", seeded?.cursor === 1, `${seeded?.cursor}`);
 
   const before = seeded.cursor;
@@ -318,18 +322,34 @@ const EVENTS = "https://mackbot.test/events/hermes";
   );
 
   const chunks = await readAll(streamIdFor("1", 1));
-  check("chunk zero is a snapshot Frame", chunks[0]?.chunk.kind === "snapshot", chunks[0]?.chunk.kind);
-  check("the snapshot carries generation 1", chunks[0]?.chunk.generation === 1, `${chunks[0]?.chunk.generation}`);
+  check(
+    "chunk zero is a snapshot Frame",
+    chunks[0]?.chunk.kind === "snapshot",
+    chunks[0]?.chunk.kind,
+  );
+  check(
+    "the snapshot carries generation 1",
+    chunks[0]?.chunk.generation === 1,
+    `${chunks[0]?.chunk.generation}`,
+  );
   const last = chunks.at(-1);
   check(
     "the last chunk is a run end",
     last?.chunk.kind === "run" && last?.chunk.phase === "end",
     `${last?.chunk.kind}/${last?.chunk.phase}`,
   );
-  check("the chunk log is the snapshot plus one frame per commit", chunks.length === 1 + COMMITS.length, `${chunks.length}`);
+  check(
+    "the chunk log is the snapshot plus one frame per commit",
+    chunks.length === 1 + COMMITS.length,
+    `${chunks.length}`,
+  );
 
   const served = await readUntilDone(await host.fetch(new Request(EVENTS)));
-  check("the route serves the stream as SSE", idsOf(served)[0] === 0, JSON.stringify(idsOf(served)));
+  check(
+    "the route serves the stream as SSE",
+    idsOf(served)[0] === 0,
+    JSON.stringify(idsOf(served)),
+  );
   check("the served generation is in band", framesOf(served)[0]?.frame.generation === 1);
 }
 
@@ -377,9 +397,17 @@ const EVENTS = "https://mackbot.test/events/hermes";
   const tag = streamTagFor("hermes", "3");
   const segments = await streams.list({ tag });
   check("rotation opens a second segment", segments.length === 2, `${segments.length}`);
-  check("the newest segment is the next generation", segments[0]?.streamId === streamIdFor("3", 2), segments[0]?.streamId);
+  check(
+    "the newest segment is the next generation",
+    segments[0]?.streamId === streamIdFor("3", 2),
+    segments[0]?.streamId,
+  );
   const newest = await streams.list({ tag, limit: 1 });
-  check("list({tag, limit:1}) finds the newest segment", newest[0]?.streamId === streamIdFor("3", 2), newest[0]?.streamId);
+  check(
+    "list({tag, limit:1}) finds the newest segment",
+    newest[0]?.streamId === streamIdFor("3", 2),
+    newest[0]?.streamId,
+  );
   check("the settled head is completed", segments[1]?.state === "completed", segments[1]?.state);
 
   const stale = framesOf(
@@ -395,15 +423,29 @@ const EVENTS = "https://mackbot.test/events/hermes";
       JSON.stringify(Array.from({ length: newestCursor }, (_, index) => index)),
     JSON.stringify(stale.map((entry) => entry.seq)),
   );
-  check("the reseeded snapshot names the new generation", stale[0]?.frame.kind === "snapshot" && stale[0]?.frame.generation === 2, `${stale[0]?.frame.generation}`);
+  check(
+    "the reseeded snapshot names the new generation",
+    stale[0]?.frame.kind === "snapshot" && stale[0]?.frame.generation === 2,
+    `${stale[0]?.frame.generation}`,
+  );
 
-  const fresh = framesOf(await readUntilDone(await host.fetch(new Request(`${EVENTS}?gen=2&from=1`))));
+  const fresh = framesOf(
+    await readUntilDone(await host.fetch(new Request(`${EVENTS}?gen=2&from=1`))),
+  );
   check("a current gen resumes from ?from=", fresh[0]?.seq === 1, `${fresh[0]?.seq}`);
 
   const head = (await readAll(streamIdFor("3", 1))).map((chunk) => chunk.chunk);
   const folded = foldEntryIds([...head, ...stale.map((entry) => entry.frame)]);
-  check("folding the segments in order repeats no entry", folded.length === new Set(folded).size, JSON.stringify(folded));
-  check("folding the segments in order skips no entry", JSON.stringify(folded) === JSON.stringify([ENTRY_USER, ENTRY_ASSISTANT]), JSON.stringify(folded));
+  check(
+    "folding the segments in order repeats no entry",
+    folded.length === new Set(folded).size,
+    JSON.stringify(folded),
+  );
+  check(
+    "folding the segments in order skips no entry",
+    JSON.stringify(folded) === JSON.stringify([ENTRY_USER, ENTRY_ASSISTANT]),
+    JSON.stringify(folded),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -434,7 +476,11 @@ const EVENTS = "https://mackbot.test/events/hermes";
   await Promise.all(COMMITS.map((commit) => stub.commit(commit)));
 
   const second = (await readAll(streamIdFor("4", 2))).map((chunk) => chunk.chunk);
-  check("a second run opens the next generation", second[0]?.generation === 2, `${second[0]?.generation}`);
+  check(
+    "a second run opens the next generation",
+    second[0]?.generation === 2,
+    `${second[0]?.generation}`,
+  );
   check("the new segment seeds a snapshot", second[0]?.kind === "snapshot", second[0]?.kind);
   check(
     "the seed carries entries the earlier run appended",

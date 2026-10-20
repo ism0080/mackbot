@@ -7,9 +7,8 @@
  * namespacing that makes an echoed id reuse the same operation. No credentials
  * needed.
  */
-const { cronOperationId, delegateOperationId, httpOperationId, originOf } = await import(
-  "../src/operation.ts"
-);
+const { cronOperationId, delegateOperationId, httpOperationId, originOf } =
+  await import("../src/operation.ts");
 
 const failures = [];
 
@@ -42,7 +41,11 @@ if (!generatedDelegate.startsWith("delegate:hermes:")) {
 if (delegateOperationId("hermes", undefined) === generatedDelegate) {
   failures.push("two generated delegate ids are equal");
 }
-expect("delegate namespaces a bare id", delegateOperationId("hermes", "abc"), "delegate:hermes:abc");
+expect(
+  "delegate namespaces a bare id",
+  delegateOperationId("hermes", "abc"),
+  "delegate:hermes:abc",
+);
 expect(
   "delegate honors an echoed id",
   delegateOperationId("hermes", "delegate:hermes:abc"),

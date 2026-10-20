@@ -1,4 +1,3 @@
-
 import { DurableObject } from "cloudflare:workers";
 import { Lifecycle } from "agents/lifecycle";
 import { PiHarness, ROOT_SESSION } from "agents/harness/pi";
@@ -173,10 +172,7 @@ export class Bot extends DurableObject<Env> {
       const registry = createRegistry();
       // The bridge detects the pause; `onPaused` turns it into the approval row.
       registry.install(
-        createExecutorMcp(
-          { url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN },
-          { onPaused },
-        ),
+        createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }, { onPaused }),
       );
       registry.install(createBotDelegation({ env, sourceBotId: botId }));
       registry.install(
@@ -334,13 +330,9 @@ export class Bot extends DurableObject<Env> {
    */
   async abort(session: string = ROOT_SESSION): Promise<AbortResult> {
     await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
-    const pending = await Effect.runPromise(
-      Effect.tryPromise(() => this.harness.pending()),
-    );
+    const pending = await Effect.runPromise(Effect.tryPromise(() => this.harness.pending()));
     const live = pending.filter((operation) => operation.session === session);
-    await Effect.runPromise(
-      Effect.tryPromise(() => this.harness.session(session).abort()),
-    );
+    await Effect.runPromise(Effect.tryPromise(() => this.harness.session(session).abort()));
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -465,7 +457,9 @@ export class Bot extends DurableObject<Env> {
     const records = await Effect.runPromise(
       Effect.tryPromise(() => this.harness.messages({ session })),
     );
-    const runs = this.#runs().list().filter((run) => run.sessionId === session);
+    const runs = this.#runs()
+      .list()
+      .filter((run) => run.sessionId === session);
     const latest = runs.at(-1);
     const cursor = latest === undefined ? 0 : await this.#streamCursor(latest.streamId);
     return transcriptPage(session, records, runs, query, streamViewOf(session, latest, cursor));
@@ -548,9 +542,7 @@ export class Bot extends DurableObject<Env> {
   async #startWait(wait: ApprovalWaitInput): Promise<void> {
     const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
     const conversation = await Effect.runPromise(
-      Effect.tryPromise(() =>
-        pi.conversation(conversationIdOf(wait.session), BACKGROUND_CONTEXT),
-      ),
+      Effect.tryPromise(() => pi.conversation(conversationIdOf(wait.session), BACKGROUND_CONTEXT)),
     );
     if (conversation === undefined) return;
     await Effect.runPromise(
@@ -979,11 +971,7 @@ const handleApproval = async (
  * bot's root session. A stop is a mutation, so it goes through the same
  * authorization and CSRF gate as any other.
  */
-const handleAbort = async (
-  request: Request,
-  env: Env,
-  botId: string,
-): Promise<Response> => {
+const handleAbort = async (request: Request, env: Env, botId: string): Promise<Response> => {
   const bots = await Effect.runPromise(loadBotsEffect());
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
@@ -1003,11 +991,7 @@ const handleAbort = async (
  * times in a row, so a bot that was crashing in a loop can be given another
  * chance without waiting for the crash limit to expire.
  */
-const handleRetry = async (
-  request: Request,
-  env: Env,
-  botId: string,
-): Promise<Response> => {
+const handleRetry = async (request: Request, env: Env, botId: string): Promise<Response> => {
   const bots = await Effect.runPromise(loadBotsEffect());
   if (!Object.hasOwn(bots, botId)) {
     return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });

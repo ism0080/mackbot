@@ -77,10 +77,10 @@ const CLIENT_NAME = "mackbot";
 const CLIENT_VERSION = "0.1.0";
 
 export type ExecutorMcpConfig = {
-    readonly url: string;
-    readonly token: string;
-    readonly timeoutMs?: number;
-    readonly connectTimeoutMs?: number;
+  readonly url: string;
+  readonly token: string;
+  readonly timeoutMs?: number;
+  readonly connectTimeoutMs?: number;
 };
 
 type ResolvedConfig = {
@@ -137,10 +137,7 @@ const openClient: Connector = async (config) => {
       headers: { Authorization: `Bearer ${config.token}` },
     },
   });
-  const client = new Client(
-    { name: CLIENT_NAME, version: CLIENT_VERSION },
-    { capabilities: {} },
-  );
+  const client = new Client({ name: CLIENT_NAME, version: CLIENT_VERSION }, { capabilities: {} });
   await client.connect(transport, { timeout: config.connectTimeoutMs });
   return client;
 };

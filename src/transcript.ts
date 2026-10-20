@@ -61,8 +61,7 @@ export const slicePage = (records: readonly EntryRecord[], query: PageQuery): En
     entries: page,
     // The oldest id of this page is the exclusive bound of the next one, so a
     // page never repeats or skips an entry.
-    nextBefore:
-      window.length > page.length && oldest !== undefined ? Number(oldest.id) : undefined,
+    nextBefore: window.length > page.length && oldest !== undefined ? Number(oldest.id) : undefined,
   };
 };
 

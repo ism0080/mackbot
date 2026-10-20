@@ -38,7 +38,9 @@ const check = (label, condition, detail = "") => {
 const TOKEN = "test-token";
 const PAGE = {
   session: "1",
-  entries: [{ id: 6, kind: "pi.user", role: "user", text: "do the thing", at: 1_000, origin: "http" }],
+  entries: [
+    { id: 6, kind: "pi.user", role: "user", text: "do the thing", at: 1_000, origin: "http" },
+  ],
   nextBefore: 6,
   stream: { stream: "feed:1:1", generation: 1, cursor: 3, state: "streaming" },
 };
@@ -49,8 +51,23 @@ const STATUS_VIEW = {
   busy: true,
   pending: [{ operationId: "http:a", origin: "http", status: "running" }],
   usage: { inputTokens: 10, outputTokens: 4, exchanges: 1 },
-  approvals: [{ approvalId: "apr-1", bot: "hermes", toolPath: "botmail.send", summary: "Send?", status: "pending", requestedAt: 1_000 }],
-  activeRun: { ordinal: 1, inputs: ["do the thing"], startedAt: 1_000, session: "1", stream: { stream: "feed:1:1", generation: 1, cursor: 3, state: "streaming" } },
+  approvals: [
+    {
+      approvalId: "apr-1",
+      bot: "hermes",
+      toolPath: "botmail.send",
+      summary: "Send?",
+      status: "pending",
+      requestedAt: 1_000,
+    },
+  ],
+  activeRun: {
+    ordinal: 1,
+    inputs: ["do the thing"],
+    startedAt: 1_000,
+    session: "1",
+    stream: { stream: "feed:1:1", generation: 1, cursor: 3, state: "streaming" },
+  },
 };
 
 const queries = [];
@@ -76,7 +93,11 @@ const get = (path, headers = {}) =>
 
 {
   const unauthorized = await get("/transcript/hermes");
-  check("an unauthenticated transcript is 401", unauthorized.status === 401, `${unauthorized.status}`);
+  check(
+    "an unauthenticated transcript is 401",
+    unauthorized.status === 401,
+    `${unauthorized.status}`,
+  );
   check("the transcript was not reached", queries.length === 0);
 }
 
@@ -89,7 +110,10 @@ const get = (path, headers = {}) =>
     Authorization: `Bearer ${TOKEN}`,
   });
   check("an authenticated transcript is 200", response.status === 200, `${response.status}`);
-  check("the transcript is JSON", response.headers.get("content-type")?.startsWith("application/json") === true);
+  check(
+    "the transcript is JSON",
+    response.headers.get("content-type")?.startsWith("application/json") === true,
+  );
   check(
     "the query decodes to a typed page request",
     JSON.stringify(queries[0]) === JSON.stringify({ thread: "invoices", before: 40, limit: 5 }),
@@ -128,7 +152,10 @@ const get = (path, headers = {}) =>
 
 {
   const response = await worker.fetch(
-    new Request("https://mackbot.test/transcript/hermes", { method: "POST", headers: { Authorization: `Bearer ${TOKEN}` } }),
+    new Request("https://mackbot.test/transcript/hermes", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${TOKEN}` },
+    }),
     env,
   );
   check("a non-GET transcript is 405", response.status === 405, `${response.status}`);
@@ -143,10 +170,26 @@ const get = (path, headers = {}) =>
   check("status is 200", response.status === 200, `${response.status}`);
   const body = await response.json();
   const hermes = body.bots.hermes;
-  check("status projects a pending approval", hermes?.approvals[0]?.status === "pending", JSON.stringify(hermes?.approvals));
-  check("status projects the active run", hermes?.activeRun?.ordinal === 1, `${hermes?.activeRun?.ordinal}`);
-  check("status projects usage as a view", hermes?.usage.inputTokens === 10, JSON.stringify(hermes?.usage));
-  check("status reports no errors", Object.keys(body.errors).length === 0, JSON.stringify(body.errors));
+  check(
+    "status projects a pending approval",
+    hermes?.approvals[0]?.status === "pending",
+    JSON.stringify(hermes?.approvals),
+  );
+  check(
+    "status projects the active run",
+    hermes?.activeRun?.ordinal === 1,
+    `${hermes?.activeRun?.ordinal}`,
+  );
+  check(
+    "status projects usage as a view",
+    hermes?.usage.inputTokens === 10,
+    JSON.stringify(hermes?.usage),
+  );
+  check(
+    "status reports no errors",
+    Object.keys(body.errors).length === 0,
+    JSON.stringify(body.errors),
+  );
 }
 
 if (failures.length > 0) {

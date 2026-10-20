@@ -14,9 +14,9 @@
     "test:css": "bun stylelint/fixtures.test.mjs"
   },
   "dependencies": {
-    "foldkit": "0.168.0",
+    "@effect/platform-browser": "4.0.0",
     "effect": "4.0.4",
-    "@effect/platform-browser": "4.0.0"
+    "foldkit": "0.168.0"
   },
   "devDependencies": {
     "@foldkit/oxlint-plugin": "0.15.3",

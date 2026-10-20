@@ -89,18 +89,28 @@ const app = await boot(stub.origin);
 const { query, all, text, display, waitFor } = app;
 
 try {
-  await waitFor(() => query('[data-approval="apr_calendar"]') !== null, "the approval frame arrived");
+  await waitFor(
+    () => query('[data-approval="apr_calendar"]') !== null,
+    "the approval frame arrived",
+  );
 
   check(
     "the Frame the stream carried is folded into the same channel",
     all("[data-approval]").length === 2 &&
       text('[data-approval="apr_calendar"] .ap-tool') === "calendar.hold",
   );
-  check("the home counts the new approval", text(".hdr.tall .hdr-sub") === "2 bots · 2 blocked · 1 running");
+  check(
+    "the home counts the new approval",
+    text(".hdr.tall .hdr-sub") === "2 bots · 2 blocked · 1 running",
+  );
   check("the run is still live", display('[data-group="running"]') !== "none");
 
   const hermesEvents = stub.requests.filter((request) => request.path === "/events/hermes");
-  check("the blocked, running bot has exactly one connection", hermesEvents.length === 1, `${hermesEvents.length}`);
+  check(
+    "the blocked, running bot has exactly one connection",
+    hermesEvents.length === 1,
+    `${hermesEvents.length}`,
+  );
   const first = hermesEvents[0];
   check(
     "the connection names the status row's stream and generation, from the start",

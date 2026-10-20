@@ -10,9 +10,8 @@
  *   2. Every Frame that `encodeFrame` produces is a member of `FrameSchema` and
  *      survives a JSON round trip, which is what makes it a `StreamJson` chunk.
  */
-const { FrameSchema, encodeFrame, encodeSnapshot, projectEntry, usageView } = await import(
-  "../src/web-contract.ts"
-);
+const { FrameSchema, encodeFrame, encodeSnapshot, projectEntry, usageView } =
+  await import("../src/web-contract.ts");
 const Schema = await import("effect/Schema");
 
 const failures = [];
@@ -40,9 +39,20 @@ const assistant = {
   timestamp: 1,
 };
 
-const userEntry = { id: 1, conversationId: 7, kind: "pi.user", model: [{ role: "user", content: "hi", timestamp: 1 }] };
+const userEntry = {
+  id: 1,
+  conversationId: 7,
+  kind: "pi.user",
+  model: [{ role: "user", content: "hi", timestamp: 1 }],
+};
 const assistantEntry = { id: 2, conversationId: 7, kind: "pi.assistant", model: [assistant] };
-const submission = { id: 3, conversationId: 7, type: "input", status: "queued", requestId: "http:abc" };
+const submission = {
+  id: 3,
+  conversationId: 7,
+  type: "input",
+  status: "queued",
+  requestId: "http:abc",
+};
 
 const emptyUsageState = { models: {}, tools: {} };
 
@@ -131,7 +141,11 @@ const unrendered = new Set([
   "compaction_end",
 ]);
 
-check("corpus covers the event vocabulary", Object.keys(events).length === 22, `${Object.keys(events).length}`);
+check(
+  "corpus covers the event vocabulary",
+  Object.keys(events).length === 22,
+  `${Object.keys(events).length}`,
+);
 
 for (const [type, event] of Object.entries(events)) {
   let frame;
@@ -166,10 +180,17 @@ for (const [type, event] of Object.entries(events)) {
 const seeded = encodeSnapshot(events.snapshot, "thread-1", 2_000, 3);
 check("snapshot session is explicit", seeded.session === "thread-1", seeded.session);
 check("snapshot generation", seeded.generation === 3);
-check("snapshot transcriptFrom is the oldest entry", seeded.transcriptFrom === 1, `${seeded.transcriptFrom}`);
+check(
+  "snapshot transcriptFrom is the oldest entry",
+  seeded.transcriptFrom === 1,
+  `${seeded.transcriptFrom}`,
+);
 check("snapshot tail carries the retry", seeded.tail?.retryAt === 5);
 
-check("projectEntry joins a run window", projectEntry(userEntry, { ordinal: 1, operationId: "cron:x", startedAt: 42 }).at === 42);
+check(
+  "projectEntry joins a run window",
+  projectEntry(userEntry, { ordinal: 1, operationId: "cron:x", startedAt: 42 }).at === 42,
+);
 check("projectEntry without a run has no time", projectEntry(userEntry).at === undefined);
 check(
   "projectEntry derives the origin from the run's operation id",
@@ -188,11 +209,20 @@ check("usageView counts the model ledgers", usageView(usageState).exchanges === 
 const { TranscriptQuerySchema, EventsQuerySchema, ApprovalDecisionSchema, SessionRequestSchema } =
   await import("../src/web-contract.ts");
 
-check("transcript limit accepts 200", Schema.decodeUnknownSync(TranscriptQuerySchema)({ limit: "200" }).limit === 200);
+check(
+  "transcript limit accepts 200",
+  Schema.decodeUnknownSync(TranscriptQuerySchema)({ limit: "200" }).limit === 200,
+);
 check("transcript limit rejects 0", !Schema.is(TranscriptQuerySchema)({ limit: "0" }));
-check("events from accepts 2", Schema.decodeUnknownSync(EventsQuerySchema)({ from: "2", gen: "0" }).from === 2);
+check(
+  "events from accepts 2",
+  Schema.decodeUnknownSync(EventsQuerySchema)({ from: "2", gen: "0" }).from === 2,
+);
 check("events gen rejects -1", !Schema.is(EventsQuerySchema)({ gen: "-1" }));
-check("approval decision accepts allow", Schema.decodeUnknownSync(ApprovalDecisionSchema)({ action: "allow" }).action === "allow");
+check(
+  "approval decision accepts allow",
+  Schema.decodeUnknownSync(ApprovalDecisionSchema)({ action: "allow" }).action === "allow",
+);
 check("approval decision rejects maybe", !Schema.is(ApprovalDecisionSchema)({ action: "maybe" }));
 check("session code is non-empty", !Schema.is(SessionRequestSchema)({ code: "" }));
 

@@ -117,7 +117,6 @@ try {
   failures.push(`retry with returned id threw: ${error?.message ?? error}`);
 }
 
-
 if (failures.length > 0) {
   console.error("bot-delegation smoke FAILED:");
   for (const f of failures) console.error(" -", f);

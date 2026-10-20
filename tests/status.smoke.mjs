@@ -58,7 +58,11 @@ const approval = (overrides) => ({
   check("the thread round-trips", pending[0]?.thread === "invoices");
   check("the tool path round-trips", pending[0]?.toolPath === "botmail.send");
   check("the artifact round-trips", pending[0]?.artifact?.body === "Hi Dana,");
-  check("the request time round-trips", pending[0]?.requestedAt === 1_000, `${pending[0]?.requestedAt}`);
+  check(
+    "the request time round-trips",
+    pending[0]?.requestedAt === 1_000,
+    `${pending[0]?.requestedAt}`,
+  );
   check("an undecided row has no decision time", pending[0]?.decidedAt === undefined);
 
   approvals.record(approval({}));
@@ -69,7 +73,10 @@ const approval = (overrides) => ({
   const { approvals } = fresh();
   approvals.record(approval({ approvalId: "later", requestedAt: 900 }));
   approvals.record(approval({ approvalId: "earlier", requestedAt: 100 }));
-  const order = approvals.pending().map((row) => row.approvalId).join(",");
+  const order = approvals
+    .pending()
+    .map((row) => row.approvalId)
+    .join(",");
   check("the longest-waiting approval is first", order === "earlier,later", order);
 }
 
@@ -118,26 +125,67 @@ const facts = (overrides) => ({
       approvals: approvals.pending(),
       runs: runs.list(),
       pending: [pending("http:a")],
-      usage: { models: { "opencode-go/x": { input: 10, output: 4, cacheRead: 0, cacheWrite: 0, totalTokens: 14, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } } }, tools: {} },
+      usage: {
+        models: {
+          "opencode-go/x": {
+            input: 10,
+            output: 4,
+            cacheRead: 0,
+            cacheWrite: 0,
+            totalTokens: 14,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        },
+        tools: {},
+      },
       activeRun: { run: activeRunOf([pending("http:a")], runs.list()), cursor: 7 },
     }),
   );
 
-  check("the status view reports the pending approval", view.approvals.length === 1 && view.approvals[0].status === "pending", JSON.stringify(view.approvals.map((a) => a.status)));
-  check("the status view reports the active run", view.activeRun?.ordinal === 1, `${view.activeRun?.ordinal}`);
-  check("the active run carries its inputs", view.activeRun?.inputs[0] === "reconcile the invoices");
-  check("the active run names its stream", view.activeRun?.stream.stream === "feed:1:1", view.activeRun?.stream.stream);
+  check(
+    "the status view reports the pending approval",
+    view.approvals.length === 1 && view.approvals[0].status === "pending",
+    JSON.stringify(view.approvals.map((a) => a.status)),
+  );
+  check(
+    "the status view reports the active run",
+    view.activeRun?.ordinal === 1,
+    `${view.activeRun?.ordinal}`,
+  );
+  check(
+    "the active run carries its inputs",
+    view.activeRun?.inputs[0] === "reconcile the invoices",
+  );
+  check(
+    "the active run names its stream",
+    view.activeRun?.stream.stream === "feed:1:1",
+    view.activeRun?.stream.stream,
+  );
   check("the active run's stream is streaming", view.activeRun?.stream.state === "streaming");
-  check("the active run's stream carries the cursor", view.activeRun?.stream.cursor === 7, `${view.activeRun?.stream.cursor}`);
-  check("usage is projected, not raw", view.usage.inputTokens === 10 && view.usage.exchanges === 1, JSON.stringify(view.usage));
+  check(
+    "the active run's stream carries the cursor",
+    view.activeRun?.stream.cursor === 7,
+    `${view.activeRun?.stream.cursor}`,
+  );
+  check(
+    "usage is projected, not raw",
+    view.usage.inputTokens === 10 && view.usage.exchanges === 1,
+    JSON.stringify(view.usage),
+  );
 }
 
 {
   const rows = [run({})];
   check("an unsettled run is active", activeRunOf([pending("http:a")], rows)?.ordinal === 1);
   check("a settled submission is not active", activeRunOf([], rows) === undefined);
-  check("an unrelated pending operation is not active", activeRunOf([pending("http:zzz")], rows) === undefined);
-  check("a completed run is not active", activeRunOf([pending("http:a")], [run({ status: "completed", endEntry: 1 })]) === undefined);
+  check(
+    "an unrelated pending operation is not active",
+    activeRunOf([pending("http:zzz")], rows) === undefined,
+  );
+  check(
+    "a completed run is not active",
+    activeRunOf([pending("http:a")], [run({ status: "completed", endEntry: 1 })]) === undefined,
+  );
 }
 
 {

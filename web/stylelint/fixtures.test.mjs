@@ -119,7 +119,10 @@ for (const testCase of cases) {
   console.log(`${ok ? "✔" : "✘"} ${testCase.file} → ${ruleIds.join(", ") || "(none)"}`);
 
   if (ok) for (const ruleId of ruleIds) proved.add(ruleId);
-  else failures.push(`${testCase.file}: expected ${expected.join(", ") || "(none)"}, got ${ruleIds.join(", ") || "(none)"}`);
+  else
+    failures.push(
+      `${testCase.file}: expected ${expected.join(", ") || "(none)"}, got ${ruleIds.join(", ") || "(none)"}`,
+    );
 }
 
 for (const file of allowed) {

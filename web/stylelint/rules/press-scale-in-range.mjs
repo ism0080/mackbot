@@ -12,8 +12,7 @@ const { report, ruleMessages, validateOptions } = stylelint.utils;
 const ruleName = "mackbot/press-scale-in-range";
 
 const messages = ruleMessages(ruleName, {
-  rejected: (ratio) =>
-    `Expected the press scale ${ratio} to be between 0.95 and 0.98`,
+  rejected: (ratio) => `Expected the press scale ${ratio} to be between 0.95 and 0.98`,
 });
 
 const MIN = 0.95;

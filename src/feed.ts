@@ -202,7 +202,9 @@ export const createFeed = (deps: FeedDeps): Feed => {
 
   const sweep = async (session: string): Promise<void> => {
     const tag = streamTagFor(deps.botId, session);
-    const listed = await runStreams(() => deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 }));
+    const listed = await runStreams(() =>
+      deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 }),
+    );
     for (const status of listed.slice(RETENTION_STREAMS)) {
       if (status.state === "streaming") continue;
       await Effect.runPromise(
@@ -330,7 +332,8 @@ export const createFeed = (deps: FeedDeps): Feed => {
     const session = await sessionForRequest(url, query.thread);
     if (session !== undefined) await attach(session);
     const explicit = url.searchParams.get("stream");
-    const streamId = explicit ?? (session === undefined ? undefined : await newestStreamFor(session));
+    const streamId =
+      explicit ?? (session === undefined ? undefined : await newestStreamFor(session));
     if (streamId === undefined || streamId === "") return streamRequired();
     const from = resumeFrom(streamId, query);
     return await runStreams(() =>

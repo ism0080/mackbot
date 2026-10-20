@@ -126,7 +126,8 @@ const { settle, query, all, text, waitFor, click } = app;
 
 const card = (id) => query(`[data-approval="${id}"]`);
 const cards = () => all("[data-approval]").length;
-const decisionCalls = () => stub.requests.filter((request) => request.path.startsWith("/approvals/"));
+const decisionCalls = () =>
+  stub.requests.filter((request) => request.path.startsWith("/approvals/"));
 const statusCalls = () => stub.requests.filter((request) => request.path === "/status").length;
 
 try {
@@ -144,9 +145,15 @@ try {
   // 2 — a failure: the flip was wrong, so the card and its buttons come back.
   click(query('[data-approval="apr_fail"] .btn.primary'));
   await settle();
-  check("the failing decision also retires optimistically", card("apr_fail") === null && cards() === 1);
+  check(
+    "the failing decision also retires optimistically",
+    card("apr_fail") === null && cards() === 1,
+  );
   await waitFor(() => card("apr_fail") !== null, "the failed decision is rolled back");
-  check("the card is back with its buttons", query('[data-approval="apr_fail"] .btn.primary') !== null);
+  check(
+    "the card is back with its buttons",
+    query('[data-approval="apr_fail"] .btn.primary') !== null,
+  );
   check(
     "the screen says the decision did not stick",
     text("[data-toast]").includes("Couldn't record that decision"),
@@ -161,9 +168,13 @@ try {
   const statusBefore = statusCalls();
   click(query('[data-approval="apr_taken"] .btn.ghost'));
   await settle();
-  check("the refused decision retires optimistically too", card("apr_taken") === null && cards() === 1);
+  check(
+    "the refused decision retires optimistically too",
+    card("apr_taken") === null && cards() === 1,
+  );
   await waitFor(
-    () => query("[data-toast]") !== null && text("[data-toast]").includes("already decided elsewhere"),
+    () =>
+      query("[data-toast]") !== null && text("[data-toast]").includes("already decided elsewhere"),
     "the refusal is reported",
   );
   await waitFor(() => statusCalls() > statusBefore, "the refusal refetched /status");
@@ -175,7 +186,9 @@ try {
   check(
     "only the still-pending approval keeps a waiting row",
     all(".ap-ref").length === 1 && query(".ap-ref").getAttribute("data-approval") === "apr_fail",
-    all(".ap-ref").map((node) => node.getAttribute("data-approval")).join("|"),
+    all(".ap-ref")
+      .map((node) => node.getAttribute("data-approval"))
+      .join("|"),
   );
 
   // 5 — the requests the app actually made.
@@ -192,7 +205,8 @@ try {
   );
   check(
     "the deny body carries the contract's action",
-    calls.find((request) => request.path === "/approvals/hermes/apr_taken")?.body?.action === "deny",
+    calls.find((request) => request.path === "/approvals/hermes/apr_taken")?.body?.action ===
+      "deny",
     JSON.stringify(calls.find((request) => request.path === "/approvals/hermes/apr_taken")?.body),
   );
 

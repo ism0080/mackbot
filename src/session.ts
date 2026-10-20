@@ -51,7 +51,11 @@ export const issueSession = (token: string, now: number): Effect.Effect<string> 
     return `${SESSION_VERSION}.${expires}.${signature}`;
   });
 
-export const verifySession = (token: string, value: string, now: number): Effect.Effect<boolean> => {
+export const verifySession = (
+  token: string,
+  value: string,
+  now: number,
+): Effect.Effect<boolean> => {
   const match = SESSION_VALUE.exec(value);
   if (match === null) return Effect.succeed(false);
   const expires = Number(match[1]);

@@ -13,9 +13,15 @@ import { StubEventSource } from "./eventsource.mjs";
 
 const ASSETS = new URL("../../dist/assets/", import.meta.url);
 const files = readdirSync(ASSETS);
-const bundle = new URL(files.find((name) => name.endsWith(".js")), ASSETS);
+const bundle = new URL(
+  files.find((name) => name.endsWith(".js")),
+  ASSETS,
+);
 const css = readFileSync(
-  new URL(files.find((name) => name.endsWith(".css")), ASSETS),
+  new URL(
+    files.find((name) => name.endsWith(".css")),
+    ASSETS,
+  ),
   "utf8",
 );
 

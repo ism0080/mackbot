@@ -74,12 +74,16 @@ try {
   check("no error notice for a clean roster", display('[data-group="error"]') === "none");
   check("one approval card", all("[data-approval]").length === 1);
   check("approval names the tool", text(".ap-tool") === "botmail.send");
-  check("running row is derived from activeRun", text(".runit .rt") === "Reconciling March invoices");
+  check(
+    "running row is derived from activeRun",
+    text(".runit .rt") === "Reconciling March invoices",
+  );
   check(
     "since-you-last-looked lists one entry per bot",
     all(".doneitem").length === 2 &&
-      all(".doneitem .rt").map((node) => node.textContent.trim()).join("|") ===
-        "Calendar hold moved to Thursday 10:00.|Q3 kickoff notes, 4 decisions",
+      all(".doneitem .rt")
+        .map((node) => node.textContent.trim())
+        .join("|") === "Calendar hold moved to Thursday 10:00.|Q3 kickoff notes, 4 decisions",
   );
 
   // 2 — the draft preview expands on click.
@@ -91,8 +95,8 @@ try {
   check("draft expands", draft.open === true);
 
   // 3 — the transcript is reachable from an item.
-  const scribeRow = all(".doneitem").find(
-    (node) => node.querySelector(".rmeta").textContent.startsWith("Scribe"),
+  const scribeRow = all(".doneitem").find((node) =>
+    node.querySelector(".rmeta").textContent.startsWith("Scribe"),
   );
   click(scribeRow);
   await settle();
@@ -113,7 +117,9 @@ try {
   check("transcript shows the in-flight run", text(".live").includes("Reconciling March invoices"));
   check(
     "a cron entry with no timestamp renders the origin with no clock",
-    all(".origin").map((node) => node.textContent.trim()).join("|") === "cron",
+    all(".origin")
+      .map((node) => node.textContent.trim())
+      .join("|") === "cron",
   );
   click(query(".icon"));
   await settle();
@@ -121,10 +127,19 @@ try {
   // 5 — Allow retires the approval everywhere at once.
   click(query(".btn.primary"));
   await settle();
-  check("headline names the fault the approval did not clear", text(".hdr.tall h1") === "Needs attention");
-  check("header count drops the blocked one", text(".hdr.tall .hdr-sub") === "2 bots · 0 blocked · 1 running");
+  check(
+    "headline names the fault the approval did not clear",
+    text(".hdr.tall h1") === "Needs attention",
+  );
+  check(
+    "header count drops the blocked one",
+    text(".hdr.tall .hdr-sub") === "2 bots · 0 blocked · 1 running",
+  );
   check("blocked section collapses", display('[data-group="blocked"]') === "none");
-  check("the all-clear block stays hidden while a fault stands", display('[data-group="empty"]') === "none");
+  check(
+    "the all-clear block stays hidden while a fault stands",
+    display('[data-group="empty"]') === "none",
+  );
   check("the fault is still listed", all("[data-failure]").length === 1);
   check("no approval card remains", all("[data-approval]").length === 0);
   check("running section survives", text(".runit .rt") === "Reconciling March invoices");
@@ -136,7 +151,9 @@ try {
 
   // 6 — the requests the app made.
   const firstCalls = stub.requests
-    .filter((request, index) => stub.requests.findIndex((other) => other.path === request.path) === index)
+    .filter(
+      (request, index) => stub.requests.findIndex((other) => other.path === request.path) === index,
+    )
     .map((request) => `${request.method} ${request.path}`);
   check(
     "the app asked for the roster, both transcripts, the live bot's events, and the decision",

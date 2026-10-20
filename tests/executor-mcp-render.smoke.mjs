@@ -43,7 +43,9 @@ const browserPause = {
   check("browser pause", text.startsWith("APPROVAL REQUIRED"), "no header");
   check(
     "browser pause",
-    text.includes("Open this link to approve: https://app.executor.sh/mcp/approve/apr_test_browser"),
+    text.includes(
+      "Open this link to approve: https://app.executor.sh/mcp/approve/apr_test_browser",
+    ),
     "link not relayed",
   );
   check(
@@ -118,7 +120,11 @@ const settled = {
 {
   const parseError = {
     status: "completed",
-    execution: { ok: false, error: { kind: "ParseError", message: "Unexpected token (2:5)" }, toolCalls: [] },
+    execution: {
+      ok: false,
+      error: { kind: "ParseError", message: "Unexpected token (2:5)" },
+      toolCalls: [],
+    },
   };
   const result = render(parseError, JSON.stringify(parseError));
   check("failed program", result.isError === true, "a failed program was not marked");
@@ -128,8 +134,15 @@ const settled = {
 // A program that succeeded is not an error, whatever its return value looks like.
 {
   const returned = { status: "completed", execution: { ok: true, value: 2, toolCalls: [] } };
-  check("program returned a value", render(returned, JSON.stringify(returned)).isError === false, "flagged");
-  const looksFailed = { status: "completed", execution: { ok: true, value: { ok: false }, toolCalls: [] } };
+  check(
+    "program returned a value",
+    render(returned, JSON.stringify(returned)).isError === false,
+    "flagged",
+  );
+  const looksFailed = {
+    status: "completed",
+    execution: { ok: true, value: { ok: false }, toolCalls: [] },
+  };
   check(
     "program returned {ok:false}",
     render(looksFailed, JSON.stringify(looksFailed)).isError === false,
@@ -158,7 +171,11 @@ const settled = {
   };
   const result = render(unknownTool, JSON.stringify(unknownTool));
   check("unknown tool path", result.isError === false, "marked the whole result as an error");
-  check("unknown tool path", outputOf(result).includes("Use search to find exact paths"), "lost the error");
+  check(
+    "unknown tool path",
+    outputOf(result).includes("Use search to find exact paths"),
+    "lost the error",
+  );
 }
 
 // A denied approval is the same shape, and the denial has to stay readable.
@@ -172,7 +189,9 @@ const settled = {
         ok: false,
         error: { kind: "ToolFailure", message: "ApprovalDenied" },
       },
-      toolCalls: [{ name: 'tools["akahu-accounts"].listAccounts', outcome: "failure", durationMs: 1963 }],
+      toolCalls: [
+        { name: 'tools["akahu-accounts"].listAccounts', outcome: "failure", durationMs: 1963 },
+      ],
     },
   };
   const result = render(denied, JSON.stringify(denied));
@@ -207,7 +226,11 @@ const settled = {
   const text = outputOf(result);
   check("array, one failed", result.isError === false, "one failed call marked every call failed");
   check("array, one failed", text.includes("isaac-mackle"), "lost the successful call");
-  check("array, one failed", text.includes("No tool at tools.does-not-exist.whatever"), "lost the failed call");
+  check(
+    "array, one failed",
+    text.includes("No tool at tools.does-not-exist.whatever"),
+    "lost the failed call",
+  );
 }
 
 // describe reports an unknown path as a success carrying `missing`, not as an
@@ -219,12 +242,20 @@ const settled = {
     missing: [{ path: "tools.does-not-exist.whatever", matches: [] }],
   };
   const result = render(missing, JSON.stringify(missing));
-  check("describe missing path", result.isError === false, "a not-found answer was marked an error");
+  check(
+    "describe missing path",
+    result.isError === false,
+    "a not-found answer was marked an error",
+  );
 }
 
 // Executor's own isError flag passes through untouched.
 {
-  const result = render(undefined, "Invalid parameters for tool 'resume': Missing key at [\"response\"]", true);
+  const result = render(
+    undefined,
+    "Invalid parameters for tool 'resume': Missing key at [\"response\"]",
+    true,
+  );
   check("isError passthrough", result.isError === true, "isError lost");
   check("isError passthrough", outputOf(result).includes("Missing key"), "message lost");
 }

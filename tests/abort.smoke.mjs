@@ -88,15 +88,27 @@ const stopWith = (path, body, headers = {}) =>
   const response = await stop("/abort/hermes");
   check("a stop is 200", response.status === 200, `${response.status}`);
   const body = await response.json();
-  check("the result names the bot and the session", body.bot === "hermes" && body.session === "1", JSON.stringify(body));
+  check(
+    "the result names the bot and the session",
+    body.bot === "hermes" && body.session === "1",
+    JSON.stringify(body),
+  );
   check("the result says what it stopped", body.aborted === true, JSON.stringify(body));
-  check("the root session was stopped", calls.at(-1)?.session === undefined, JSON.stringify(calls.at(-1)));
+  check(
+    "the root session was stopped",
+    calls.at(-1)?.session === undefined,
+    JSON.stringify(calls.at(-1)),
+  );
 }
 
 {
   const response = await stopWith("/abort/hermes", JSON.stringify({ session: "7" }));
   check("a stop with a session is 200", response.status === 200, `${response.status}`);
-  check("the named session was stopped", calls.at(-1)?.session === "7", JSON.stringify(calls.at(-1)));
+  check(
+    "the named session was stopped",
+    calls.at(-1)?.session === "7",
+    JSON.stringify(calls.at(-1)),
+  );
 }
 
 // ---------------------------------------------------------------------------

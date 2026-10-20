@@ -47,9 +47,16 @@ decode(TranscriptPageSchema, "TranscriptPage(hermes, page 1)", {
 });
 
 const stub = startStub({
-  status: { bots: { hermes: HERMES_STATUS, scribe: SCRIBE_STATUS }, errors: { atlas: "status unavailable" } },
+  status: {
+    bots: { hermes: HERMES_STATUS, scribe: SCRIBE_STATUS },
+    errors: { atlas: "status unavailable" },
+  },
   transcripts: {
-    hermes: pager({ session: HERMES_TRANSCRIPT.session, stream: HERMES_TRANSCRIPT.stream, entries: PAGE_SOURCE }),
+    hermes: pager({
+      session: HERMES_TRANSCRIPT.session,
+      stream: HERMES_TRANSCRIPT.stream,
+      entries: PAGE_SOURCE,
+    }),
   },
   failing: ["/transcript/scribe"],
 });
@@ -63,7 +70,8 @@ try {
 
   check(
     "the home names the bot whose status failed",
-    display('[data-group="error"]') !== "none" && text('[data-group="error"] p') === "No status from Atlas.",
+    display('[data-group="error"]') !== "none" &&
+      text('[data-group="error"] p') === "No status from Atlas.",
   );
   check(
     "the header still counts every known bot",
@@ -86,7 +94,7 @@ try {
   click(query("[data-load]"));
   await waitFor(() => all("[data-entry]").length === 52, "the older page merged", 5_000);
   check("loading earlier prepends the older entries", all("[data-entry]").length === 52);
-  check("the older entries are oldest first", text("[data-entry]") .startsWith("Earlier note 1"));
+  check("the older entries are oldest first", text("[data-entry]").startsWith("Earlier note 1"));
   check("no older page remains", query("[data-load]") === null);
 
   const calls = stub.requests.map((request) => `${request.method} ${request.path}`);
@@ -97,10 +105,15 @@ try {
       calls.includes("GET /transcript/scribe"),
     calls.join("; "),
   );
-  const paged = stub.requests.find((request) => request.path === "/transcript/hermes" && request.query.before !== undefined);
+  const paged = stub.requests.find(
+    (request) => request.path === "/transcript/hermes" && request.query.before !== undefined,
+  );
   check(
     "the older page was asked for with before and limit",
-    paged !== undefined && paged.method === "GET" && paged.query.before === "3" && paged.query.limit === "50",
+    paged !== undefined &&
+      paged.method === "GET" &&
+      paged.query.before === "3" &&
+      paged.query.limit === "50",
     JSON.stringify(stub.requests),
   );
   check("no console errors", app.pageErrors.length === 0, app.pageErrors.join("; "));

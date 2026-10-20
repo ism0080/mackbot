@@ -33,10 +33,14 @@ const main = () => {
   console.log(
     `ok   the next tick dispatches the Status Command again: ${namesOf(result).join(",") === "Status"}`,
   );
-  console.log(`ok   the tick records the new request as outstanding: ${result.model.polling === true}`);
+  console.log(
+    `ok   the tick records the new request as outstanding: ${result.model.polling === true}`,
+  );
 
   result = update(result.model, Message.PolledStatus());
-  console.log(`ok   a tick while it is in flight dispatches nothing: ${commandsOf(result).length === 0}`);
+  console.log(
+    `ok   a tick while it is in flight dispatches nothing: ${commandsOf(result).length === 0}`,
+  );
 
   const failed = update(
     { ...result.model, polling: true },

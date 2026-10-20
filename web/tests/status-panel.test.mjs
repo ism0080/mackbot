@@ -102,18 +102,25 @@ try {
   // 4 — a bot with neither contributes no row to either section.
   check(
     "the quiet bot has no row in either section",
-    all(".sp-fail[data-bot='scribe']").length === 0 && all(".sp-task[data-bot='scribe']").length === 0,
-    all(".sp-fail, .sp-task").map((node) => node.getAttribute("data-bot")).join("|"),
+    all(".sp-fail[data-bot='scribe']").length === 0 &&
+      all(".sp-task[data-bot='scribe']").length === 0,
+    all(".sp-fail, .sp-task")
+      .map((node) => node.getAttribute("data-bot"))
+      .join("|"),
   );
 
   // 5 — the poll answers without the two lists, and both sections collapse.
   const collapsed = await waitFor(
-    () => display('[data-group="failures"]') === "none" && display('[data-group="tasks"]') === "none",
+    () =>
+      display('[data-group="failures"]') === "none" && display('[data-group="tasks"]') === "none",
     "the empty sections collapse",
     9_000,
   );
   check("the sections collapse once nothing is left to say", collapsed);
-  check("the rows are gone with them", all("[data-failure]").length === 0 && all("[data-task]").length === 0);
+  check(
+    "the rows are gone with them",
+    all("[data-failure]").length === 0 && all("[data-task]").length === 0,
+  );
 
   check("no console errors", app.pageErrors.length === 0, app.pageErrors.join("; "));
 } finally {

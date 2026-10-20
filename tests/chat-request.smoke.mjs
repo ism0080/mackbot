@@ -7,9 +7,8 @@
  * objects, so the observable front-door behavior (accepted vs. rejected) is
  * checked without a live Durable Object or the Workers runtime.
  */
-const { isAuthorized, readChatRequest, MAX_TEXT_LENGTH, MAX_BODY_BYTES } = await import(
-  "../src/chat-request.ts"
-);
+const { isAuthorized, readChatRequest, MAX_TEXT_LENGTH, MAX_BODY_BYTES } =
+  await import("../src/chat-request.ts");
 
 const failures = [];
 
@@ -40,7 +39,9 @@ const decode = async (label, request, check) => {
 const rejected = (label, request) =>
   decode(label, request, (body) => {
     if (body !== undefined) {
-      failures.push(`${label}: expected undefined, got text of ${JSON.stringify(body.text).length} chars`);
+      failures.push(
+        `${label}: expected undefined, got text of ${JSON.stringify(body.text).length} chars`,
+      );
     }
   });
 
@@ -64,11 +65,7 @@ const authHeader = (value) =>
 
 authorized("no Authorization header", new Request(url), false);
 authorized("non-Bearer scheme", authHeader(`Basic ${TOKEN}`), false);
-authorized(
-  "wrong token of the same length",
-  authHeader(`Bearer ${TOKEN.slice(0, -1)}x`),
-  false,
-);
+authorized("wrong token of the same length", authHeader(`Bearer ${TOKEN.slice(0, -1)}x`), false);
 authorized(
   "wrong token that is a prefix",
   authHeader(`Bearer ${TOKEN.slice(0, TOKEN.length - 1)}`),
@@ -123,11 +120,15 @@ rejected("invalid JSON", post("{not json"));
 rejected("JSON array body", post("[]"));
 rejected("no body at all", new Request(url, { method: "POST" }));
 
-accepted("text at MAX_TEXT_LENGTH", post(JSON.stringify({ text: "x".repeat(MAX_TEXT_LENGTH) })), (body) => {
-  if (body.text.length !== MAX_TEXT_LENGTH) {
-    failures.push(`text at MAX_TEXT_LENGTH: length is ${body.text.length}`);
-  }
-});
+accepted(
+  "text at MAX_TEXT_LENGTH",
+  post(JSON.stringify({ text: "x".repeat(MAX_TEXT_LENGTH) })),
+  (body) => {
+    if (body.text.length !== MAX_TEXT_LENGTH) {
+      failures.push(`text at MAX_TEXT_LENGTH: length is ${body.text.length}`);
+    }
+  },
+);
 rejected(
   "text over MAX_TEXT_LENGTH",
   post(JSON.stringify({ text: "x".repeat(MAX_TEXT_LENGTH + 1) })),
@@ -145,9 +146,14 @@ const paddedTo = (label, targetBytes) => {
   return body;
 };
 
-accepted("body at MAX_BODY_BYTES", post(paddedTo("body at MAX_BODY_BYTES", MAX_BODY_BYTES)), (body) => {
-  if (body.text !== "hi") failures.push(`body at MAX_BODY_BYTES: text is ${JSON.stringify(body.text)}`);
-});
+accepted(
+  "body at MAX_BODY_BYTES",
+  post(paddedTo("body at MAX_BODY_BYTES", MAX_BODY_BYTES)),
+  (body) => {
+    if (body.text !== "hi")
+      failures.push(`body at MAX_BODY_BYTES: text is ${JSON.stringify(body.text)}`);
+  },
+);
 
 const oversized = paddedTo("body over MAX_BODY_BYTES", MAX_BODY_BYTES + 1);
 rejected("body over MAX_BODY_BYTES", post(oversized));

@@ -95,21 +95,25 @@ const record = await harness.getTask(taskId, context);
 check("the faulted task settled", record?.state.status === "terminal", record?.state.status);
 // pi distinguishes a task whose code threw ("faulted") from one that decided
 // it failed ("failed").
-check("it settled as faulted", record?.state.outcome.status === "faulted", record?.state.outcome?.status);
+check(
+  "it settled as faulted",
+  record?.state.outcome.status === "faulted",
+  record?.state.outcome?.status,
+);
 
 check("the harness reported it", reports.length > 0, JSON.stringify(reports));
-check(
-  "it reported a faulted task",
-  reports.includes("task_faulted"),
-  JSON.stringify(reports),
-);
+check("it reported a faulted task", reports.includes("task_faulted"), JSON.stringify(reports));
 
 const kept = store.recent();
 check("the store kept the report", kept.length === 1, `${kept.length}`);
 check("it kept pi's word for it", kept[0]?.kind === "task_faulted", kept[0]?.kind);
 check("it kept the task's id", kept[0]?.taskId === String(taskId), kept[0]?.taskId);
 check("it kept the task's kind", kept[0]?.taskKind === "example.faulty", kept[0]?.taskKind);
-check("it kept the extension that installed it", kept[0]?.extension === "example", kept[0]?.extension);
+check(
+  "it kept the extension that installed it",
+  kept[0]?.extension === "example",
+  kept[0]?.extension,
+);
 check("it kept the error's name", kept[0]?.name === "Error", kept[0]?.name);
 check(
   "it kept the error's message",
