@@ -27,7 +27,7 @@ root; every other package is a member of it.
 ```sh
 bun install
 
-bun run check       # every check below, in one command
+bun run check       # deploy shape, typecheck, lint and test
 bun run typecheck   # tsc --noEmit, for every workspace member
 bun run lint        # oxlint (core profile + vendored forge plugin)
 bun run lint:css    # stylelint — the good-css rules over every stylesheet under web/src
@@ -38,7 +38,8 @@ bun run tools:oxlint # build + test the vendored lint plugin
 ```
 
 `bun run check` is the gate: it asserts the deploy shape, then typechecks,
-lints, and tests every workspace member.
+lints, and tests every workspace member. It does not include `lint:css` /
+`test:css`, so run those too when a stylesheet changes.
 
 There is no CI workflow: run `bun run check` locally before pushing. `lint:css`
 enforces the [good-css](https://good-css.com) rules that a stylesheet can be
@@ -52,11 +53,19 @@ are not set; see [`.env.example`](./.env.example) for the required secrets.
 
 ## HTTP surface
 
-Every route requires `Authorization: Bearer <CHAT_BEARER_TOKEN>`. The scheme name
-is case-insensitive.
+The API takes either `Authorization: Bearer <CHAT_BEARER_TOKEN>` (the scheme
+name is case-insensitive) or a session cookie. A browser proves the token once
+at `/login` and carries a signed cookie after that; the cookie is derived from
+the bearer, so rotating the token invalidates every session. A
+cookie-authenticated mutation must also send `Origin: <this origin>` and
+`X-Mackbot-CSRF: 1`; a bearer request needs neither. An unauthenticated API call
+gets `401` JSON, while an unauthenticated navigation is redirected to `/login`.
 
+- `GET /login` — the token form, a static page with no script. `POST /login`
+  with a `token` form field answers `303` to `/` and sets the cookie, or `401`
+  with the form again.
 - `POST /chat/:bot` — submit text to a bot. Returns the answer, or `202` with an
-  `operationId` when the wait times out or `wait=false` (resubmit the same
+  `operationId` when the wait times out or `wait=0` (resubmit the same
   `operationId` to keep waiting; admission is at-most-once).
 - `GET /status` — one `BotView` per bot: model, thinking level, busy state,
   pending operations with their origin (`http`, `cron`, or `delegate`), pending
@@ -67,10 +76,20 @@ is case-insensitive.
 - `GET /transcript/:bot?thread=&before=&limit=` — one page of a session's
   transcript, newest first, paged backwards by entry id. `limit` defaults to 50
   and clamps to 200. `nextBefore` appears only when an older page exists.
-- `GET /events/:bot?stream=&from=` — Server-Sent Events for one run, served
-  through the SDK's resumable writer, so `Last-Event-ID` and `?from=` resume
-  where a client left off. The bridge that feeds a stream per run is not wired
-  yet.
+- `GET /events/:bot?thread=&stream=&from=&gen=` — Server-Sent Events for one
+  run, named `feed:<session>:<ordinal>` and rotated to a new segment only when
+  it reaches the chunk ceiling. `?stream=` names a stream, and `?thread=`
+  resolves to that session's newest run. Sequence zero is always a snapshot, so
+  a client that lost its place can rebuild; every frame carries its generation,
+  so `Last-Event-ID` and `?from=` resume within a generation, and a `gen` the
+  stream no longer serves replays from the snapshot instead of skipping the
+  head.
+- `POST /approvals/:bot/:approvalId` — decide a paused call. The body is
+  `{"action": "allow" | "deny"}` with an optional `content` map. The decision is
+  recorded durably and steered into the pausing session, and the harness's hook
+  lets only a human-decided `executor_resume` through. An approval that is
+  already decided, unknown or not resumable answers `409` rather than resuming
+  twice.
 - `POST /abort/:bot` — stop a bot's current work. The body is optional;
   `{"session": "<id>"}` names the conversation to stop, and an empty body stops
   the bot's root conversation. The answer is `{ bot, session, aborted }`, where
@@ -109,6 +128,19 @@ module graph, so the Worker stays the one that knows which models exist.
 The Worker and the web app share one vocabulary in the
 [`@mackbot/contract`](./packages/contract) package. Every route decodes its
 input and its output against a Schema there, so the two cannot drift apart.
+
+## The web app
+
+`web/` is the first-party channel, served by the same Worker from `web/dist`:
+a home screen that groups the fleet into blocked, running, parked and recent
+work, per-bot transcripts with backward paging, approval cards with allow and
+deny, Stop and retry controls, and the roster editor. It polls `/status`, reads
+`/bots`, and follows `/events` for each bot with a run in flight.
+
+Navigation is in-app (home, then a bot's transcript); the Worker's asset binding
+serves `index.html` for any other path, so a deep link still loads the app. It
+cannot originate work yet: there is no composer for `POST /chat/:bot`, so today
+the API starts work and the app observes and steers it.
 
 ## Deploy
 

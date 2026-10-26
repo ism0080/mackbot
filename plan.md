@@ -9,14 +9,14 @@
 
 Grok Bot's pitch: bots you message like teammates — they sign into your tools, keep context on how you work, run 24/7 in parallel, come back when your approval is needed, and get smarter over time.
 
-mackbot is the self-hosted version of that: a fleet of durable agent bots, each with a job, an identity, a model, and a system prompt — reachable from anything via HTTP (first-party webapp to follow; Telegram as an optional phone channel, added last) — with all real tooling routed through one Executor MCP endpoint.
+mackbot is the self-hosted version of that: a fleet of durable agent bots, each with a job, an identity, a model, and a system prompt — reachable via HTTP and the first-party web app (Telegram as an optional phone channel, added last) — with all real tooling routed through one Executor MCP endpoint.
 
 ### Grok Bot → mackbot mapping
 
 | Grok Bot concept                                   | mackbot v1                                                                                                                                                                                                                                      | Later phase                                                                                                                             |
 | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| Bots with jobs (Sales Outbound, Chief of Staff, …) | One bot per job, declared in `bots.json` (own model, system prompt; Telegram identity optional)                                                                                                                                                 | Reusable bot presets (own "marketplace")                                                                                                |
-| Message bots like teammates                        | Headless HTTP API (`POST /chat/:bot`)                                                                                                                                                                                                           | First-party webapp (SSE), Telegram DMs (added last), more channels (Discord, …)                                                         |
+| Bots with jobs (Sales Outbound, Chief of Staff, …) | One bot per job in the durable roster (`bots.json` seeds it), with its own model and system prompt; Telegram identity optional                                                                                                                  | Reusable bot presets (own "marketplace")                                                                                                |
+| Message bots like teammates                        | HTTP API (`POST /chat/:bot`) and the first-party web app (per-run SSE, approvals, stop/retry, roster editing)                                                                                                                                   | A composer in the app, Telegram DMs (added last), more channels (Discord, …)                                                            |
 | 24/7, survives everything                          | Pi Durable in SQLite-backed Durable Objects; wake-up alarms resume mid-run after eviction/crash/deploy                                                                                                                                          | —                                                                                                                                       |
 | "Own computer" / shared cloud computer             | Executor v2 apps hold all real tools and accounts (bots stay thin)                                                                                                                                                                              | Shared workspace per user: sandbox phase — Daytona / Cloudflare Containers / homelab remote `ExecutionEnv`                              |
 | Routines on a schedule                             | Cron Triggers → per-bot briefs (stable `operationId` = at-most-once)                                                                                                                                                                            | "Show me once" workflow capture → saved routine                                                                                         |
@@ -31,53 +31,58 @@ Infrastructure pattern is the Hermes one (always-on durable agent harness). Prod
 ## Architecture
 
 ```
-POST /chat/:bot (v1 interface)  ·  cron (hourly)  ·  Telegram webhooks (optional, added last)
+POST /chat/:bot  ·  web app (/status, /events, /approvals, /bots, …)  ·  cron (hourly)  ·  Telegram (optional, last)
                     │
            Front-door Worker  (single, plain fetch/scheduled handlers)
-                    │  validate HTTP bearer (Telegram secret_token when added) → botId from bots.json;  env.Bot.getByName(botId)
+                    │  validate bearer or session cookie → botId from the Registry;  env.Bot.getByName(botId)
      ┌──────────────┼──────────────┐
      ▼              ▼              ▼
  Bot:hermes     Bot:scribe      Bot:…        one DO instance per bot
  PiHarness      PiHarness       …           SQLite state, wake-up alarms
  opencode-go    opencode-go     …           per-bot model + system prompt (pi.agent)
      └──────────────┼──────────────┘
-                    ▼  MCP meta-tools (streamable HTTP · org URL · browser approvals · PAT bearer)
+                    ▼  MCP meta-tools (streamable HTTP · org URL · model approvals · PAT bearer)
               Executor v2  (public endpoint; apps hold all real tools & accounts)
 ```
 
 ## Locked decisions
 
-| Decision                  | Choice                                                                                                                                                                                                                                                                                                     |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Runtime / durability      | Pi Durable via Cloudflare Agents SDK `PiHarness` (beta) in SQLite-backed Durable Objects                                                                                                                                                                                                                   |
-| Deploy tooling            | **Alchemy v2** (async Worker + `Cloudflare.DurableObject` binding — auto SQLite class migrations; no wrangler)                                                                                                                                                                                             |
-| Bot topology              | **One DO instance per bot** (`getByName(botId)`), root session each                                                                                                                                                                                                                                        |
-| Per-bot config            | **The `Registry` Durable Object** holds the roster (model, thinking level, system prompt, delegates); `bots.json` seeds a fresh registry and is inert afterwards; the web app writes to it; applied per session, idempotently, via `pi()` → `root.configure()`                                             |
-| Models                    | **OpenCode Go** (`opencode-go` provider, `OPENCODE_API_KEY`); cheap tier: Workers AI (`@cf/...`) or free catalog models (`longcat-2.5-preview-free`, `step-5-preview-free`)                                                                                                                                |
-| Tooling                   | **Executor v2 meta-tools only** — bots never talk to apps directly                                                                                                                                                                                                                                         |
-| Channels                  | **HTTP API first** (`POST /chat/:bot` + bearer auth); first-party webapp later (SSE events); **Telegram last, optional**                                                                                                                                                                                   |
-| Idempotency               | `operationId` carries its origin in a prefix, built only in `src/operation.ts` — `http:<uuid-or-client-id>`, `cron:<botId>:<scheduledTime>`, `delegate:<source>:<id>`; at-most-once admission across retries/evictions, and prefixing is idempotent so an id the fleet returned rejoins the same operation |
-| Ingress auth              | Bearer secret on the `POST /chat/:bot` route (the v1 surface — anyone who finds the URL could otherwise drive the bots and their Executor spend); when Telegram lands: per-bot webhook `secret_token`, validate `X-Telegram-Bot-Api-Secret-Token` on every update                                          |
-| Cost posture              | Free tier first: `progress: { partialIntervalMs: 1000, outputIntervalMs: 1000 }` (~10x fewer SQLite row writes); Workers Paid ($5) only if limits trip                                                                                                                                                     |
-| Sandboxing (Daytona etc.) | **Deferred** — no code seam today; the route stays an `ExecutionEnv` / Executor app; revisit when a bot needs to build/run things (Grok Bot's "own computer" phase)                                                                                                                                        |
-| Executor hosting          | Free tier (solo, $0) or self-host — both work; `EXECUTOR_URL` = org MCP URL (no query, so `model` elicitation), `EXECUTOR_TOKEN` = org-scoped PAT                                                                                                                                                          |
+| Decision                  | Choice                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Runtime / durability      | Pi Durable via Cloudflare Agents SDK `PiHarness` (beta) in SQLite-backed Durable Objects                                                                                                                                                                                                                                                                                                     |
+| Deploy tooling            | **Alchemy v2** (async Worker + `Cloudflare.DurableObject` binding — auto SQLite class migrations; no wrangler)                                                                                                                                                                                                                                                                               |
+| Bot topology              | **One DO instance per bot** (`getByName(botId)`), root session each                                                                                                                                                                                                                                                                                                                          |
+| Per-bot config            | **The `Registry` Durable Object** holds the roster (model, thinking level, system prompt, delegates); `bots.json` seeds a fresh registry and is inert afterwards; the web app writes to it; applied per session, idempotently, via `pi()` → `root.configure()`                                                                                                                               |
+| Models                    | **OpenCode Go** (`opencode-go` provider, `OPENCODE_API_KEY`); cheap tier: Workers AI (`@cf/...`) or free catalog models (`longcat-2.5-preview-free`, `step-5-preview-free`)                                                                                                                                                                                                                  |
+| Tooling                   | **Executor v2 meta-tools only** — bots never talk to apps directly                                                                                                                                                                                                                                                                                                                           |
+| Channels                  | **HTTP API and the first-party web app** (`POST /chat/:bot` + bearer or session cookie); per-run SSE events feed the app; **Telegram last, optional**                                                                                                                                                                                                                                        |
+| Idempotency               | `operationId` carries its origin in a prefix, built only in `src/operation.ts` — `http:<uuid-or-client-id>`, `cron:<botId>:<scheduledTime>`, `delegate:<source>:<id>`; at-most-once admission across retries/evictions, and prefixing is idempotent so an id the fleet returned rejoins the same operation                                                                                   |
+| Ingress auth              | Bearer secret on the `POST /chat/:bot` route, or a browser session cookie issued by `/login` (signed from the bearer; cookie mutations need a matching `Origin` and `X-Mackbot-CSRF: 1`) — anyone who finds the URL could otherwise drive the bots and their Executor spend; when Telegram lands: per-bot webhook `secret_token`, validate `X-Telegram-Bot-Api-Secret-Token` on every update |
+| Cost posture              | Free tier first: `progress: { partialIntervalMs: 1000, outputIntervalMs: 1000 }` (~10x fewer SQLite row writes); Workers Paid ($5) only if limits trip                                                                                                                                                                                                                                       |
+| Sandboxing (Daytona etc.) | **Deferred** — no code seam today; the route stays an `ExecutionEnv` / Executor app; revisit when a bot needs to build/run things (Grok Bot's "own computer" phase)                                                                                                                                                                                                                          |
+| Executor hosting          | Free tier (solo, $0) or self-host — both work; `EXECUTOR_URL` = org MCP URL (no query, so `model` elicitation), `EXECUTOR_TOKEN` = org-scoped PAT                                                                                                                                                                                                                                            |
 
 ## Project layout
 
 ```
 mackbot/
-├── alchemy.run.ts       # Worker, Bot DO binding, AI binding, crons, secrets (Config.Redacted)
+├── alchemy.run.ts       # Worker, Bot + Registry DO bindings, AI binding, crons, secrets (Config.Redacted)
 ├── bots.json            # the seed roster (the durable roster lives in the Registry DO)
 ├── oxlint.config.ts     # lint config — core profile on everything, effect profile on alchemy.run.ts only
 ├── package.json         # the Worker app + the workspace root (lint/format/test scripts + deps)
 ├── .env.example         # documented secret names (copy to .env; never commit .env)
 ├── tools/oxlint/        # vendored @ism0080/oxlint-plugin-forge (a workspace member, builds + tests green)
-├── tests/               # smoke tests + runner (bots, chat-request, operation, audit-log, bot-delegation, executor-mcp)
+├── tests/               # smoke tests + runner (routes, approvals, streams, registry, delegation, executor-mcp, …)
 ├── packages/contract/   # @mackbot/contract — the wire vocabulary the Worker and the web app share
+├── web/                 # @mackbot/web — the Foldkit browser app, built into web/dist and served by the Worker
 └── src/
     ├── index.ts         # Bot class (PiHarness + ensureBot) + front door fetch + scheduled
     ├── bots.ts          # the registry's rules (model, thinking level, roster) + modelRef resolution
-    ├── constants.ts     # shared values (LONG_POLL_TIMEOUT_MS)
+    ├── registry.ts      # the Registry DO: the durable roster and its writes
+    ├── feed.ts          # per-run SSE: durable chunk log, generations, resume
+    ├── approvals.ts     # durable paused calls and the path from a decision to a resume
+    ├── runs.ts          # run windows: which submission produced which entries
+    ├── session.ts       # the login cookie and the CSRF proof
     ├── executor-mcp.ts  # Executor v2 bridge (6 meta-tools, MCP TS SDK streamable HTTP)
     ├── bot-delegation.ts# delegate_to_bot pi tool (guards + long-poll)
     ├── chat-request.ts  # front-door request contract (bearer, byte cap, body schema)
@@ -89,11 +94,11 @@ mackbot/
         └── delegation.ts
 ```
 
-Dependencies (all pinned): `alchemy`, `effect`, `agents`, `@earendil-works/pi-durable`, `@earendil-works/pi-ai`, `@earendil-works/chord`, `@modelcontextprotocol/sdk`. No hono/grammy — plain `fetch` handlers.
+Dependencies (all pinned): `alchemy`, `effect`, `agents`, `@earendil-works/pi-durable`, `@earendil-works/pi-ai`, `@earendil-works/chord`, `@modelcontextprotocol/sdk`; for the web app, `foldkit` and `vite`. No hono/grammy — plain `fetch` handlers.
 
-Lint tooling (vendored from the forge repo, already in place): `tools/oxlint/` holds the `@ism0080/oxlint-plugin-forge` rule set (anti-slop / effect / react / xstate profiles) and is a workspace member, so one `bun install` manages it. Root `oxlint.config.ts` enables the core profile on everything and the effect profile on `alchemy.run.ts` only (src/ wraps the Pi/Cloudflare promise+callback SDKs at its boundaries, where Effect-idiom rules like `no-direct-fetch`/`no-try-catch` would fight deliberate boundary code); the plugin's own source is ignored by the root config and verifies itself via `bun run tools:oxlint` (tsc build + vitest + smoke). The react/xstate profiles come into play if the first-party webapp lands. Scripts: `lint` / `format` (oxfmt) / `tools:oxlint`.
+Lint tooling (vendored from the forge repo, already in place): `tools/oxlint/` holds the `@ism0080/oxlint-plugin-forge` rule set (anti-slop / effect / react / xstate profiles) and is a workspace member, so one `bun install` manages it. Root `oxlint.config.ts` enables the core profile on everything and the effect profile on `alchemy.run.ts` only (src/ wraps the Pi/Cloudflare promise+callback SDKs at its boundaries, where Effect-idiom rules like `no-direct-fetch`/`no-try-catch` would fight deliberate boundary code); the plugin's own source is ignored by the root config and verifies itself via `bun run tools:oxlint` (tsc build + vitest + smoke). The react/xstate profiles stay unused: the web app is vanilla DOM driven by Foldkit and lints under its own config. Scripts: `lint` / `format` (oxfmt) / `tools:oxlint`.
 
-The wire vocabulary the Worker and the web app share lives in `packages/contract/` (`@mackbot/contract`), a source-only workspace package: no build step, and the browser and the Worker read the same Schemas. It owns the wire enums (operation origins, thinking levels) and the paging rule; the Worker owns the id builders and the model catalog.
+The wire vocabulary the Worker and the web app share lives in `packages/contract/` (`@mackbot/contract`), a source-only workspace package: no build step, and the browser and the Worker read the same Schemas. It owns the wire enums (operation origins, thinking levels) and the paging rule; the Worker owns the id builders, and the model catalog lives in the contract's `catalog.ts` because the wire's thinking-level union derives from it (the browser imports the union, never the catalog).
 
 `bots.json` sketch:
 
@@ -148,7 +153,7 @@ Implementation: `@modelcontextprotocol/sdk` `StreamableHTTPClientTransport` (wor
 - **The approval rule is the harness's, not the prompt's.** A `ToolTask` hook refuses an `executor_resume` that no human decision vouches for, which is the one rule the prompt cannot enforce.
 - **The wake alarm is the SDK's, not pi's.** pi's own `onWake` would let the host arm an alarm for the earliest sleep instead of a heartbeat, but `agents@0.28.1` does not forward it, and pi's `Harness.open` is only reached through the SDK's factory. Replacing the SDK's wake machinery is not worth a personal fleet's alarm bill; the fix belongs upstream.
 - **Pi is vendored from a pinned commit.** mackbot needs Pi's unreleased features, so `tools/vendor-pi.mjs` builds the five packages the update cascades into from one SHA and `package.json` installs the tarballs with `overrides`. The SHA is the pin; nothing tracks a branch.
-- **Pi Durable limitations to design around**: conversations can't be deleted yet (matters for the later per-chat sessions phase); event streams are snapshot-only with no resume cursor (matters for the SSE route — a reconnecting client gets a fresh snapshot); a single model call streaming >15 min is cut off (alarm invocations cap at 15 min, harness hands off every 10).
+- **Pi Durable limitations to design around**: conversations can't be deleted yet (matters for the later per-chat sessions phase); pi's own event streams are snapshot-only with no resume cursor, so `src/feed.ts` keeps a durable chunk log of its own, tags every frame with its stream generation, and replays a snapshot when a client's cursor is too old; a single model call streaming >15 min is cut off (alarm invocations cap at 15 min, harness hands off every 10).
 - **Telegram flow (channel added last, optional)**: `setWebhook` with a per-bot `secret_token`; the front door validates `X-Telegram-Bot-Api-Secret-Token` on every update. Webhook handler only durably submits (`operationId`) and acks 200 immediately — webhook retries can't double-answer. The **DO sends the reply** via `sendMessage` when the submission settles, not the front door's `ctx.waitUntil` (multi-minute runs outlive a Worker request, and the PiHarness wake-up machinery already guarantees the DO survives to completion). Mid-run Telegram corrections use `whenBusy: "steer"` to join the running work instead of queueing as a follow-up.
 - **Cron briefs**: `crons: ["0 * * * *"]` → per-bot `brief()` with stable `operationId`.
 - **Secrets**: `.env` → `Config.Redacted` → `secret_text` → `process.env` via `nodejs_compat` (how pi-ai resolves `OPENCODE_API_KEY`).
@@ -163,7 +168,7 @@ Implementation: `@modelcontextprotocol/sdk` `StreamableHTTPClientTransport` (wor
 
 1. **Tool result shape**: discrepancy confirmed real — PiHarness docs show `{ content: [...] }`, pi-durable README shows `{ output, structuredOutput, details }` (transcript stores only `output`/`details`), and the README warns the experimental API "changes without notice between releases" (hence the pinned deps). Match `ToolRegistration` in the _pinned_ version; the bridge smoke test settles it.
 2. **Executor v2 endpoint/key**: `EXECUTOR_URL` = org MCP URL (`https://mcp.executor.sh/org/<org-id-or-slug>/mcp`; self-host `<origin>/mcp`) + org-scoped PAT. ("Least-privilege API key" doesn't exist — PATs carry no permission/tool settings; see the scoping caveat in the bridge section.)
-3. **Model IDs**: catalog fetched 2026-10 — 22 models (e.g. `glm-5.3`, `kimi-k2.7-code`, `claude-haiku-5-5`, `deepseek-v4-pro`, plus free `longcat-2.5-preview-free` / `step-5-preview-free`). Remaining: pin exact IDs in `bots.json` and check each model's thinking variants (they differ per model).
+3. **Model IDs**: the catalog (fetched 2026-10) lives in `packages/contract/src/catalog.ts` and seeds `bots.json`; each id's thinking variants are declared there and served at `GET /models`. Shrunk to the 10 ids mackbot actually offers; add a model and its variants in one place.
 4. **`alchemy dev` + AI-family bindings**: Alchemy v2 claims local emulation of Workers _and_ Durable Objects; the `AI` binding in dev is the part to verify, as is the `Cloudflare.DurableObject` resource's auto SQLite class migration claim. If flaky, dev against OpenCode Go directly or deploy a preview stage.
 5. First deploy: `adopt(true)` only if a same-named Worker already exists (it shouldn't — fresh project).
 
@@ -175,8 +180,8 @@ Implementation: `@modelcontextprotocol/sdk` `StreamableHTTPClientTransport` (wor
 4. `alchemy dev` local test via `POST /chat/:bot`
 5. `bun alchemy deploy` (HTTP API live)
 6. `/status` + cron briefs
-7. Later (optional): first-party webapp on the SSE events route (PiHarness exposes each session's event stream; reconnects are snapshot-only — see Pi limitations above), per-chat sessions, sandbox/"own computer" phase
-8. **Telegram integration — last, and only if the webapp doesn't replace it as the phone surface**: `setWebhook` per bot (with per-bot `secret_token`); approval buttons via `model` elicitation mode come later still
+7. First-party webapp — **built**: home, transcripts, generation-guarded per-run SSE, approvals, stop/retry, and the roster editor. Still open: a composer for `POST /chat/:bot`, per-chat sessions, sandbox/"own computer" phase
+8. **Telegram integration — last, and optional**: `setWebhook` per bot (with per-bot `secret_token`); approval buttons in that channel come later still
 
 ## Cross-bot memory (cut)
 
@@ -190,7 +195,7 @@ What was tried, and where each stopped:
 
 If it returns, the shortest route is a wrapper app over Kody's REST API, `GET /v1/memories`, `POST /v1/memories`, `POST /v1/memories/verify`, and `GET`/`DELETE /v1/memories/{memory_id}`, with a `secrets` account holding a `kody_at_...` token, reads on `approval: never()` and writes on `always()`.
 
-## Open inputs (before implementation)
+## Setup inputs
 
 1. `EXECUTOR_URL` (org URL, no query) + org-scoped PAT (`EXECUTOR_TOKEN`); Executor setup: install apps, connect accounts (dashboard / connection links — never via chat), create per-app profiles, note profile IDs
 2. Bot roster: names, model per bot (Telegram tokens via BotFather only if/when that channel lands)
