@@ -21,21 +21,37 @@ foundation pieces are already implemented and are intentionally omitted here:
   `POST /retry/:bot` runs it again.
 - A durable wait for an approval, so a decision cannot be lost between the
   row being written and the call being resumed.
+- A durable bot roster: the `Registry` Durable Object holds the fleet's bots,
+  and the web app edits a bot's prompt, model, brief and thinking level and
+  adds a bot without a redeploy. `bots.json` seeds a fresh registry and is
+  inert afterwards.
+- Durable stream resumption: every frame carries its stream generation, a run's
+  stream rotates to a new segment only at the chunk ceiling, and
+  `Last-Event-ID` / `?from=` / `?gen=` resume where the client left off or fall
+  back to a snapshot instead of skipping the head.
+- Approval controls in the web app: a paused call becomes a durable approval,
+  the app's cards decide allow or deny, and the decision steers the resume.
+  Other channels still need their own controls.
 
 ## Product and UX
 
-- **Durable stream resumption.** Replace snapshot-only SSE reconnect behavior
-  with a monotonic commit/entry cursor so clients can resume from
-  `Last-Event-ID` and fall back to a full snapshot only when the cursor is too
-  old.
-- **In-product approval controls.** Add `model` mode with approve/deny buttons in
-  the chosen channel, then call `resume(requestId, answer)`. Keep browser links
-  as a fallback.
 - **Saved routines (“show me once”).** Allow a user to record a workflow and
   store it as a reusable routine, then run it on a schedule with approval gates.
-- **Bot presets / marketplace config.** Evolve `bots.json` into versioned presets
-  with model, prompt, delegates, approved tools, and channel
-  bindings.
+- **Bot presets / marketplace config.** The roster is durable now and the web
+  app edits it. Still open: versioned presets a bot can be restored to, the
+  approved-tools list, and channel bindings.
+- **Deleting a bot.** The roster's write path can add and replace a bot, but
+  not remove one. A removed bot leaves its Durable Object with its transcripts,
+  audit rows and commitments, and the Worker cannot delete an instance, so the
+  delete route has to decide what happens to that history first.
+- **Editing a bot's delegate list and run policy.** The web app edits the
+  model, the thinking level, the prompt and the brief. The delegate list and
+  the `commitments` flag are carried through a save untouched, so they cannot
+  be changed there yet. The delegate list has a rule of its own: absent means
+  the bot may delegate to any bot, an empty list means it may delegate to
+  none. The commitments extension is installed when the harness opens, so
+  flipping that flag needs a restart, while a run policy edit lands on the
+  bot's next submit.
 - **Shared workspaces across bots.** Add a real shared file/workspace capability
   with provenance fields identifying the bot that created or changed each
   artifact.
@@ -85,8 +101,10 @@ foundation pieces are already implemented and are intentionally omitted here:
 
 ## Channels and integration
 
-- **Custom UI channel.** The first-party webapp is the only channel; build it as an
-  adapter over the same submit, wait, resume, and status primitives.
+- **A composer.** The web app is the first-party channel for reading and
+  steering a fleet — status, transcripts, approvals, stop, retry, and the roster
+  — but it cannot originate work. Add a composer over `POST /chat/:bot` that
+  follows the run through `/events`.
 - **Additional channel adapters.** Reuse proven implementations for Discord,
   Slack, or other platforms instead of hand-rolling each one.
 - **Service binding access.** Allow private Workers or applications to reach bots
@@ -109,9 +127,8 @@ foundation pieces are already implemented and are intentionally omitted here:
 
 ## Suggested priority
 
-1. Durable stream resumption and approval buttons.
-2. Sandbox and workspace graduation and dynamic code execution.
-3. Async delegation and thread lineage.
-4. Bot presets and saved routines.
-5. Custom UI channel and additional channels.
-6. Spend controls, tracing, and audit-runtime integration.
+1. Sandbox and workspace graduation and dynamic code execution.
+2. Async delegation and thread lineage.
+3. Bot presets and saved routines.
+4. A composer, then additional channels.
+5. Spend controls, tracing, and audit-runtime integration.

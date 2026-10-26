@@ -4,7 +4,7 @@ import type {
   BotView,
   EntryView,
   TranscriptPage,
-} from "@mackbot/web-contract";
+} from "@mackbot/contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";

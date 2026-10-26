@@ -1,11 +1,16 @@
 import {
   AbortResultSchema,
+  BotConfigSchema,
+  BotIdSchema,
   BotViewSchema,
+  BotWriteResultSchema,
+  ModelCatalogSchema,
   RetryResultSchema,
+  RosterSchema,
   TranscriptPageSchema,
-} from "@mackbot/web-contract";
-import type { AbortRequest } from "@mackbot/web-contract";
-import type { ApprovalDecision } from "@mackbot/web-contract";
+} from "@mackbot/contract";
+import type { AbortRequest, BotCreate, BotWrite } from "@mackbot/contract";
+import type { ApprovalDecision } from "@mackbot/contract";
 import { Clock, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Command, Http } from "foldkit";
@@ -99,7 +104,120 @@ const DecisionAcceptedSchema = Schema.Struct({
   decidedAt: Schema.Number,
 });
 
-const DecisionRefusedSchema = Schema.Struct({ error: Schema.String });
+/**
+ * A refusal's own shape: `{ error }`, carrying the rule's words. The decision
+ * route answers it when the approval was not pending, and the write routes
+ * answer it when a rule refused the write.
+ */
+const RefusedSchema = Schema.Struct({ error: Schema.String });
+
+/**
+ * The roster the registry holds: one configuration per bot, keyed by bot id.
+ * The route answers the contract's `RosterSchema`, so the browser decodes it
+ * with the contract's schema rather than a private copy of the shape.
+ */
+export const Roster = Command.define("Roster", {
+  messages: [Message.RosterLoaded, Message.RosterFailed],
+  execute: Effect.gen(function* () {
+    const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+    const response = yield* client.get(apiUrl("/bots"));
+    const roster = yield* HttpClientResponse.schemaBodyJson(RosterSchema)(response);
+    return Message.RosterLoaded({ roster });
+  }).pipe(
+    Effect.catch((cause) => Effect.succeed(Message.RosterFailed({ error: describe(cause) }))),
+    Effect.provide(Http.layer),
+  ),
+});
+
+/**
+ * The model catalog: the models the Worker knows, and the thinking levels each
+ * one supports. The Worker owns it, so it crosses the wire rather than being
+ * bundled into the browser.
+ */
+export const Catalog = Command.define("Catalog", {
+  messages: [Message.CatalogLoaded, Message.CatalogFailed],
+  execute: Effect.gen(function* () {
+    const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+    const response = yield* client.get(apiUrl("/models"));
+    const catalog = yield* HttpClientResponse.schemaBodyJson(ModelCatalogSchema)(response);
+    return Message.CatalogLoaded({ catalog });
+  }).pipe(
+    Effect.catch((cause) => Effect.succeed(Message.CatalogFailed({ error: describe(cause) }))),
+    Effect.provide(Http.layer),
+  ),
+});
+
+/**
+ * The refusal the routes answer a write with: `400 { error }`, carrying the
+ * rule's own words. It is read rather than turned into a decode error, so the
+ * person is told what the rule said instead of what the status code was.
+ */
+const refusalOf = (
+  response: HttpClientResponse.HttpClientResponse,
+): Effect.Effect<string, never, never> =>
+  HttpClientResponse.schemaBodyJson(RefusedSchema)(response).pipe(
+    Effect.map((body) => body.error),
+    Effect.catch(() => Effect.succeed(`the write route answered ${response.status}`)),
+  );
+
+/**
+ * `PUT /bots/:id` with the contract's write body. The whole configuration of
+ * the bot is sent, so the fields the form does not show survive the round
+ * trip.
+ */
+export const SaveBot = Command.define("SaveBot", {
+  args: { bot: Schema.String, config: BotConfigSchema },
+  messages: [Message.BotSaved, Message.BotSaveFailed],
+  execute: ({ bot, config }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.put(apiUrl(`/bots/${encodeURIComponent(bot)}`)).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson({ bot: config } satisfies BotWrite),
+      );
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(yield* refusalOf(response));
+      }
+      const written = yield* HttpClientResponse.schemaBodyJson(BotWriteResultSchema)(response);
+      return Message.BotSaved({ id: written.id, bot: written.bot });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.BotSaveFailed({ bot, error: describe(cause) })),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/**
+ * `POST /bots` with the contract's create body: the id to give the new bot and
+ * its configuration.
+ */
+export const CreateBot = Command.define("CreateBot", {
+  args: { id: BotIdSchema, bot: BotConfigSchema },
+  messages: [Message.BotCreated, Message.BotCreateFailed],
+  execute: ({ id, bot }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.post(apiUrl("/bots")).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson({ id, bot } satisfies BotCreate),
+      );
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(yield* refusalOf(response));
+      }
+      const created = yield* HttpClientResponse.schemaBodyJson(BotWriteResultSchema)(response);
+      return Message.BotCreated({ id: created.id, bot: created.bot });
+    }).pipe(
+      Effect.catch((cause) => Effect.succeed(Message.BotCreateFailed({ error: describe(cause) }))),
+      Effect.provide(Http.layer),
+    ),
+});
 
 /**
  * `POST /abort/:bot` with the contract's abort body. The route answers the
@@ -162,7 +280,7 @@ export const DecideApproval = Command.define("DecideApproval", {
       const response = yield* client.execute(request);
 
       if (response.status === 409) {
-        yield* HttpClientResponse.schemaBodyJson(DecisionRefusedSchema)(response);
+        yield* HttpClientResponse.schemaBodyJson(RefusedSchema)(response);
         return Message.ApprovalRefused({ bot, approvalId });
       }
       if (response.status < 200 || response.status >= 300) {

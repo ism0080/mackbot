@@ -8,7 +8,7 @@
  * the approval card takes it — a relative label is a function of the client's
  * clock, and the client mints that once.
  */
-import type { FailureView, TaskView } from "@mackbot/web-contract";
+import type { FailureView, TaskView } from "@mackbot/contract";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { elapsedOf } from "./format.ts";

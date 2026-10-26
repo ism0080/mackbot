@@ -5,7 +5,7 @@ import type {
   EntryView,
   FailureView,
   TaskView,
-} from "@mackbot/web-contract";
+} from "@mackbot/contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 

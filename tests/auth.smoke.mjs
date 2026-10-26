@@ -26,6 +26,7 @@ if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
 }
 
 const worker = (await import("../src/index.ts")).default;
+const { registryBinding } = await import("./support/registry.mjs");
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -40,6 +41,7 @@ const decisions = [];
 const assetRequests = [];
 const env = {
   CHAT_BEARER_TOKEN: TOKEN,
+  Registry: registryBinding(),
   ASSETS: {
     fetch: async (request) => {
       assetRequests.push(new URL(request.url).pathname);

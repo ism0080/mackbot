@@ -1,5 +1,5 @@
-import { FrameSchema } from "@mackbot/web-contract";
-import type { BotView, Frame } from "@mackbot/web-contract";
+import { FrameSchema } from "@mackbot/contract";
+import type { BotView, Frame } from "@mackbot/contract";
 import { Duration, Effect, Equivalence, Option, Queue, Schema, Stream } from "effect";
 import { Subscription } from "foldkit";
 import { AsyncData } from "foldkit";
@@ -73,9 +73,15 @@ const sourceOf = (bot: string, channel: Channel | undefined): Source => ({
 });
 
 /** The bots to hold open on the current screen, in a stable order so the
- *  dependency equivalence does not see an array reorder as a change. */
+ *  dependency equivalence does not see an array reorder as a change. The
+ *  roster screen follows no bot, so it holds no stream open. */
 const activeSources = (model: Model): readonly Source[] => {
-  const bots = model.screen._tag === "Home" ? Object.keys(model.channels) : [model.screen.bot];
+  const bots =
+    model.screen._tag === "Home"
+      ? Object.keys(model.channels)
+      : model.screen._tag === "Transcript"
+        ? [model.screen.bot]
+        : [];
   return bots
     .filter((bot) => isLive(model.channels[bot]))
     .map((bot) => sourceOf(bot, model.channels[bot]))

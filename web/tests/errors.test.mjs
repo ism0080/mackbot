@@ -8,7 +8,7 @@
  */
 import { Effect, Schema } from "effect";
 
-import { BotViewSchema, TranscriptPageSchema } from "../../src/web-contract.ts";
+import { BotViewSchema, TranscriptPageSchema } from "@mackbot/contract";
 import { HERMES_STATUS, HERMES_TRANSCRIPT, SCRIBE_STATUS } from "./fixture.mjs";
 import { boot, makeChecker } from "./support/app.mjs";
 import { pager, startStub } from "./support/stub.mjs";

@@ -1,7 +1,7 @@
 import { AsyncData } from "foldkit";
 
 import { Status } from "./api.ts";
-import { Screen } from "./model.ts";
+import { EMPTY_DRAFT, Screen } from "./model.ts";
 
 export const init = () => ({
   model: {
@@ -11,6 +11,10 @@ export const init = () => ({
     toast: null,
     channels: {},
     polling: true,
+    registry: AsyncData.Idle(),
+    catalog: AsyncData.Idle(),
+    draft: EMPTY_DRAFT,
+    newBotId: "",
   },
   commands: [Status()],
 });

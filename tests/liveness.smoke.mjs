@@ -21,7 +21,7 @@
  */
 
 const { projectTasks } = await import("../src/liveness.ts");
-const { TaskViewSchema } = await import("../src/web-contract.ts");
+const { TaskViewSchema } = await import("@mackbot/contract");
 const Schema = await import("effect/Schema");
 
 const failures = [];

@@ -23,6 +23,8 @@ import type { PiWhenBusy } from "agents/harness/pi";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { trimmedNonEmpty } from "@mackbot/contract";
+
 export interface ChatRequest {
   readonly text: string;
   readonly operationId?: string;
@@ -33,10 +35,6 @@ export interface ChatRequest {
 
 export const MAX_TEXT_LENGTH = 16_384;
 export const MAX_BODY_BYTES = 256 * 1024;
-
-export const trimmedNonEmpty = Schema.String.check(
-  Schema.makeFilter((input: string) => input.trim().length > 0),
-);
 
 const boundedText = Schema.String.check(
   Schema.makeFilter((input: string) => input.trim().length > 0 && input.length <= MAX_TEXT_LENGTH),

@@ -20,7 +20,7 @@
 
 const { parkedTasks } = await import("../src/task-retry.ts");
 const { settingsFor } = await import("../src/runtime-policy.ts");
-const { TaskViewSchema } = await import("../src/web-contract.ts");
+const { TaskViewSchema } = await import("@mackbot/contract");
 const Schema = await import("effect/Schema");
 
 const failures = [];

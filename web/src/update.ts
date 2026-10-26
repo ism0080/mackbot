@@ -1,20 +1,34 @@
 import type {
   ApprovalView,
+  BotConfig,
   BotView,
   EntryView,
   Frame,
+  ModelCatalog,
   TranscriptPage,
-} from "@mackbot/web-contract";
+} from "@mackbot/contract";
+import { BotIdSchema } from "@mackbot/contract";
 import { Option } from "effect";
+import * as Schema from "effect/Schema";
 import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
 import type { Update } from "foldkit";
 
-import { DecideApproval, RetryTask, Status, StopBot, Transcript } from "./api.ts";
+import {
+  Catalog,
+  CreateBot,
+  DecideApproval,
+  RetryTask,
+  Roster,
+  SaveBot,
+  Status,
+  StopBot,
+  Transcript,
+} from "./api.ts";
 import { Message } from "./message.ts";
 import { botName } from "./partials.ts";
-import { FRAME_WINDOW, Screen } from "./model.ts";
-import type { Channel, Model } from "./model.ts";
+import { EMPTY_DRAFT, FRAME_WINDOW, Screen } from "./model.ts";
+import type { BotDraft, Channel, Model, ThinkingLevel } from "./model.ts";
 
 const emptyChannel = (): Channel => ({
   status: AsyncData.Idle(),
@@ -245,6 +259,79 @@ const reconnect = (channel: Channel): Channel => {
   };
 };
 
+/** The roster's bots, or none at all when the roster is not in hand. */
+const botsOf = (model: Model): Record<string, BotConfig> => {
+  const roster = dataOf(model.registry);
+  return roster === undefined ? {} : roster.bots;
+};
+
+/**
+ * The roster with its bots replaced. The state of the fetch is kept, so a
+ * roster that failed to refresh keeps saying so while the edits land.
+ */
+const withBots = (model: Model, bots: Record<string, BotConfig>): Model =>
+  modifyFields(model, {
+    registry: (registry) => AsyncData.map(registry, (roster) => ({ ...roster, bots })),
+  });
+
+/**
+ * One bot's configuration, changed. The roster is the working copy, so the
+ * edit lands in the roster's own entry and everything the form does not show
+ * stays where it was.
+ */
+const editBot = (model: Model, bot: string, change: (config: BotConfig) => BotConfig): Model => {
+  const roster = dataOf(model.registry);
+  if (roster === undefined) return model;
+  const config = roster.bots[bot];
+  if (config === undefined) return model;
+  return withBots(model, { ...roster.bots, [bot]: change(config) });
+};
+
+/** The catalog the pickers read, or an empty one when it has not arrived. */
+const catalogOf = (model: Model): ModelCatalog => {
+  const catalog = dataOf(model.catalog);
+  return catalog === undefined ? { models: {} } : catalog;
+};
+
+/**
+ * The level a bot may keep when its model changes. The catalog says which
+ * levels a model supports, so a level the new model does not have goes back
+ * to none — the rule the server holds as well.
+ *
+ * A model the catalog does not list — a Workers AI model — supports every
+ * level, so nothing is taken away from it.
+ */
+const levelFor = (
+  catalog: ModelCatalog,
+  model: string,
+  level: ThinkingLevel | null | undefined,
+): ThinkingLevel | null => {
+  if (level === undefined || level === null) return null;
+  const supported = catalog.models[model];
+  if (supported === undefined) return level;
+  return supported.includes(level) ? level : null;
+};
+
+/** The field a configuration is missing, if any. The server refuses both, so
+ *  the form refuses them before the round trip. */
+const emptyFieldOf = (config: BotConfig): string | null =>
+  config.model.trim().length === 0
+    ? "model"
+    : config.systemPrompt.trim().length === 0
+      ? "system prompt"
+      : null;
+
+/** The draft of the bot being created, as the configuration the wire takes. */
+const configOfDraft = (draft: BotDraft): BotConfig => ({
+  model: draft.model,
+  systemPrompt: draft.systemPrompt,
+  thinkingLevel: draft.thinkingLevel ?? undefined,
+  brief: draft.brief.trim().length === 0 ? undefined : draft.brief,
+});
+
+const withToast = (model: Model, text: string): Model =>
+  modifyFields(model, { toast: () => ({ text }) });
+
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
     PolledStatus: () =>
@@ -417,4 +504,138 @@ export const update = (model: Model, message: Message) =>
             })),
           }
         : { model },
+    ClickedOpenBots: () => ({
+      // The roster and the catalog are asked for every time the screen opens,
+      // so what it shows is the server's truth rather than a stale copy.
+      model: modifyFields(model, { screen: () => Screen.Bots() }),
+      commands: [Roster(), Catalog()],
+    }),
+    RosterLoaded: ({ roster }) => ({
+      // The roster's own values seed the screen: it is the working copy, so an
+      // edit lands on top of what the server said.
+      model: modifyFields(model, { registry: () => AsyncData.succeed(roster) }),
+    }),
+    RosterFailed: ({ error }) => ({
+      model: modifyFields(model, { registry: () => AsyncData.fail(error) }),
+    }),
+    CatalogLoaded: ({ catalog }) => ({
+      model: modifyFields(model, { catalog: () => AsyncData.succeed(catalog) }),
+    }),
+    CatalogFailed: ({ error }) => ({
+      model: modifyFields(model, { catalog: () => AsyncData.fail(error) }),
+    }),
+    EditedBotModel: ({ bot, model: chosen }) => {
+      const catalog = catalogOf(model);
+      if (bot === null) {
+        return {
+          model: modifyFields(model, {
+            draft: (draft) =>
+              modifyFields(draft, {
+                model: () => chosen,
+                thinkingLevel: (level) => levelFor(catalog, chosen, level),
+              }),
+          }),
+        };
+      }
+      return {
+        model: editBot(model, bot, (config) =>
+          modifyFields(config, {
+            model: () => chosen,
+            thinkingLevel: (level) => levelFor(catalog, chosen, level) ?? undefined,
+          }),
+        ),
+      };
+    },
+    EditedBotLevel: ({ bot, level }) =>
+      bot === null
+        ? {
+            model: modifyFields(model, {
+              draft: (draft) => modifyFields(draft, { thinkingLevel: () => level }),
+            }),
+          }
+        : {
+            // A bot that declares no level has no level at all, which is what
+            // the wire says.
+            model: editBot(model, bot, (config) =>
+              modifyFields(config, { thinkingLevel: () => level ?? undefined }),
+            ),
+          },
+    EditedBotPrompt: ({ bot, prompt }) =>
+      bot === null
+        ? {
+            model: modifyFields(model, {
+              draft: (draft) => modifyFields(draft, { systemPrompt: () => prompt }),
+            }),
+          }
+        : {
+            model: editBot(model, bot, (config) =>
+              modifyFields(config, { systemPrompt: () => prompt }),
+            ),
+          },
+    EditedBotBrief: ({ bot, brief }) =>
+      bot === null
+        ? {
+            model: modifyFields(model, {
+              draft: (draft) => modifyFields(draft, { brief: () => brief }),
+            }),
+          }
+        : {
+            // An empty brief is a bot with no brief, which is what the wire
+            // says; the server would refuse the empty string.
+            model: editBot(model, bot, (config) =>
+              modifyFields(config, {
+                brief: () => (brief.trim().length === 0 ? undefined : brief),
+              }),
+            ),
+          },
+    EditedNewBotId: ({ id }) => ({
+      model: modifyFields(model, { newBotId: () => id }),
+    }),
+    ClickedSaveBot: ({ bot }) => {
+      const roster = dataOf(model.registry);
+      const config = roster === undefined ? undefined : roster.bots[bot];
+      if (config === undefined) return { model };
+      const empty = emptyFieldOf(config);
+      if (empty !== null) {
+        return { model: withToast(model, `Couldn't save ${botName(bot)}: the ${empty} is empty.`) };
+      }
+      return { model, commands: [SaveBot({ bot, config })] };
+    },
+    ClickedCreateBot: () => {
+      const id = model.newBotId.trim();
+      if (id.length === 0) {
+        return { model: withToast(model, "The new bot needs an id.") };
+      }
+      if (!Schema.is(BotIdSchema)(id)) {
+        return {
+          model: withToast(model, "The id has to be a slug: lowercase letters, digits and dashes."),
+        };
+      }
+      const config = configOfDraft(model.draft);
+      const empty = emptyFieldOf(config);
+      if (empty !== null) {
+        return { model: withToast(model, `The new bot needs a ${empty}.`) };
+      }
+      return { model, commands: [CreateBot({ id, bot: config })] };
+    },
+    BotSaved: ({ id, bot }) => ({
+      // The server's answer is the bot as it is now stored, so the working copy
+      // takes it rather than the edit that was sent.
+      model: withToast(withBots(model, { ...botsOf(model), [id]: bot }), `Saved ${botName(id)}.`),
+    }),
+    BotSaveFailed: ({ bot, error }) => ({
+      model: withToast(model, `Couldn't save ${botName(bot)} (${error}).`),
+    }),
+    BotCreated: ({ id, bot }) => ({
+      model: withToast(
+        modifyFields(withBots(model, { ...botsOf(model), [id]: bot }), {
+          draft: () => EMPTY_DRAFT,
+          newBotId: () => "",
+        }),
+        `Added ${botName(id)}.`,
+      ),
+    }),
+    BotCreateFailed: ({ error }) => ({
+      model: withToast(model, `Couldn't add the bot (${error}).`),
+    }),
   });

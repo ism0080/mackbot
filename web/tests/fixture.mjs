@@ -2,7 +2,7 @@
  * The payloads the two documented routes used to be faked by. They are test
  * data now: `support/stub.mjs` serves them over a real HTTP boundary, and the
  * test harness decodes them with the same Schemas the app decodes with, so the
- * fixture cannot drift from `src/web-contract.ts` without failing.
+ * fixture cannot drift from the contract package without failing.
  *
  * The clock is anchored so every rendered clock label is the same on every run.
  * Hermes' `cron` entry deliberately has no `at`: pi's entries outside a run
@@ -185,4 +185,51 @@ export const SCRIBE_TRANSCRIPT = {
 export const TRANSCRIPTS = {
   hermes: HERMES_TRANSCRIPT,
   scribe: SCRIBE_TRANSCRIPT,
+};
+
+/**
+ * The roster the registry holds, in the shape `GET /bots` serves.
+ *
+ * Hermes carries the parts of a configuration the roster screen does not edit
+ * — a delegate list, a run policy and the commitments flag — so a save that
+ * touches only the prompt can be shown to leave them alone.
+ *
+ * Atlas runs on a Workers AI model, which the catalog does not list, so its
+ * model has to stay visible in the picker anyway.
+ */
+export const ROSTER = {
+  bots: {
+    hermes: {
+      model: "deepseek-v4-pro",
+      thinkingLevel: "high",
+      systemPrompt:
+        "You are Hermes, my chief of staff. You keep track of my open commitments and priorities.",
+      brief: "Hourly check-in. Advance anything you can do without me, and note what needs me.",
+      delegatesTo: ["scribe"],
+      runtime: { maxRetries: 3, parallelTools: true },
+      commitments: true,
+    },
+    scribe: {
+      model: "longcat-2.5-preview-free",
+      systemPrompt:
+        "You are Scribe, my note-taker. You capture what matters and turn it into short summaries.",
+    },
+    atlas: {
+      model: "@cf/meta/llama-3-3-70b-instruct-fp8-fast",
+      thinkingLevel: "low",
+      systemPrompt: "You are Atlas. You read everything and say what it means.",
+      brief: "Read the open threads and report what changed.",
+    },
+  },
+};
+
+/** The model catalog, in the shape `GET /models` serves. */
+export const CATALOG = {
+  models: {
+    "claude-haiku-5-5": ["none", "low", "medium", "high", "xhigh", "max"],
+    "deepseek-v4-pro": ["high", "max"],
+    "glm-5.3": ["low", "high", "max"],
+    "kimi-k2.7-code": [],
+    "longcat-2.5-preview-free": [],
+  },
 };

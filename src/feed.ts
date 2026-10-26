@@ -33,8 +33,8 @@ import * as Schema from "effect/Schema";
 
 import { streamIdFor } from "./runs.ts";
 import type { RunRow, RunStore } from "./runs.ts";
-import { EventsQuerySchema, encodeFrame, encodeSnapshot } from "./web-contract.ts";
-import type { EventsQuery, Frame } from "./web-contract.ts";
+import { EventsQuerySchema, encodeFrame, encodeSnapshot } from "@mackbot/contract";
+import type { EventsQuery, Frame } from "@mackbot/contract";
 
 /** How long an idle tail may stay silent before it sends a comment frame. */
 const HEARTBEAT_MS = 25_000;
@@ -97,7 +97,7 @@ const runStreams = <A>(task: () => Promise<A>): Promise<A> =>
   Effect.runPromise(Effect.tryPromise(task));
 
 /**
- * SAFETY: a Frame is JSON data by construction — the `web-contract` encoders
+ * SAFETY: a Frame is JSON data by construction — the contract's encoders
  * emit only strings, numbers, booleans and arrays of them — but its arrays are
  * `readonly` while `StreamJson`'s are mutable, so the two types differ only in
  * the compiler. The append serializes immediately, so no mutation can observe

@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@effect/platform-browser": "4.0.0",
+    "@mackbot/contract": "workspace:*",
     "effect": "4.0.4",
     "foldkit": "0.168.0"
   },

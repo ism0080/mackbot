@@ -4,9 +4,20 @@
  * Run with: bun tests/bot-delegation.smoke.mjs
  *
  * Pure-logic smoke: exercises the unknown-target and self-delegation guards
- * without a live Durable Object, using a fake env.Bot. No credentials needed.
+ * without a live Durable Object, using a fake env.Bot and a fake env.Registry.
+ * No credentials needed.
  */
 const { createBotDelegation } = await import("../src/bot-delegation.ts");
+
+const ROSTER = {
+  hermes: {
+    model: "deepseek-v4-pro",
+    thinkingLevel: "high",
+    systemPrompt: "You are Hermes.",
+    delegatesTo: ["scribe"],
+  },
+  scribe: { model: "longcat-2.5-preview-free", systemPrompt: "You are Scribe." },
+};
 
 const fakeEnv = {
   Bot: {
@@ -14,6 +25,9 @@ const fakeEnv = {
       submit: async () => ({ operationId: "x", accepted: true }),
       wait: async () => ({ status: "done", text: "ok" }),
     }),
+  },
+  Registry: {
+    getByName: () => ({ roster: async () => ({ ...ROSTER }) }),
   },
 };
 
@@ -72,6 +86,9 @@ const recordingEnv = {
       },
       wait: async () => ({ status: "timeout" }),
     }),
+  },
+  Registry: {
+    getByName: () => ({ roster: async () => ({ ...ROSTER }) }),
   },
 };
 

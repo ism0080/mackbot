@@ -1,13 +1,15 @@
 /**
- * Smoke test for the bots.json loader (src/bots.ts).
+ * Smoke test for the bot registry's rules (src/bots.ts).
  *
  * Run with: bun tests/bots.smoke.mjs
  *
  * Exercises the pure decoder through `parseBotRegistry` so every guard can be
- * checked without a crafted bots.json on disk, then confirms the real bundled
- * registry still loads.
+ * checked without a crafted registry on disk, then confirms the bundled seed
+ * file still decodes.
  */
-const { loadBots, parseBotRegistry, resolveModelRef } = await import("../src/bots.ts");
+import { readFileSync } from "node:fs";
+
+const { parseBotRegistry, resolveModelRef } = await import("../src/bots.ts");
 
 const failures = [];
 
@@ -31,21 +33,21 @@ const err = (label, raw, needle) => {
 err("non-object registry", [], "keyed by bot id");
 err("empty registry", {}, "the registry is empty");
 
-err("missing systemPrompt", { a: { model: "deepseek-v4-pro" } }, 'missing "systemPrompt"');
-err("missing model", { a: { systemPrompt: "x" } }, 'missing "model"');
+err("missing systemPrompt", { a: { model: "deepseek-v4-pro" } }, "Missing key");
+err("missing model", { a: { systemPrompt: "x" } }, "Missing key");
+err("blank systemPrompt", { a: { model: "deepseek-v4-pro", systemPrompt: "  " } }, "systemPrompt");
 err(
   "unknown model",
   { a: { model: "no-such-model", systemPrompt: "x" } },
   "not in the OpenCode Go catalog",
 );
+// The model is one id now: an object is not a model the shape can carry.
 err(
-  "object model bad provider",
-  { a: { model: { provider: "anthropic", modelId: "claude" }, systemPrompt: "x" } },
-  "is not supported",
+  "object model",
+  { a: { model: { provider: "opencode-go", modelId: "glm-5.3" }, systemPrompt: "x" } },
+  "Expected string",
 );
-ok("object model ok", {
-  a: { model: { provider: "opencode-go", modelId: "glm-5.3" }, systemPrompt: "x" },
-});
+ok("catalog model ok", { a: { model: "glm-5.3", systemPrompt: "x" } });
 ok("workers-ai model ok", { a: { model: "@cf/meta/llama-3.1-8b-instruct", systemPrompt: "x" } });
 
 ok("valid thinking level", {
@@ -59,7 +61,7 @@ err(
 err(
   "thinking level unknown",
   { a: { model: "glm-5.3", thinkingLevel: "extreme", systemPrompt: "x" } },
-  'field "thinkingLevel" must be one of',
+  "Expected",
 );
 err(
   "thinking level on variant-less model",
@@ -91,17 +93,23 @@ if (workersRef.provider !== "cloudflare" || workersRef.id !== "@cf/meta/llama") 
   failures.push(`resolveModelRef workers-ai: ${JSON.stringify(workersRef)}`);
 }
 
+// The bundled file is the registry's seed, so it has to decode.
 try {
-  const bots = loadBots();
-  for (const id of ["hermes", "scribe"]) {
-    if (!Object.hasOwn(bots, id)) failures.push(`real registry missing "${id}"`);
-  }
-  const hermes = resolveModelRef(bots.hermes);
-  if (hermes.provider !== "opencode-go" || hermes.id !== "deepseek-v4-pro") {
-    failures.push(`hermes model ref wrong: ${JSON.stringify(hermes)}`);
+  const raw = JSON.parse(readFileSync(new URL("../bots.json", import.meta.url), "utf8"));
+  const seeded = parseBotRegistry(raw);
+  if (!seeded.ok) {
+    failures.push(`the bundled seed does not decode: ${seeded.error}`);
+  } else {
+    for (const id of ["hermes", "scribe"]) {
+      if (!Object.hasOwn(seeded.bots, id)) failures.push(`the bundled seed is missing "${id}"`);
+    }
+    const hermes = resolveModelRef(seeded.bots.hermes);
+    if (hermes.provider !== "opencode-go" || hermes.id !== "deepseek-v4-pro") {
+      failures.push(`hermes model ref wrong: ${JSON.stringify(hermes)}`);
+    }
   }
 } catch (error) {
-  failures.push(`loadBots threw: ${error?.message ?? error}`);
+  failures.push(`the bundled seed could not be read: ${error?.message ?? error}`);
 }
 
 if (failures.length > 0) {

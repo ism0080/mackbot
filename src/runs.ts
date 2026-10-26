@@ -20,7 +20,7 @@ import { Option, Schema } from "effect";
 
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage } from "./sql.ts";
-import type { StreamStatusView } from "./web-contract.ts";
+import type { StreamStatusView } from "@mackbot/contract";
 
 /** One run, as `mackbot_runs` records it. */
 export interface RunRow {

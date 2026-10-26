@@ -28,7 +28,7 @@ const stub = startStub({
 
 const { check, finish } = makeChecker();
 const app = await boot(stub.origin);
-const { all, text, query, click, waitFor, settle } = app;
+const { all, text, query, click, waitFor } = app;
 
 try {
   await waitFor(() => all("[data-stop]").length === 1, "the stop button rendered");
@@ -37,7 +37,9 @@ try {
   check("the button names the bot", all("[data-stop]")[0].getAttribute("data-stop") === "hermes");
 
   click(query("[data-stop]"));
-  await settle();
+  // The stop is a request, not a fact: the toast appears when the answer
+  // arrives, so wait for it rather than sleeping a fixed interval.
+  await waitFor(() => text(".toast").includes("Stopped Hermes"), "the toast appeared");
 
   const stop = stub.requests.find((request) => request.path === "/abort/hermes");
   check("the app posted to the abort route", stop !== undefined, JSON.stringify(stub.requests));
@@ -56,6 +58,10 @@ try {
 
   // The status is read again, because the run that just stopped is gone from
   // the server's view of the world.
+  await waitFor(
+    () => stub.requests.filter((request) => request.path === "/status").length >= 2,
+    "the status was read again",
+  );
   const statuses = stub.requests.filter((request) => request.path === "/status");
   check("the status was read again", statuses.length >= 2, `${statuses.length}`);
 } finally {

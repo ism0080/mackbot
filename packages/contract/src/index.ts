@@ -1,11 +1,11 @@
 /**
- * web-contract — the vocabulary the Worker and the browser bundle share.
+ * contract — the vocabulary the Worker and the browser bundle share.
  *
  * One place defines what a `Frame` is, what a bot's status view looks like, and
  * how the new routes' query strings and bodies decode, so the server encodes and
  * the client decodes the same shapes rather than re-encoding them by hand. The
  * module is imported by the browser bundle, so it must stay free of
- * Workers-only APIs and of `src/feed.ts` / `src/approvals.ts`.
+ * Workers-only APIs and of the Worker's own modules.
  *
  * Request decoding happens at exactly two boundaries: the HTTP front door
  * decodes the `*Schema`s below, and the event bridge builds Frames with
@@ -23,22 +23,17 @@ import type {
 import type { ImagesInputContent, Message, Usage } from "@earendil-works/pi-ai";
 import * as Schema from "effect/Schema";
 
-import { trimmedNonEmpty } from "./chat-request.ts";
-import type { OperationOrigin } from "./operation.ts";
-import { originOf } from "./operation.ts";
-import type { ThinkingLevel } from "./bots.ts";
+import type { ThinkingLevel } from "./catalog.ts";
+import { OPERATION_ORIGINS, originOf } from "./operation.ts";
+
+export { OPERATION_ORIGINS, OPERATION_PREFIXES, originOf } from "./operation.ts";
+export type { OperationOrigin } from "./operation.ts";
 
 // ---------------------------------------------------------------------------
 // Enumerations mirrored across the Worker and the browser
 // ---------------------------------------------------------------------------
 
-const ORIGIN_VALUES = {
-  http: "http",
-  cron: "cron",
-  delegate: "delegate",
-} as const satisfies Record<OperationOrigin, OperationOrigin>;
-
-export const OperationOriginSchema = Schema.Literals(Object.values(ORIGIN_VALUES));
+export const OperationOriginSchema = Schema.Literals(Object.values(OPERATION_ORIGINS));
 
 const THINKING_LEVEL_VALUES = {
   none: "none",
@@ -51,13 +46,122 @@ const THINKING_LEVEL_VALUES = {
 
 export const ThinkingLevelSchema = Schema.Literals(Object.values(THINKING_LEVEL_VALUES));
 
+/**
+ * The provider a model comes from. The same two ids the model view carries,
+ * named once so the registry's declaration and the view's reference cannot
+ * drift apart.
+ */
+export const ProviderIdSchema = Schema.Literals(["opencode-go", "cloudflare"]);
+
 export const ModelRefSchema = Schema.Struct({
-  provider: Schema.Literals(["opencode-go", "cloudflare"]),
+  provider: ProviderIdSchema,
   id: Schema.String,
 });
+export type ModelRef = typeof ModelRefSchema.Type;
 
 const ENTRY_ROLES = ["user", "assistant", "tool", "system"] as const;
 export type EntryRole = (typeof ENTRY_ROLES)[number];
+
+/**
+ * A string with something in it. The Worker's chat body and the transcript
+ * and events queries all accept the same shape, so the filter lives with the
+ * vocabulary they share.
+ */
+export const trimmedNonEmpty = Schema.String.check(
+  Schema.makeFilter((input: string) => input.trim().length > 0),
+);
+
+// ---------------------------------------------------------------------------
+// Bot configuration — the registry's vocabulary
+// ---------------------------------------------------------------------------
+
+/**
+ * The model a bot declares: the model's id.
+ *
+ * One spelling for every provider. A Workers AI model is named by its own
+ * `@cf/...` path and any other model by its catalog id, so the browser renders
+ * and writes a model the same way whichever provider it names.
+ */
+export const ModelDeclSchema = trimmedNonEmpty;
+export type ModelDecl = typeof ModelDeclSchema.Type;
+
+/**
+ * A bot's id. It is the Durable Object's name, the path segment the routes
+ * carry it in, and the key its transcript is filed under, so it is a slug: a
+ * lowercase word, a digit, and dashes between them.
+ */
+export const BotIdSchema = Schema.String.check(
+  Schema.makeFilter((input: string) => /^[a-z0-9][a-z0-9-]{0,62}$/u.test(input)),
+);
+export type BotId = typeof BotIdSchema.Type;
+
+/**
+ * The run policy one bot runs under. Every field is optional: a bot that
+ * declares none falls back to the harness's own defaults.
+ */
+export const BotRuntimeSchema = Schema.Struct({
+  contextWindow: Schema.optional(Schema.Number),
+  reserveTokens: Schema.optional(Schema.Number),
+  maxRetries: Schema.optional(Schema.Number),
+  parallelTools: Schema.optional(Schema.Boolean),
+  restartLimit: Schema.optional(Schema.Number),
+});
+export type BotRuntime = typeof BotRuntimeSchema.Type;
+
+/**
+ * One bot's declaration: what it is, how it thinks, what it is told, and who
+ * it may hand work to.
+ *
+ * This is the whole configuration of a bot, so the browser can edit it and the
+ * Worker can apply it without a second shape that has to be kept in step.
+ */
+export const BotConfigSchema = Schema.Struct({
+  model: ModelDeclSchema,
+  systemPrompt: trimmedNonEmpty,
+  thinkingLevel: Schema.optional(ThinkingLevelSchema),
+  brief: Schema.optional(trimmedNonEmpty),
+  delegatesTo: Schema.optional(Schema.Array(trimmedNonEmpty)),
+  runtime: Schema.optional(BotRuntimeSchema),
+  commitments: Schema.optional(Schema.Boolean),
+});
+export type BotConfig = typeof BotConfigSchema.Type;
+
+/**
+ * The roster: every bot the fleet runs, keyed by bot id.
+ */
+export const RosterSchema = Schema.Struct({
+  bots: Schema.Record(Schema.String, BotConfigSchema),
+});
+export type Roster = typeof RosterSchema.Type;
+
+/**
+ * The models the Worker knows, and the thinking levels each one supports.
+ *
+ * The catalog lives in the Worker, so the browser reads it over the wire
+ * rather than bundling a second copy that could fall behind it.
+ */
+export const ModelCatalogSchema = Schema.Struct({
+  models: Schema.Record(Schema.String, Schema.Array(ThinkingLevelSchema)),
+});
+export type ModelCatalog = typeof ModelCatalogSchema.Type;
+
+/** The body of a bot write: the whole configuration of one bot. */
+export const BotWriteSchema = Schema.Struct({ bot: BotConfigSchema });
+export type BotWrite = typeof BotWriteSchema.Type;
+
+/** The body of a bot create: the id to give the new bot, and its configuration. */
+export const BotCreateSchema = Schema.Struct({
+  id: BotIdSchema,
+  bot: BotConfigSchema,
+});
+export type BotCreate = typeof BotCreateSchema.Type;
+
+/** What a write or a create answers: the bot as it is now stored. */
+export const BotWriteResultSchema = Schema.Struct({
+  id: Schema.String,
+  bot: BotConfigSchema,
+});
+export type BotWriteResult = typeof BotWriteResultSchema.Type;
 
 // ---------------------------------------------------------------------------
 // Views — the renderable projections of harness state
@@ -410,11 +514,25 @@ const nonNegativeInt = Schema.NumberFromString.check(
   Schema.isGreaterThanOrEqualTo(0),
 );
 
+/**
+ * The page size the transcript route asks for when the client names none.
+ */
+export const DEFAULT_LIMIT = 50;
+
+/**
+ * The page size ceiling. {@link TranscriptQuerySchema} reads this constant
+ * rather than repeating the number, so the route and its query agree.
+ */
+export const MAX_LIMIT = 200;
+
 export const TranscriptQuerySchema = Schema.Struct({
   thread: Schema.optional(trimmedNonEmpty),
   before: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThan(0))),
   limit: Schema.optional(
-    Schema.NumberFromString.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 200 })),
+    Schema.NumberFromString.check(
+      Schema.isInt(),
+      Schema.isBetween({ minimum: 1, maximum: MAX_LIMIT }),
+    ),
   ),
 });
 export type TranscriptQuery = typeof TranscriptQuerySchema.Type;
@@ -439,6 +557,56 @@ export const EventsQuerySchema = Schema.Struct({
   from: Schema.optional(nonNegativeInt),
 });
 export type EventsQuery = typeof EventsQuerySchema.Type;
+
+// ---------------------------------------------------------------------------
+// Paging
+// ---------------------------------------------------------------------------
+
+export interface PageQuery {
+  readonly before?: number;
+  readonly limit?: number;
+}
+
+/**
+ * Clamp rather than reject, because the Durable Object's RPC surface is reachable
+ * without the front door's Schema.
+ */
+export const clampLimit = (limit: number | undefined): number => {
+  if (limit === undefined || !Number.isSafeInteger(limit)) return DEFAULT_LIMIT;
+  return Math.min(Math.max(limit, 1), MAX_LIMIT);
+};
+
+/**
+ * One page of entries, and the exclusive bound of the next one.
+ */
+export interface EntrySlice<T> {
+  readonly entries: readonly T[];
+  readonly nextBefore?: number;
+}
+
+/**
+ * The newest `limit` entries strictly older than `before`, oldest first.
+ *
+ * The oldest id of a page is the exclusive bound of the next one, so a page
+ * never repeats or skips an entry. The rule works on any entry with a numeric
+ * id, so the Worker pages its own records and the browser pages the wire
+ * views with the same code.
+ */
+export const slicePage = <T extends { readonly id: number }>(
+  entries: readonly T[],
+  query: PageQuery,
+): EntrySlice<T> => {
+  const before = query.before ?? Number.POSITIVE_INFINITY;
+  const window = [...entries]
+    .sort((left, right) => Number(left.id) - Number(right.id))
+    .filter((entry) => Number(entry.id) < before);
+  const page = window.slice(Math.max(window.length - clampLimit(query.limit), 0));
+  const oldest = page[0];
+  return {
+    entries: page,
+    nextBefore: window.length > page.length && oldest !== undefined ? Number(oldest.id) : undefined,
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Projections

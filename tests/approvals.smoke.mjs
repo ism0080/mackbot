@@ -58,8 +58,9 @@ const { createApprovalStore, ApprovalWait } = await import("../src/approvals.ts"
 const { createExecutorPolicy } = await import("../src/executor-policy.ts");
 const { createExecutorMcp } = await import("../src/executor-mcp.ts");
 const { projectStatus } = await import("../src/status.ts");
-const { FrameSchema } = await import("../src/web-contract.ts");
+const { FrameSchema } = await import("@mackbot/contract");
 const worker = (await import("../src/index.ts")).default;
+const { registryBinding } = await import("./support/registry.mjs");
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -512,6 +513,7 @@ const statusFacts = (approvals) => ({
 
 const routeEnv = (store, submissions) => ({
   CHAT_BEARER_TOKEN: TOKEN,
+  Registry: registryBinding(),
   Bot: {
     getByName: () => ({
       status: async () => projectStatus(statusFacts(store.pending())),

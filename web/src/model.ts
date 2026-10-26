@@ -1,4 +1,11 @@
-import { BotViewSchema, FrameSchema, TranscriptPageSchema } from "@mackbot/web-contract";
+import {
+  BotViewSchema,
+  FrameSchema,
+  ModelCatalogSchema,
+  RosterSchema,
+  ThinkingLevelSchema,
+  TranscriptPageSchema,
+} from "@mackbot/contract";
 import { AsyncData } from "foldkit";
 import { defineTaggedUnion } from "foldkit/schema";
 import * as Schema from "effect/Schema";
@@ -6,10 +13,15 @@ import * as Schema from "effect/Schema";
 /**
  * What the browser is looking at. Every screen is a focus — a bot id — never a
  * copy of that bot's data, so a screen can never disagree with the channels.
+ *
+ * The roster screen shows every bot at once, so it has no single focus. It
+ * holds the fleet's configuration rather than one bot's live state, which is
+ * the one thing on screen that is a copy of the server's answer.
  */
 export const Screen = defineTaggedUnion({
   Home: {},
   Transcript: { bot: Schema.String },
+  Bots: {},
 });
 export type Screen = typeof Screen.Type;
 
@@ -40,6 +52,32 @@ export const Toast = Schema.Struct({
   text: Schema.String,
 });
 export type Toast = typeof Toast.Type;
+
+/** A thinking level, as the contract names them. */
+export type ThinkingLevel = typeof ThinkingLevelSchema.Type;
+
+/**
+ * The editable fields of one bot.
+ *
+ * The strings are loose on purpose: a bot that has not been filled in yet is
+ * still a state the form can be in. `null` for a thinking level is the bot
+ * declaring no level, which is not the same thing as the level named "none".
+ */
+export const BotDraftSchema = Schema.Struct({
+  model: Schema.String,
+  thinkingLevel: Schema.NullOr(ThinkingLevelSchema),
+  systemPrompt: Schema.String,
+  brief: Schema.String,
+});
+export type BotDraft = typeof BotDraftSchema.Type;
+
+/** The draft a bot that is being created starts from: nothing filled in yet. */
+export const EMPTY_DRAFT: BotDraft = {
+  model: "",
+  thinkingLevel: null,
+  systemPrompt: "",
+  brief: "",
+};
 
 /**
  * Everything the client knows about one bot, keyed by that bot's id. The two
@@ -78,5 +116,21 @@ export const Model = Schema.Struct({
   /** The last server answer a view has to show; see {@link Toast}. */
   toast: Schema.NullOr(Toast),
   channels: Schema.Record(Schema.String, Channel),
+  /**
+   * The roster being edited: the server's bots with the edits on top.
+   *
+   * It is the working copy rather than a copy of the truth, so a save sends a
+   * bot's whole configuration back and the fields the form does not show — the
+   * delegate list, the run policy and the commitments flag — survive the
+   * round trip untouched.
+   */
+  registry: AsyncData.Schema(RosterSchema, Schema.String).schema,
+  /** The model catalog the pickers read. The Worker owns it, so it arrives
+   *  over the wire rather than being bundled into the browser. */
+  catalog: AsyncData.Schema(ModelCatalogSchema, Schema.String).schema,
+  /** The bot being created. */
+  draft: BotDraftSchema,
+  /** The id the bot being created will be given. */
+  newBotId: Schema.String,
 });
 export type Model = typeof Model.Type;

@@ -15,7 +15,7 @@
 import type { HarnessInspection } from "@earendil-works/pi-durable";
 import * as Schema from "effect/Schema";
 
-import type { TaskView } from "./web-contract.ts";
+import type { TaskView } from "@mackbot/contract";
 
 type InspectedTask = HarnessInspection["tasks"][number];
 

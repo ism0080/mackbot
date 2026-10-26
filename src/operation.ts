@@ -2,8 +2,10 @@
  * operation — how mackbot names one unit of submitted work.
  *
  * The origin of a submission lives in its operation id prefix, so the origin is
- * never stored or threaded beside the id. `originOf` reads it back, and the
- * builders below are the only place a prefix is written.
+ * never stored or threaded beside the id. The prefix format and the reader that
+ * decodes it live in the wire contract, because the browser reads origins off
+ * the views the Worker sends; the builders below are the only place a prefix
+ * is written.
  *
  * A prefix is reserved per origin, so a caller-supplied id is namespaced before
  * it reaches a bot. That stops a client from claiming a `cron:` or `delegate:`
@@ -12,21 +14,11 @@
  * instead of a second one.
  */
 
-const HTTP_PREFIX = "http:";
-const CRON_PREFIX = "cron:";
-const DELEGATE_PREFIX = "delegate:";
+import { OPERATION_PREFIXES } from "@mackbot/contract";
 
-/** Where a submission came from. */
-export type OperationOrigin = "http" | "cron" | "delegate";
-
-/** Read the origin back out of an operation id. */
-export const originOf = (operationId: string): OperationOrigin => {
-  if (operationId.startsWith(CRON_PREFIX)) return "cron";
-  if (operationId.startsWith(DELEGATE_PREFIX)) return "delegate";
-  // Only the HTTP route ever accepted an id without a prefix, so every
-  // unprefixed id is a client-supplied one from that route.
-  return "http";
-};
+const HTTP_PREFIX = OPERATION_PREFIXES.http;
+const CRON_PREFIX = OPERATION_PREFIXES.cron;
+const DELEGATE_PREFIX = OPERATION_PREFIXES.delegate;
 
 export const httpOperationId = (supplied: string | undefined): string => {
   if (supplied === undefined) return `${HTTP_PREFIX}${crypto.randomUUID()}`;

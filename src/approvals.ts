@@ -37,8 +37,8 @@ import type { ApprovalState } from "./executor-policy.ts";
 import { approvalOperationId } from "./operation.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage } from "./sql.ts";
-import { ApprovalViewSchema } from "./web-contract.ts";
-import type { ApprovalDecision, ApprovalView } from "./web-contract.ts";
+import { ApprovalViewSchema } from "@mackbot/contract";
+import type { ApprovalDecision, ApprovalView } from "@mackbot/contract";
 
 const ArtifactSchema = Schema.fromJsonString(
   Schema.Struct({ label: Schema.String, body: Schema.String }),
