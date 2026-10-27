@@ -59,8 +59,7 @@ check("the API app exists", existsSync(join(appDir, "package.json")), APP);
 check("the Worker entry exists", existsSync(entry), `${APP}/${ENTRY}`);
 
 // The bundler must resolve from the app manifest, because that manifest
-// declares every Worker dependency and the contract workspace link. The Pi
-// tarball overrides stay on the root manifest, which Bun applies workspace-wide.
+// declares every Worker dependency and the contract workspace link.
 check(
   "the bundler resolves from apps/api",
   findCwdForBundle(entry) === appDir,

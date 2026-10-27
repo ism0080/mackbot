@@ -66,7 +66,7 @@ POST /chat/:bot  ·  web app (/status, /events, /approvals, /bots, …)  ·  cro
 
 ```
 mackbot/
-├── package.json         # the workspace root (lint/format/test scripts + vendored tooling)
+├── package.json         # the workspace root (lint/format/test scripts)
 ├── oxlint.config.ts     # lint config — core profile on everything, effect profile on apps/api/alchemy.run.ts only
 ├── .env.example         # documented secret names (copy to .env; never commit .env)
 ├── apps/
@@ -154,7 +154,7 @@ Implementation: `@modelcontextprotocol/sdk` `StreamableHTTPClientTransport` (wor
 - **A crash-looping task parks.** The harness counts a task's restarts and parks it at `settings.restartLimit` instead of running it again, so a bot whose every turn crashes stops costing the fleet alarm invocations. `POST /retry/:bot` runs it again.
 - **The approval rule is the harness's, not the prompt's.** A `ToolTask` hook refuses an `executor_resume` that no human decision vouches for, which is the one rule the prompt cannot enforce.
 - **The wake alarm is the SDK's, not pi's.** pi's own `onWake` would let the host arm an alarm for the earliest sleep instead of a heartbeat, but `agents@0.28.1` does not forward it, and pi's `Harness.open` is only reached through the SDK's factory. Replacing the SDK's wake machinery is not worth a personal fleet's alarm bill; the fix belongs upstream.
-- **Pi is vendored from a pinned commit.** mackbot needs Pi's unreleased features, so `tools/vendor-pi.mjs` builds the five packages the update cascades into from one SHA and `package.json` installs the tarballs with `overrides`. The SHA is the pin; nothing tracks a branch.
+- **Pi comes from npm.** The five `@earendil-works` packages are pinned to the same published version (`1.4.0`) in every manifest that needs them, so a fresh `bun install` gets a released build rather than a tarball built from a commit.
 - **Pi Durable limitations to design around**: conversations can't be deleted yet (matters for the later per-chat sessions phase); pi's own event streams are snapshot-only with no resume cursor, so `apps/api/src/feed.ts` keeps a durable chunk log of its own, tags every frame with its stream generation, and replays a snapshot when a client's cursor is too old; a single model call streaming >15 min is cut off (alarm invocations cap at 15 min, harness hands off every 10).
 - **Telegram flow (channel added last, optional)**: `setWebhook` with a per-bot `secret_token`; the front door validates `X-Telegram-Bot-Api-Secret-Token` on every update. Webhook handler only durably submits (`operationId`) and acks 200 immediately — webhook retries can't double-answer. The **DO sends the reply** via `sendMessage` when the submission settles, not the front door's `ctx.waitUntil` (multi-minute runs outlive a Worker request, and the PiHarness wake-up machinery already guarantees the DO survives to completion). Mid-run Telegram corrections use `whenBusy: "steer"` to join the running work instead of queueing as a follow-up.
 - **Cron briefs**: `crons: ["0 * * * *"]` → per-bot `brief()` with stable `operationId`.

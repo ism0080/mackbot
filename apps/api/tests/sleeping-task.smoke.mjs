@@ -4,7 +4,7 @@
  *
  * Run with: bun tests/sleeping-task.smoke.mjs
  *
- * The vendored Pi library can end a task's phase asleep. The task then holds
+ * The Pi library can end a task's phase asleep. The task then holds
  * no invocation, its deadline is stored, and a later process picks it up and
  * finishes it. mackbot's approval flow depends on that, so it is proved here
  * against the real storage rather than assumed.
