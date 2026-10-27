@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
-    "web",
+    "apps/*",
     "packages/*",
     "tools/oxlint"
   ],
@@ -14,29 +14,15 @@
     "lint:css": "bun run --filter '@mackbot/web' lint:css",
     "test:css": "bun run --filter '@mackbot/web' test:css",
     "format": "oxfmt",
-    "typecheck": "tsc --noEmit && bun run --filter '*' typecheck",
-    "test": "bun tests/run.mjs && bun run --filter '*' test",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "bun run --filter '*' test",
+    "deploy": "bun run --filter '@mackbot/api' deploy",
     "tools:oxlint": "bun run --filter '@ism0080/oxlint-plugin-forge' test",
     "build:oxlint": "bun run --filter '@ism0080/oxlint-plugin-forge' build",
     "check:deploy-shape": "bun tools/check-deploy-shape.mjs",
     "check": "bun run check:deploy-shape && bun run typecheck && bun run lint && bun run test"
   },
-  "dependencies": {
-    "@earendil-works/chord": "file:vendor/pi/earendil-works-chord-1.3.0.tgz",
-    "@earendil-works/pi-ai": "file:vendor/pi/earendil-works-pi-ai-1.3.0.tgz",
-    "@earendil-works/pi-codemode": "file:vendor/pi/earendil-works-pi-codemode-1.3.0.tgz",
-    "@earendil-works/pi-durable": "file:vendor/pi/earendil-works-pi-durable-1.3.0.tgz",
-    "@earendil-works/pi-telemetry": "file:vendor/pi/earendil-works-pi-telemetry-1.3.0.tgz",
-    "@effect/platform-bun": "4.0.4",
-    "@effect/platform-node": "4.0.4",
-    "@mackbot/contract": "workspace:*",
-    "@modelcontextprotocol/sdk": "1.32.1",
-    "agents": "0.28.1",
-    "alchemy": "2.0.0-beta.83",
-    "effect": "4.0.4"
-  },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261013.1",
     "@ism0080/oxlint-plugin-forge": "workspace:*",
     "@oxlint/plugins": "^1.82.0",
     "oxfmt": "^0.67.0",

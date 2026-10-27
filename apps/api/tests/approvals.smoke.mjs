@@ -24,28 +24,15 @@
  * The Executor bridge has no live Executor, so this supplies its own connection
  * through the `connect` seam, exactly as tests/executor-mcp-connection.smoke.mjs
  * does. `src/index.ts` imports the `cloudflare:workers` builtin for
- * `DurableObject`, which Bun cannot resolve, so this re-execs with
- * `tests/shims` on NODE_PATH the way tests/routes.smoke.mjs does. A live
+ * `DurableObject`, which Bun cannot resolve, so this re-execs under the shim in
+ * `tests/support/workers-shim.mjs` the way tests/routes.smoke.mjs does. A live
  * Durable Object is not available, so the Bot binding is faked over the real
  * store. The wait's phases are driven with a fake runtime, because a Harness
  * over a real storage would only prove the library's own machinery.
  */
-import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { withWorkersShim } from "./support/workers-shim.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
-  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      NODE_PATH: join(here, "shims"),
-      MACKBOT_WORKERS_SHIM: "1",
-    },
-  });
-  process.exit(result.status ?? 1);
-}
+withWorkersShim(import.meta.url);
 
 const { Database } = await import("bun:sqlite");
 const { Schema } = await import("effect");

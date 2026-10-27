@@ -6,9 +6,9 @@ export default defineConfig({
   plugins: ["typescript", "unicorn", "oxc"],
   // tools/oxlint is vendored from the forge repo — it verifies itself via
   // `bun run tools:oxlint`
-  // web/ is the Foldkit app: it lints itself with the Foldkit preset in
-  // web/.oxlintrc.json, which the core profile here would only fight.
-  ignorePatterns: ["node_modules", "dist", ".alchemy", "tools/oxlint", "web"],
+  // apps/web is the Foldkit app: it lints itself with the Foldkit preset in
+  // apps/web/.oxlintrc.json, which the core profile here would only fight.
+  ignorePatterns: ["node_modules", "dist", ".alchemy", "tools/oxlint", "apps/web"],
   jsPlugins: [
     {
       name: "forge",
@@ -24,11 +24,11 @@ export default defineConfig({
   },
   overrides: [
     {
-      // Effect-idiom rules for the Effect surface (alchemy.run.ts). src/ wraps
-      // the Pi/Cloudflare promise+callback SDKs at its boundaries, where rules
-      // such as no-try-catch would fight deliberate boundary code, so the effect
-      // profile stays off there.
-      files: ["alchemy.run.ts"],
+      // Effect-idiom rules for the Effect surface (apps/api/alchemy.run.ts).
+      // apps/api/src wraps the Pi/Cloudflare promise+callback SDKs at its
+      // boundaries, where rules such as no-try-catch would fight deliberate
+      // boundary code, so the effect profile stays off there.
+      files: ["apps/api/alchemy.run.ts"],
       rules: profiles.effect,
     },
   ],

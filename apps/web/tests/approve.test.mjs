@@ -33,7 +33,7 @@ const decode = (schema, label, value) =>
     ),
   );
 
-/** The decision route's own accepted body, as `web/src/api.ts` decodes it. */
+/** The decision route's own accepted body, as `apps/web/src/api.ts` decodes it. */
 const AcceptedSchema = Schema.Struct({
   approvalId: Schema.String,
   bot: Schema.String,

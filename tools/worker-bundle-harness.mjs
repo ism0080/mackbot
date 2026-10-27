@@ -34,9 +34,12 @@ const alchemyRequire = createRequire(
   realpathSync(join(repoRoot, "node_modules", "alchemy", "package.json")),
 );
 const { rolldown } = await import(alchemyRequire.resolve("rolldown"));
-const { default: cloudflare } = await import(
-  alchemyRequire.resolve("@alchemy.run/cloudflare-runtime/rolldown")
-);
+
+// Load the published `dist` build, the `import` condition the deploy runner
+// uses. The pinned package's `bun` condition points at `src/rolldown/plugin.ts`,
+// which imports a `./utils.ts` that the tarball does not ship.
+const runtimeDir = dirname(alchemyRequire.resolve("@alchemy.run/cloudflare-runtime/package.json"));
+const { default: cloudflare } = await import(join(runtimeDir, "dist/rolldown/plugin.js"));
 
 /** The nearest package.json above a path, which is the bundler's cwd. */
 const findCwdForBundle = (entry) => {
@@ -49,7 +52,7 @@ const findCwdForBundle = (entry) => {
   }
 };
 
-const entry = resolve(repoRoot, process.argv[2] ?? "src/index.ts");
+const entry = resolve(repoRoot, process.argv[2] ?? "apps/api/src/index.ts");
 const cwd = findCwdForBundle(entry);
 
 const bundle = await rolldown({

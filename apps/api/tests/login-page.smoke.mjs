@@ -5,9 +5,9 @@
  *
  * The login page is an HTML string, so stylelint never sees its inline
  * `<style>`. This extracts that stylesheet and runs it through the real
- * `web/stylelint.config.mjs`, which is the same enforcement the `.css` files
- * get: no hex, no `rgb()`/`hsl()`, no physical side properties, hover only
- * where hover exists, and motion behind the reduced-motion query. It also
+ * `apps/web/stylelint.config.mjs`, which is the same enforcement the `.css`
+ * files get: no hex, no `rgb()`/`hsl()`, no physical side properties, hover
+ * only where hover exists, and motion behind the reduced-motion query. It also
  * checks the document keeps its promise of carrying no script and no token.
  */
 import { createRequire } from "node:module";
@@ -15,9 +15,9 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { loginDocument } from "../src/login-page.ts";
 
-const webRequire = createRequire(new URL("../web/package.json", import.meta.url));
+const webRequire = createRequire(new URL("../../web/package.json", import.meta.url));
 const stylelint = (await import(pathToFileURL(webRequire.resolve("stylelint")).href)).default;
-const configFile = fileURLToPath(new URL("../web/stylelint.config.mjs", import.meta.url));
+const configFile = fileURLToPath(new URL("../../web/stylelint.config.mjs", import.meta.url));
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -45,7 +45,7 @@ for (const failed of [false, true]) {
     console.log(`       ${warning.line}:${warning.column} ${warning.rule} ${warning.text}`);
   }
   check(
-    "its stylesheet obeys web/stylelint.config.mjs",
+    "its stylesheet obeys apps/web/stylelint.config.mjs",
     warnings.length === 0,
     warnings.length === 0 ? "zero warnings" : `${warnings.length} warning(s)`,
   );

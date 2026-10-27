@@ -5,7 +5,7 @@
 // context (which @media wraps a rule, what @keyframes an animation names), so
 // these helpers walk the PostCSS ancestor chain and read raw values. They are
 // deliberately dependency-free: postcss-value-parser is a stylelint internal
-// and is not resolvable from web/, so the few value shapes we need are parsed
+// and is not resolvable from apps/web/, so the few value shapes we need are parsed
 // here.
 
 /**

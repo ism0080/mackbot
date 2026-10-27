@@ -12,7 +12,7 @@
 //
 // This sheet is the whole app, so the two deliberate exceptions the design
 // needs (`!important` on `[hidden]`, `overflow: hidden` under a line clamp)
-// carry an inline disable in web/src/styles.css with its reason, rather than
+// carry an inline disable in apps/web/src/styles.css with its reason, rather than
 // turning a rule off for the whole project.
 
 import pluginRules from "./stylelint/index.mjs";
@@ -142,7 +142,7 @@ export default {
     // An animation whose @keyframes are not in the file simply never runs.
     "no-unknown-animations": true,
     // A global !important defeats the cascade; each use must be a deliberate,
-    // commented exception, as the `[hidden]` rule in web/src/styles.css is.
+    // commented exception, as the `[hidden]` rule in apps/web/src/styles.css is.
     "declaration-no-important": true,
   },
 };

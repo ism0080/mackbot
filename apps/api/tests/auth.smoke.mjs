@@ -4,26 +4,14 @@
  *
  * Run with: bun tests/auth.smoke.mjs
  *
- * `src/index.ts` imports `cloudflare:workers`, so this re-execs with the shim
- * on NODE_PATH, like `routes.smoke.mjs`. The Bot and ASSETS bindings are faked;
- * the front door, its HMAC, its cookie parsing and its route matching are real.
+ * `src/index.ts` imports `cloudflare:workers`, so this re-execs under the shim
+ * in `tests/support/workers-shim.mjs`, like `routes.smoke.mjs`. The Bot and
+ * ASSETS bindings are faked; the front door, its HMAC, its cookie parsing and
+ * its route matching are real.
  */
-import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { withWorkersShim } from "./support/workers-shim.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
-  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      NODE_PATH: join(here, "shims"),
-      MACKBOT_WORKERS_SHIM: "1",
-    },
-  });
-  process.exit(result.status ?? 1);
-}
+withWorkersShim(import.meta.url);
 
 const worker = (await import("../src/index.ts")).default;
 const { registryBinding } = await import("./support/registry.mjs");

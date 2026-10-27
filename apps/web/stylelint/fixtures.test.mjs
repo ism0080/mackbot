@@ -5,7 +5,7 @@
 // enforcement. Each fixture below is a file that breaks exactly one configured
 // rule (or, for the entries that share core stylelint's
 // declaration-property-value-disallowed-list, one configured key of it). This
-// test lints each fixture on its own with the real web/stylelint.config.mjs and
+// test lints each fixture on its own with the real apps/web/stylelint.config.mjs and
 // asserts the exact set of rule ids it reported, then lints the real stylesheet
 // and asserts zero errors. It also asserts that every rule enabled in the
 // config is proven by one of the fixtures, so adding a rule without a fixture
@@ -151,13 +151,13 @@ if (unproven.length > 0) {
 const sheetResult = await lintFile(sheet);
 console.log(
   sheetResult.ruleIds.length === 0
-    ? "✔ web/src/styles.css → zero errors"
-    : `✘ web/src/styles.css → ${sheetResult.detail}`,
+    ? "✔ apps/web/src/styles.css → zero errors"
+    : `✘ apps/web/src/styles.css → ${sheetResult.detail}`,
 );
 console.log(`  (linted ${(await readFile(sheet, "utf8")).length} bytes of the real stylesheet)`);
 
 if (sheetResult.ruleIds.length > 0) {
-  failures.push(`web/src/styles.css: ${sheetResult.detail}`);
+  failures.push(`apps/web/src/styles.css: ${sheetResult.detail}`);
 }
 
 if (failures.length > 0) {

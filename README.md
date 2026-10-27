@@ -9,17 +9,18 @@ real tooling routed through one Executor v2 MCP endpoint.
 
 ## Layout
 
-This is a bun workspace. The root package is the Worker app and the workspace
-root; every other package is a member of it.
+This is a bun workspace. `apps/` holds the two deployable/runnable faces, and
+the root package is the workspace orchestrator; every other package is a member.
 
-- `alchemy.run.ts` — Worker + `Bot` Durable Object binding, `AI` binding, crons, secrets.
-- `bots.json` — the seed roster (model, thinking level, system prompt, delegates).
-- `src/` — the front-door Worker, the `Bot` Durable Object, the Executor bridge, and the seams
-  (delegation, audit).
-- `tests/` — smoke tests plus a runner.
+- `apps/api/` — `@mackbot/api`, the Worker app.
+  - `alchemy.run.ts` — Worker + `Bot` Durable Object binding, `AI` binding, crons, secrets.
+  - `bots.json` — the seed roster (model, thinking level, system prompt, delegates).
+  - `src/` — the front-door Worker, the `Bot` Durable Object, the Executor bridge, and the seams
+    (delegation, audit).
+  - `tests/` — smoke tests plus a runner.
+- `apps/web/` — `@mackbot/web`, the Foldkit browser app.
 - `packages/contract/` — `@mackbot/contract`, the wire vocabulary the Worker and
   the web app share.
-- `web/` — `@mackbot/web`, the Foldkit browser app.
 - `tools/oxlint/` — the vendored `@ism0080/oxlint-plugin-forge` lint plugin.
 
 ## Development
@@ -30,11 +31,12 @@ bun install
 bun run check       # deploy shape, typecheck, lint and test
 bun run typecheck   # tsc --noEmit, for every workspace member
 bun run lint        # oxlint (core profile + vendored forge plugin)
-bun run lint:css    # stylelint — the good-css rules over every stylesheet under web/src
+bun run lint:css    # stylelint — the good-css rules over every stylesheet under apps/web/src
 bun run format      # oxfmt
 bun run test        # every workspace member's tests
-bun run test:css    # prove each good-css rule still fires (web/stylelint/fixtures)
+bun run test:css    # prove each good-css rule still fires (apps/web/stylelint/fixtures)
 bun run tools:oxlint # build + test the vendored lint plugin
+bun run deploy      # deploy apps/api (see Deploy)
 ```
 
 `bun run check` is the gate: it asserts the deploy shape, then typechecks,
@@ -46,7 +48,7 @@ enforces the [good-css](https://good-css.com) rules that a stylesheet can be
 checked for — logical properties, OKLCH colours, focus, hover, press, reduced
 motion and `overflow: clip` — with the rules core stylelint cannot express
 (anything that depends on the surrounding `@media`) in
-[`web/stylelint/`](./web/stylelint/).
+[`apps/web/stylelint/`](./apps/web/stylelint/).
 
 The `executor-mcp` smoke test skips cleanly when `EXECUTOR_URL` / `EXECUTOR_TOKEN`
 are not set; see [`.env.example`](./.env.example) for the required secrets.
@@ -131,7 +133,8 @@ input and its output against a Schema there, so the two cannot drift apart.
 
 ## The web app
 
-`web/` is the first-party channel, served by the same Worker from `web/dist`:
+`apps/web/` is the first-party channel, served by the same Worker from
+`apps/web/dist`:
 a home screen that groups the fleet into blocked, running, parked and recent
 work, per-bot transcripts with backward paging, approval cards with allow and
 deny, Stop and retry controls, and the roster editor. It polls `/status`, reads
@@ -145,8 +148,13 @@ the API starts work and the app observes and steers it.
 ## Deploy
 
 ```sh
-bun alchemy deploy
+bun run --filter @mackbot/web build   # refresh apps/web/dist (the Worker's assets)
+bun run deploy                        # alchemy deploy, run inside apps/api
 ```
+
+`bun run deploy` filters to `@mackbot/api`, so Alchemy resolves the Worker entry
+and `../web/dist` against that package. The secrets file stays at the repo root:
+the API's deploy script passes `--env-file ../../.env`.
 
 Cloudflare credentials live in Alchemy profiles (`~/.alchemy/profiles.json`); do
 not export `CLOUDFLARE_API_TOKEN`.

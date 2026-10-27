@@ -7,25 +7,12 @@
  * The store runs over `bun:sqlite` through the same seam a Durable Object's
  * SQLite storage has, so the SQL is the SQL. The Durable Object's own module
  * imports the `cloudflare:workers` builtin, which Bun cannot resolve, so this
- * re-execs with `tests/shims` on NODE_PATH — the same pattern the routes
- * smoke test uses.
+ * re-execs under the shim in `tests/support/workers-shim.mjs` — the same
+ * pattern the routes smoke test uses.
  */
-import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { withWorkersShim } from "./support/workers-shim.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
-  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      NODE_PATH: join(here, "shims"),
-      MACKBOT_WORKERS_SHIM: "1",
-    },
-  });
-  process.exit(result.status ?? 1);
-}
+withWorkersShim(import.meta.url);
 
 const { Database } = await import("bun:sqlite");
 const { durableStorage } = await import("./support/durable-sqlite.mjs");

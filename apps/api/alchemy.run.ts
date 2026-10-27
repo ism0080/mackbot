@@ -14,10 +14,13 @@
  * `OPENCODE_API_KEY` from `process.env`, and the agents lifecycle and the MCP
  * SDK use Node built-ins.
  *
- * `assets` serves the built Foldkit app. `runWorkerFirst` routes every request
- * through this Worker before the asset layer, because `/status` and its
- * siblings would otherwise be answered by the SPA fallback. The Worker handles
- * its own routes and hands everything else to `env.ASSETS`.
+ * `assets` serves the built Foldkit app from the sibling `apps/web`. Both
+ * `main` and `assets.directory` resolve against this package's directory (the
+ * deploy runs here), so `../web/dist` is the browser app's build output.
+ * `runWorkerFirst` routes every request through this Worker before the asset
+ * layer, because `/status` and its siblings would otherwise be answered by the
+ * SPA fallback. The Worker handles its own routes and hands everything else to
+ * `env.ASSETS`.
  *
  * This is a fresh project: nothing is adopted (`adopt(true)` is not used).
  */
@@ -47,7 +50,7 @@ export default Alchemy.Stack(
       },
       crons: ["0 * * * *"],
       assets: {
-        directory: "./web/dist",
+        directory: "../web/dist",
         runWorkerFirst: true,
         notFoundHandling: "single-page-application",
       },

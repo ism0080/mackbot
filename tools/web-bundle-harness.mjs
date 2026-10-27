@@ -1,7 +1,7 @@
 /**
  * Web bundle harness — hash the built browser bundle.
  *
- * The deploy ships `web/dist` as the Worker's static assets, so the built
+ * The deploy ships `apps/web/dist` as the Worker's static assets, so the built
  * bundle is part of the deployable artifact. Hash it here so a restructure can
  * prove the browser bundle did not change.
  *
@@ -14,7 +14,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = dirname(fileURLToPath(import.meta.url)) + "/..";
-const dist = join(repoRoot, "web", "dist");
+const dist = join(repoRoot, "apps", "web", "dist");
 
 /** Every file under a directory, as paths relative to it, sorted. */
 const walk = (dir) => {
@@ -29,7 +29,9 @@ const walk = (dir) => {
 
 const files = walk(dist);
 if (files.length === 0) {
-  console.error("harness: web/dist is empty — run `bun run --filter @mackbot/web build` first");
+  console.error(
+    "harness: apps/web/dist is empty — run `bun run --filter @mackbot/web build` first",
+  );
   process.exit(1);
 }
 

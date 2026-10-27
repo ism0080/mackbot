@@ -5,7 +5,7 @@
  *
  * The stylesheet is deliberately self-contained. This document has to render
  * before any asset is authorized, so it cannot wait for the app's stylesheet
- * (or a font) to load; the tokens below are copied from `web/src/styles.css`
+ * (or a font) to load; the tokens below are copied from `apps/web/src/styles.css`
  * by value, and the page carries every rule it needs. Do not "fix" this by
  * linking the app stylesheet: an unauthorized request would get the login page
  * with no styling.
@@ -23,7 +23,7 @@ export const loginDocument = (failed: boolean): string => `<!doctype html>
         color-scheme: dark;
 
         /* The app's palette, by value: --bg-deep, --surface, --line, --text,
-           --muted, --accent, --warn-ink and --black from web/src/styles.css. */
+           --muted, --accent, --warn-ink and --black from apps/web/src/styles.css. */
         --bg-deep: oklch(12.29% 0.0108 none);
         --surface: oklch(19.98% 0.0086 none);
         --line: oklch(29.21% 0.0179 none);

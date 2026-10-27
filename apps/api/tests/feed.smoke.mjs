@@ -24,25 +24,12 @@
  * scheduler. That is stated plainly in the report.
  *
  * `agents/lifecycle` imports the `cloudflare:workers` builtin, which Bun cannot
- * resolve, so this re-execs with `tests/shims` on NODE_PATH — the same pattern
- * streams.smoke.mjs uses.
+ * resolve, so this re-execs under the shim in `tests/support/workers-shim.mjs`
+ * — the same pattern streams.smoke.mjs uses.
  */
-import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { withWorkersShim } from "./support/workers-shim.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
-  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      NODE_PATH: join(here, "shims"),
-      MACKBOT_WORKERS_SHIM: "1",
-    },
-  });
-  process.exit(result.status ?? 1);
-}
+withWorkersShim(import.meta.url);
 
 const { Database } = await import("bun:sqlite");
 const { Lifecycle } = await import("agents/lifecycle");

@@ -8,7 +8,7 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Delegation enforcement for the optional `delegatesTo` allowlist.
 - Optional durable thread IDs in `POST /chat/:bot`, including per-thread pi
   session creation and SQLite mapping.
-- Audit-log storage seam (`src/audit-log.ts`).
+- Audit-log storage seam (`apps/api/src/audit-log.ts`).
 - Existing meta-tool bridge, cron briefs, approvals in model mode, and
   compaction configuration.
 - Per-bot run policy in `bots.json` (`runtime`), and a durable commitments

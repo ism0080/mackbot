@@ -15,5 +15,5 @@
     "skipLibCheck": true
   },
   "include": ["src", "alchemy.run.ts", "bots.json"],
-  "exclude": ["node_modules", "tools", ".alchemy"]
+  "exclude": ["node_modules", ".alchemy"]
 }

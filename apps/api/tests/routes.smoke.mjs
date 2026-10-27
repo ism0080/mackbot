@@ -5,27 +5,14 @@
  * Run with: bun tests/routes.smoke.mjs
  *
  * `src/index.ts` imports the `cloudflare:workers` builtin for `DurableObject`,
- * which Bun cannot resolve, so this re-execs with `tests/shims` on NODE_PATH —
- * the same pattern the streams smoke test uses. The Bot binding is faked; the
- * front door, its bearer check, its query decoding and its route matching are
- * the real ones.
+ * which Bun cannot resolve, so this re-execs under the shim in
+ * `tests/support/workers-shim.mjs`, the same pattern the streams smoke test
+ * uses. The Bot binding is faked; the front door, its bearer check, its query
+ * decoding and its route matching are the real ones.
  */
-import { spawnSync } from "node:child_process";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { withWorkersShim } from "./support/workers-shim.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-if (process.env.MACKBOT_WORKERS_SHIM !== "1") {
-  const result = spawnSync(process.execPath, [fileURLToPath(import.meta.url)], {
-    stdio: "inherit",
-    env: {
-      ...process.env,
-      NODE_PATH: join(here, "shims"),
-      MACKBOT_WORKERS_SHIM: "1",
-    },
-  });
-  process.exit(result.status ?? 1);
-}
+withWorkersShim(import.meta.url);
 
 const worker = (await import("../src/index.ts")).default;
 const { registryBinding } = await import("./support/registry.mjs");
