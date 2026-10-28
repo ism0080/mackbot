@@ -311,6 +311,34 @@ test("the chats list holds one row per bot with its preview and work state", () 
   );
 });
 
+test("a chat preview skips turns with nothing to read", () => {
+  scene(
+    { update, view },
+    given(
+      appModel(homeScreen(), {
+        hermes: botChannel({
+          status: statusOf(),
+          page: transcriptOf({
+            entries: [
+              entryOf({ id: 1, text: "Three things moved overnight." }),
+              entryOf({ id: 2, role: "assistant", text: "" }),
+              entryOf({
+                id: 3,
+                role: "tool",
+                text: '{"delivered":true}',
+                toolName: "botmail.send",
+              }),
+            ],
+          }),
+        }),
+      }),
+    ),
+    expect(selector('[data-group="chats"] [data-bot="hermes"] .chat-preview')).toContainText(
+      "Three things moved overnight.",
+    ),
+  );
+});
+
 test("opening a chat the home has no page for asks for that page", () => {
   scene(
     { update, view },

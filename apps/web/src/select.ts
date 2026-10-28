@@ -9,7 +9,7 @@ import type {
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 
-import { clockOf, elapsedOf } from "./format.ts";
+import { clockOf, elapsedOf, wordsOf } from "./format.ts";
 import { botName } from "./partials.ts";
 import type { Channel, Model } from "./model.ts";
 
@@ -81,18 +81,28 @@ const blockedOf = (bot: string, status: BotView): readonly Blocked[] =>
     .map((approval) => ({ bot, approval }));
 
 /** The newest settled answer, which is what "since you last looked" means until
- *  a route supplies the `seen` watermark that will make it exact. */
+ *  a route supplies the `seen` watermark that will make it exact. A turn that
+ *  only called tools is not an answer, so it is skipped rather than listed with
+ *  nothing under it. */
 const latestOf = (bot: string, channel: Channel): readonly Recent[] =>
   Option.match(AsyncData.getData(channel.transcript), {
     onNone: () => [],
     onSome: (page) => {
       const settled = page.entries.filter(
-        (entry) => entry.role === "assistant" && entry.at !== undefined,
+        (entry) =>
+          entry.role === "assistant" && entry.at !== undefined && wordsOf(entry) !== undefined,
       );
       const last = settled[settled.length - 1];
       return last === undefined ? [] : [{ bot, entry: last }];
     },
   });
+
+/** The newest words in a thread, for the chats list. Entries with nothing to
+ *  read are passed over, so a preview is never blank. */
+const previewOf = (entries: readonly EntryView[]): string | undefined => {
+  const said = entries.flatMap((entry) => wordsOf(entry) ?? []);
+  return said[said.length - 1];
+};
 
 const subOf = (bots: number, blocked: number, running: number): string =>
   `${bots} bots · ${blocked} blocked · ${running} running`;
@@ -177,7 +187,7 @@ export const selectChats = (model: Model): readonly Chat[] =>
         bot,
         preview: AsyncData.hasError(channel.transcript)
           ? "Couldn't load this thread"
-          : (last?.text ?? "No messages yet"),
+          : (previewOf(entries) ?? "No messages yet"),
         stamp: last?.at === undefined ? "" : elapsedOf(last.at, model.now),
         busy,
         sortAt: last?.at ?? 0,

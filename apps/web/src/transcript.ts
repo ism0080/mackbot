@@ -9,7 +9,7 @@ import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
-import { clockOf, elapsedOf } from "./format.ts";
+import { clockOf, elapsedOf, wordsOf } from "./format.ts";
 import { Message } from "./message.ts";
 import type { Channel, Model } from "./model.ts";
 import { avatar, botName, modelLabel, runTitle, statusTag, toast } from "./partials.ts";
@@ -93,6 +93,16 @@ const toolRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
   );
 };
 
+/**
+ * One entry as a row, or nothing at all. A tool result is a row of its own; a
+ * message whose text is empty is the turn's plumbing, and a person reading the
+ * thread has nothing to gain from a bubble with no words in it.
+ */
+const rowOf = (entry: EntryView, h: HtmlBuilder<Message>): readonly Html[] => {
+  if (entry.role === "tool") return [toolRow(entry, h)];
+  return wordsOf(entry) === undefined ? [] : [messageRow(entry, h)];
+};
+
 const pendingRow = (text: string, index: number, h: HtmlBuilder<Message>): Html =>
   h.keyed("div")(
     `pending:${index}:${text}`,
@@ -165,9 +175,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
       onNone: () => [],
       onSome: (page) => (page.nextBefore === undefined ? [] : [earlierRow(bot, h)]),
     }),
-    ...entriesIn(channel).map((entry) =>
-      entry.role === "tool" ? toolRow(entry, h) : messageRow(entry, h),
-    ),
+    ...entriesIn(channel).flatMap((entry) => rowOf(entry, h)),
     ...(entriesIn(channel).length === 0 && pending.length === 0
       ? [
           h.div(

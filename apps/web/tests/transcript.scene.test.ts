@@ -101,6 +101,30 @@ test("entries keep their order and say who spoke and from where", () => {
   );
 });
 
+test("a turn that only called tools leaves no bubble behind", () => {
+  scene(
+    { update, view },
+    given(
+      hermes({
+        status: statusOf(),
+        page: transcriptOf({
+          entries: [
+            entryOf({ id: 1, role: "user", text: "Check the inbox." }),
+            // pi commits this turn as an assistant message whose only content
+            // was the tool call, so it projects to no text at all.
+            entryOf({ id: 2, role: "assistant", text: "" }),
+            entryOf({ id: 3, role: "tool", text: '{"moved":0}', toolName: "gmail.check" }),
+            entryOf({ id: 4, role: "assistant", text: "Nothing new arrived." }),
+          ],
+        }),
+      }),
+    ),
+    expect(selector('[data-entry="2"]')).toBeAbsent(),
+    expect(selector('details[data-entry="3"]')).toExist(),
+    expect(selector('[data-entry="4"]')).toContainText("Nothing new arrived."),
+  );
+});
+
 test("a tool result collapses when it worked and opens when it failed", () => {
   scene(
     { update, view },
