@@ -1,16 +1,19 @@
 /**
  * deploy-shape — assert the invariants the deploy path rests on.
  *
- * `apps/api` is the deployable app. Alchemy resolves `main` and
- * `assets.directory` against the process's working directory, which is the app
- * package because the deploy runs there (`bun run deploy` filters to
- * `@mackbot/api`). The bundler's working directory is the nearest `package.json`
- * above the entry module (`findCwdForBundle` in
- * `node_modules/alchemy/src/Bundle/TempRoot.ts`), which must be that same
- * `apps/api` manifest, since it declares the Worker's dependencies.
+ * `apps/api` is the deployable app. `Cloudflare.Website.Foldkit` owns the browser
+ * build: its `rootDir` is a Vite root resolved against the process's working
+ * directory, which is the app package because the deploy runs there (`bun run
+ * deploy` filters to `@mackbot/api`), and its `main` is resolved against that
+ * Vite root (`resolveViteMain` in `@alchemy.run/cloudflare/src/Workers/
+ * ViteMain.ts`). So `main` has to be spelled from `apps/web`, not from
+ * `apps/api`.
+ *
+ * The entry's nearest `package.json` must still be the app manifest, since that
+ * manifest declares every Worker dependency Vite resolves from the entry.
  *
  * This asserts that shape, so a package added under `apps/api/src/` cannot move
- * the bundler's root without anyone noticing.
+ * that root, and a moved app cannot silently point the build at nothing.
  *
  * Run with: bun tools/check-deploy-shape.mjs
  */
@@ -23,13 +26,15 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 /** The deployable app, relative to the repo root. */
 const APP = "apps/api";
 
-/** The Worker's entry module, as `alchemy.run.ts` names it. */
+/** The Worker's entry module, relative to the app. */
 const ENTRY = "src/index.ts";
 
-/** The static assets directory, as `alchemy.run.ts` names it. */
-const ASSETS = "../web/dist";
+/** The browser app, relative to the repo root: the Website's Vite root. */
+const WEB = "apps/web";
 
 const appDir = join(repoRoot, APP);
+const webDir = join(repoRoot, WEB);
+const entry = join(appDir, ENTRY);
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -37,12 +42,9 @@ const check = (label, condition, detail = "") => {
   console.log(`  ${condition ? "ok  " : "FAIL"} ${label}${detail === "" ? "" : ` (${detail})`}`);
 };
 
-/**
- * The bundler's working directory: the nearest `package.json` above the entry.
- * Mirrors `findCwdForBundle`.
- */
-const findCwdForBundle = (entry) => {
-  let current = dirname(entry);
+/** The nearest `package.json` above the entry. Mirrors `findCwdForBundle`. */
+const findCwdForBundle = (start) => {
+  let current = dirname(start);
   for (;;) {
     if (existsSync(join(current, "package.json"))) return current;
     const parent = dirname(current);
@@ -51,34 +53,52 @@ const findCwdForBundle = (entry) => {
   }
 };
 
-const entry = join(appDir, ENTRY);
+/** The first string literal named by `key: "…"` in `alchemy.run.ts`. */
+const readProp = (source, key) => {
+  const match = source.match(new RegExp(`\\b${key}:\\s*"([^"]+)"`, "u"));
+  return match?.[1];
+};
+
+const alchemy = await Bun.file(join(appDir, "alchemy.run.ts")).text();
+const rootDir = readProp(alchemy, "rootDir");
+const main = readProp(alchemy, "main");
 
 console.log("deploy shape");
 
 check("the API app exists", existsSync(join(appDir, "package.json")), APP);
 check("the Worker entry exists", existsSync(entry), `${APP}/${ENTRY}`);
+check("the browser app exists", existsSync(join(webDir, "package.json")), WEB);
+check("the browser app has a Vite config", existsSync(join(webDir, "vite.config.ts")), WEB);
 
 // The bundler must resolve from the app manifest, because that manifest
 // declares every Worker dependency and the contract workspace link.
 check(
-  "the bundler resolves from apps/api",
+  "the Worker's dependencies resolve from apps/api",
   findCwdForBundle(entry) === appDir,
   findCwdForBundle(entry),
 );
 
-// A manifest under the app's source or tests would capture the bundler's
-// working directory and change the Worker's dependency resolution.
+// A manifest under the app's source or tests would capture that resolution and
+// change the Worker's dependencies.
 for (const manifest of ["src/package.json", "tests/package.json"]) {
-  check(`no ${manifest} captures the bundler`, !existsSync(join(appDir, manifest)));
+  check(`no ${manifest} captures the entry`, !existsSync(join(appDir, manifest)));
 }
 
-// The assets directory is resolved against the app's working directory too.
-check("the assets directory exists", existsSync(join(appDir, ASSETS)), ASSETS);
+// `alchemy.run.ts` has to name the Vite root the build runs in.
+check("alchemy.run.ts declares a rootDir", rootDir !== undefined, String(rootDir));
 
-// The deploy entry names the paths this script asserts.
-const alchemy = await Bun.file(join(appDir, "alchemy.run.ts")).text();
-check("alchemy.run.ts points at the Worker entry", alchemy.includes(`"./${ENTRY}"`));
-check("alchemy.run.ts points at the assets directory", alchemy.includes(`"${ASSETS}"`));
+const viteRoot = rootDir === undefined ? undefined : resolve(appDir, rootDir);
+check("rootDir is the browser app", viteRoot === webDir, String(viteRoot));
+
+// ...and `main` has to resolve from that root to the real entry. This is the
+// mistake the old `./src/index.ts` spelling invited: `..` from the Vite root is
+// `apps/`, not `apps/api/`.
+const resolvedMain = main === undefined ? undefined : resolve(viteRoot, main);
+check(
+  "main resolves to the Worker entry",
+  resolvedMain === entry,
+  `${String(main)} → ${String(resolvedMain)}`,
+);
 
 if (failures.length > 0) {
   console.error(`\n${failures.length} deploy-shape checks failed`);

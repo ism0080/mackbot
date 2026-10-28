@@ -21,7 +21,7 @@
   "dependencies": {
     "@earendil-works/pi-ai": "1.4.0",
     "@earendil-works/pi-durable": "1.4.0",
-    "effect": "4.0.4"
+    "effect": "4.0.6"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

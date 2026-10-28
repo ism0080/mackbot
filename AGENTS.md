@@ -27,11 +27,38 @@ app. `packages/contract/` is the shared vocabulary, and `tools/oxlint/` is the
 vendored lint plugin. Every package is a workspace member, so one
 `bun install` manages them all and `bun run check` runs every check.
 
-Alchemy resolves `main` and `assets.directory` against the process's working
-directory (the API package, because `bun run deploy` filters to it), and the
-bundler resolves from the nearest `package.json` above the entry. `bun run
-check:deploy-shape` asserts those invariants; keep the deploy entry and the
-assets directory at the paths it names.
+Alchemy resolves the Website's `rootDir`, and then `main` inside it, against the
+process's working directory (the API package, because `bun run deploy` filters
+to it) — which is why `main` is spelled from the browser app,
+`../api/src/index.ts`. The entry's nearest `package.json` has to stay the API's,
+because that manifest declares the Worker's dependencies. `bun run
+check:deploy-shape` asserts those invariants; keep the Vite root and the deploy
+entry at the paths it names.
 
 `apps/api/.env` does not exist: the secrets file stays at the repo root, and the
 API's deploy script passes it to Alchemy with `--env-file ../../.env`.
+
+## Dev
+
+`bun run dev` goes through `apps/api/dev.mjs`, which spawns the `alchemy` CLI on
+Node with `npm_execpath` cleared. Two things make the obvious path fail:
+`alchemy`'s `bin/cli.js` hands itself off to Bun whenever `npm_execpath` names
+bun, and under Bun the Website resource spawns its Vite dev child with
+`bin/register-dev-mode.js`, a file `alchemy` 2.0.0-beta.84 does not publish. On
+Node the CLI runs its compiled `lib/` and the published `bin/register-oxc.js`
+loader. Delete the launcher once a release ships that file.
+
+The dev loop is one origin: the Worker in workerd with its real bindings and
+Durable Objects, and the Foldkit app on Vite's dev server in front of it. The
+browser app authenticates with a cookie and sends `Origin`/`X-Mackbot-CSRF`, so
+serving it from a separate port would break the routes it talks to.
+
+## Installs on Windows
+
+Bun keeps its install cache on the system drive. When the checkout lives on
+another volume, Bun cannot hardlink out of that cache and copies files instead,
+which fails on paths past Windows' 260-character limit — and
+`@alchemy.run/cloudflare-runtime` ships `src/rolldown/test/fixtures` deep enough
+to reach it. If `bun install` fails with `failed to link package:
+@alchemy.run/cloudflare-runtime`, point the cache at the checkout's own volume:
+`bun install --cache-dir=D:\bun-cache`.

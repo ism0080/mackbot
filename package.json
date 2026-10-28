@@ -15,6 +15,7 @@
     "format": "oxfmt",
     "typecheck": "bun run --filter '*' typecheck",
     "test": "bun run --filter '*' test",
+    "dev": "bun run --filter '@mackbot/api' dev",
     "deploy": "bun run --filter '@mackbot/api' deploy",
     "tools:oxlint": "bun run --filter '@ism0080/oxlint-plugin-forge' test",
     "build:oxlint": "bun run --filter '@ism0080/oxlint-plugin-forge' build",

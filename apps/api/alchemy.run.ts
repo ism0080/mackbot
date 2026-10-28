@@ -3,9 +3,12 @@
  *
  * One async Worker hosts the front door and the exported `Bot` and `Registry`
  * Durable Object classes. `Cloudflare.DurableObject<Bot>("Bot")` binds the
- * class and drives Cloudflare's `new_sqlite_classes` migration, so each `Bot`
- * instance is SQLite-backed — what pi-durable's storage needs. The `Registry`
- * binding is the same: one instance holds the roster, in one SQLite table.
+ * class: Alchemy declares it in Cloudflare's declarative `exports` map and
+ * gives every new hosted class SQLite storage, so each `Bot` instance is
+ * SQLite-backed — what pi-durable's storage needs. The `Registry` binding is
+ * the same: one instance holds the roster, in one SQLite table. A class that
+ * stops being exported fails the deploy instead of losing its namespace, so
+ * both stay exported from `src/index.ts`.
  * `Cloudflare.Workers.AI()` binds Workers AI for the cheap `@cf/…` model tier.
  *
  * Secrets (`EXECUTOR_URL`, `EXECUTOR_TOKEN`, `OPENCODE_API_KEY`,
@@ -14,19 +17,24 @@
  * `OPENCODE_API_KEY` from `process.env`, and the agents lifecycle and the MCP
  * SDK use Node built-ins.
  *
- * `assets` serves the built Foldkit app from the sibling `apps/web`. Both
- * `main` and `assets.directory` resolve against this package's directory (the
- * deploy runs here), so `../web/dist` is the browser app's build output.
- * `runWorkerFirst` routes every request through this Worker before the asset
- * layer, because `/status` and its siblings would otherwise be answered by the
- * SPA fallback. The Worker handles its own routes and hands everything else to
- * `env.ASSETS`.
+ * `Cloudflare.Website.Foldkit` builds the sibling `apps/web` app and deploys it
+ * as this Worker's assets, so a deploy cannot ship a stale `dist/`: the Vite
+ * build runs from the stack, content-hashed and memoized (`memo` names the API
+ * and the shared contract as inputs too, or a Worker-only edit would reuse the
+ * last bundle). `rootDir` is the browser app, so `main` resolves from that root
+ * and reads `../api/src/index.ts`. `runWorkerFirst` routes every request
+ * through this Worker before the asset layer, because `/status` and its
+ * siblings would otherwise be answered by the SPA fallback. The Worker handles
+ * its own routes and hands everything else to `env.ASSETS`. `alchemy dev` runs
+ * the same pair: the Worker in workerd with its bindings, and the Foldkit app on
+ * Vite's dev server behind it, which is what keeps the browser same-origin in
+ * development — its cookie and CSRF checks need it.
  *
  * This is a fresh project: nothing is adopted (`adopt(true)` is not used).
  */
 
 import * as Alchemy from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
@@ -40,8 +48,25 @@ export default Alchemy.Stack(
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
-    const worker = yield* Cloudflare.Worker("Mackbot", {
-      main: "./src/index.ts",
+    const worker = yield* Cloudflare.Website.Foldkit("Mackbot", {
+      // The Vite root: the sibling browser app. `main` resolves from here.
+      rootDir: "../web",
+      main: "../api/src/index.ts",
+      // A stale Worker bundle is the same bug as stale assets, so the build
+      // hashes the API and the shared contract too, not just the browser app.
+      memo: {
+        include: [
+          "index.html",
+          "package.json",
+          "public/**",
+          "src/**",
+          "vite.config.ts",
+          "../api/src/**",
+          "../api/bots.json",
+          "../../packages/contract/src/**",
+        ],
+        lockfile: true,
+      },
       compatibility: {
         // Current date with nodejs_compat spelled out: Alchemy only adds it by
         // default for dates before 2026-08-04.
@@ -50,9 +75,9 @@ export default Alchemy.Stack(
       },
       crons: ["0 * * * *"],
       assets: {
-        directory: "../web/dist",
+        // The SPA fallback is already this resource's default for a
+        // client-only app; `runWorkerFirst` is the part that is ours.
         runWorkerFirst: true,
-        notFoundHandling: "single-page-application",
       },
       env: {
         Bot: Cloudflare.DurableObject<Bot>("Bot"),

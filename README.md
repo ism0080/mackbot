@@ -36,6 +36,7 @@ bun run format      # oxfmt
 bun run test        # every workspace member's tests
 bun run test:css    # prove each good-css rule still fires (apps/web/stylelint/fixtures)
 bun run tools:oxlint # build + test the vendored lint plugin
+bun run dev         # Worker + web app locally (see Dev)
 bun run deploy      # deploy apps/api (see Deploy)
 ```
 
@@ -133,8 +134,7 @@ input and its output against a Schema there, so the two cannot drift apart.
 
 ## The web app
 
-`apps/web/` is the first-party channel, served by the same Worker from
-`apps/web/dist`:
+`apps/web/` is the first-party channel, built and served by the same Worker:
 a home screen that groups the fleet into blocked, running, parked and recent
 work, per-bot transcripts with backward paging, approval cards with allow and
 deny, Stop and retry controls, and the roster editor. It polls `/status`, reads
@@ -148,13 +148,20 @@ the API starts work and the app observes and steers it.
 ## Deploy
 
 ```sh
-bun run --filter @mackbot/web build   # refresh apps/web/dist (the Worker's assets)
-bun run deploy                        # alchemy deploy, run inside apps/api
+bun run deploy   # build the web app, then deploy it and the Worker
 ```
 
-`bun run deploy` filters to `@mackbot/api`, so Alchemy resolves the Worker entry
-and `../web/dist` against that package. The secrets file stays at the repo root:
-the API's deploy script passes `--env-file ../../.env`.
+`bun run deploy` filters to `@mackbot/api`, where `alchemy.run.ts` declares the
+Worker as a `Cloudflare.Website.Foldkit`. That resource runs the Vite build for
+`apps/web` as part of the deploy — content-hashed, and skipped when neither the
+browser app, the Worker, nor the contract changed — so `apps/web/dist` is never
+uploaded stale. The secrets file stays at the repo root: the API's deploy script
+passes `--env-file ../../.env`.
+
+`bun run dev` runs the same pair locally: the Worker in workerd with its real
+bindings and Durable Objects, and the Foldkit app on Vite's dev server in front
+of it. One origin, so the browser app's cookie and CSRF checks behave as they do
+in production.
 
 Cloudflare credentials live in Alchemy profiles (`~/.alchemy/profiles.json`); do
 not export `CLOUDFLARE_API_TOKEN`.
