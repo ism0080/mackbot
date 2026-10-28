@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { Catalog, Roster, Transcript } from "../src/api.ts";
 import { Message } from "../src/message.ts";
 import { Screen } from "../src/model.ts";
-import { Navigate, pathOf, screenOfPath } from "../src/route.ts";
+import { Navigate, OpenLink, pathOf, screenOfPath } from "../src/route.ts";
 import { update } from "../src/update.ts";
 import { CATALOG, modelWith, rosterOf, transcriptOf } from "./support/fixtures.ts";
 import { botChannel, transcriptIn } from "./support/story.ts";
@@ -253,17 +253,36 @@ describe("in-app navigation", () => {
     );
   });
 
-  test("ExternalUrlRequested changes nothing and emits nothing", () => {
+  test("ExternalUrlRequested opens the link without changing the screen", () => {
     const seeded = modelWith({ toast: { text: "still here" } });
 
     story(
       update,
       given(seeded),
       message(Message.ExternalUrlRequested({ href: "https://example.com" })),
-      Command.expectNone(),
+      Command.expectExact(OpenLink({ href: "https://example.com" })),
       model((m) => {
         expect(m.screen).toEqual(seeded.screen);
         expect(m.toast).toEqual(seeded.toast);
+      }),
+      Command.resolve(
+        OpenLink({ href: "https://example.com" }),
+        Message.LinkOpened({ href: "https://example.com" }),
+      ),
+    );
+  });
+
+  test("LinkOpened acknowledges the new tab without changing the model", () => {
+    const seeded = modelWith({ screen: Screen.Transcript({ bot: "hermes" }), now: at });
+
+    story(
+      update,
+      given(seeded),
+      message(Message.LinkOpened({ href: "https://example.com" })),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Transcript({ bot: "hermes" }));
+        expect(m.now).toBe(at);
       }),
     );
   });

@@ -15,6 +15,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { Message } from "./message.ts";
 import { avatar, botName } from "./partials.ts";
+import { button } from "./ui.ts";
 
 /** The harness's own reason for a task it parked instead of running again. */
 export const PARKED_REASON = "restart_limit";
@@ -47,13 +48,14 @@ export const parkedTaskRow = (bot: string, task: TaskView, h: HtmlBuilder<Messag
           h.span([h.Class("sp-foot")], [botName(bot)]),
         ],
       ),
-      h.button(
-        [
-          h.Class("btn ghost"),
-          h.DataAttribute("retry", task.id),
-          h.OnClick(Message.ClickedRetry({ bot, taskId: task.id })),
-        ],
+      button(
+        {
+          className: "btn ghost",
+          data: [["retry", task.id]],
+          onClick: Message.ClickedRetry({ bot, taskId: task.id }),
+        },
         ["Retry"],
+        h,
       ),
     ],
   );

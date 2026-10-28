@@ -6,9 +6,12 @@ import {
   ThinkingLevelSchema,
   TranscriptPageSchema,
 } from "@mackbot/contract";
+import { Dialog } from "@foldkit/ui";
 import { AsyncData } from "foldkit";
 import { defineTaggedUnion } from "foldkit/schema";
 import * as Schema from "effect/Schema";
+
+import { Toast } from "./toast.ts";
 
 /**
  * What the browser is looking at. Every screen is a focus — a bot id — never a
@@ -43,16 +46,6 @@ export type StreamState = typeof StreamState.Type;
 /** How many recent Frames one channel keeps. A devtools window, not history:
  *  the transcript owns history. */
 export const FRAME_WINDOW = 50;
-
-/**
- * The one transient line the server has to say out loud and the user can
- * dismiss: a decision that did not stick, or one another client had already
- * made. It is global rather than per-channel because only one is ever visible.
- */
-export const Toast = Schema.Struct({
-  text: Schema.String,
-});
-export type Toast = typeof Toast.Type;
 
 /** A thinking level, as the contract names them. */
 export type ThinkingLevel = typeof ThinkingLevelSchema.Type;
@@ -127,8 +120,30 @@ export const Model = Schema.Struct({
    * fleet did not answer". Per-bot failures are their own channel's `status`.
    */
   roster: AsyncData.Schema(Schema.Null, Schema.String).schema,
-  /** The last server answer a view has to show; see {@link Toast}. */
-  toast: Schema.NullOr(Toast),
+  /**
+   * The transient answers the server has to say out loud: a decision that did
+   * not stick, or one another client had already made. It is a stack rather
+   * than one slot, and it is global rather than per-channel because a bot's
+   * answer is about the screen the person is looking at, not the thread.
+   */
+  toast: Toast.Model,
+  /**
+   * The dialog that reads a drafted artifact at full size. The native element
+   * traps the focus and makes the screen behind it inert, so the decision is
+   * taken with the whole draft in front of the person rather than a peek line.
+   */
+  dialog: Dialog.Model,
+  /** The approval whose draft the dialog is showing, named by id so the
+   *  dialog reads the approval's current state rather than a copy. */
+  reviewing: Schema.NullOr(Schema.String),
+  /**
+   * The disclosures a person has toggled, by panel id. A tool result, a long
+   * message's tail and an approval's draft all fold, and the Model is what
+   * remembers it: a panel's open state cannot be lost to a re-render the way a
+   * browser-owned `<details>` can, and a failed tool result can default open
+   * without becoming impossible to close.
+   */
+  expanded: Schema.Record(Schema.String, Schema.Boolean),
   channels: Schema.Record(Schema.String, Channel),
   /**
    * The roster being edited: the server's bots with the edits on top.

@@ -18,6 +18,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { Message } from "./message.ts";
 import type { Model, ThinkingLevel } from "./model.ts";
 import { botName, toast } from "./partials.ts";
+import { button, selectField, textareaField, textField } from "./ui.ts";
 
 /** The value the level select carries when the bot declares no level. */
 const NO_LEVEL = "";
@@ -63,8 +64,9 @@ const levelOptions = (
 const levelOf = (value: string): ThinkingLevel | null =>
   Schema.is(ThinkingLevelSchema)(value) ? value : null;
 
-const field = (label: string, control: Html, h: HtmlBuilder<Message>): Html =>
-  h.label([h.Class("field")], [h.span([h.Class("field-label")], [label]), control]);
+/** A control's DOM id. The bot being created has no id yet, so it shares the
+ *  `new` prefix every create-form control carries. */
+const fieldId = (bot: string | null, name: string): string => `bot-${bot ?? "new"}-${name}`;
 
 /**
  * The model picker. `bot` is null for the bot being created, which has no id
@@ -77,21 +79,19 @@ const modelSelect = (
   catalog: ModelCatalog,
   h: HtmlBuilder<Message>,
 ): Html =>
-  h.select(
-    [
-      h.Class("input"),
-      h.DataAttribute("field", "model"),
-      h.Value(current),
-      h.OnChange((value) => Message.EditedBotModel({ bot, model: value })),
-    ],
-    [
-      ...(current.length === 0
-        ? [h.option([h.Value(""), h.Selected(true)], ["Choose a model"])]
-        : []),
-      ...modelOptions(catalog, current).map((option) =>
-        h.option([h.Value(option), h.Selected(option === current)], [option]),
-      ),
-    ],
+  selectField(
+    {
+      id: fieldId(bot, "model"),
+      label: "Model",
+      hook: "model",
+      value: current,
+      choices: [
+        ...(current.length === 0 ? [{ value: "", label: "Choose a model" }] : []),
+        ...modelOptions(catalog, current).map((model) => ({ value: model, label: model })),
+      ],
+      onChange: (value) => Message.EditedBotModel({ bot, model: value }),
+    },
+    h,
   );
 
 /**
@@ -106,39 +106,46 @@ const levelSelect = (
   h: HtmlBuilder<Message>,
 ): Html => {
   const chosen = current ?? undefined;
-  return h.select(
-    [
-      h.Class("input"),
-      h.DataAttribute("field", "level"),
-      h.Value(chosen ?? NO_LEVEL),
-      h.OnChange((value) =>
+  return selectField(
+    {
+      id: fieldId(bot, "level"),
+      label: "Thinking level",
+      hook: "level",
+      value: chosen ?? NO_LEVEL,
+      choices: [
+        { value: NO_LEVEL, label: "No level" },
+        ...levelOptions(catalog, model, chosen).map((level) => ({ value: level, label: level })),
+      ],
+      onChange: (value) =>
         Message.EditedBotLevel({ bot, level: value === NO_LEVEL ? null : levelOf(value) }),
-      ),
-    ],
-    [
-      h.option([h.Value(NO_LEVEL), h.Selected(chosen === undefined)], ["No level"]),
-      ...levelOptions(catalog, model, chosen).map((level) =>
-        h.option([h.Value(level), h.Selected(level === chosen)], [level]),
-      ),
-    ],
+    },
+    h,
   );
 };
 
 const promptArea = (bot: string | null, current: string, h: HtmlBuilder<Message>): Html =>
-  h.textarea([
-    h.Class("input"),
-    h.DataAttribute("field", "prompt"),
-    h.Value(current),
-    h.OnInput((value) => Message.EditedBotPrompt({ bot, prompt: value })),
-  ]);
+  textareaField(
+    {
+      id: fieldId(bot, "prompt"),
+      label: "System prompt",
+      hook: "prompt",
+      value: current,
+      onInput: (prompt) => Message.EditedBotPrompt({ bot, prompt }),
+    },
+    h,
+  );
 
 const briefArea = (bot: string | null, current: string, h: HtmlBuilder<Message>): Html =>
-  h.textarea([
-    h.Class("input"),
-    h.DataAttribute("field", "brief"),
-    h.Value(current),
-    h.OnInput((value) => Message.EditedBotBrief({ bot, brief: value })),
-  ]);
+  textareaField(
+    {
+      id: fieldId(bot, "brief"),
+      label: "Brief",
+      hook: "brief",
+      value: current,
+      onInput: (brief) => Message.EditedBotBrief({ bot, brief }),
+    },
+    h,
+  );
 
 /** One bot of the roster, with the fields a human edits. */
 const botCard = (
@@ -158,20 +165,21 @@ const botCard = (
           h.span([h.Class("botcard-model")], [config.model]),
         ],
       ),
-      field("Model", modelSelect(bot, config.model, catalog, h), h),
-      field("Thinking level", levelSelect(bot, config.thinkingLevel, config.model, catalog, h), h),
-      field("System prompt", promptArea(bot, config.systemPrompt, h), h),
-      field("Brief", briefArea(bot, config.brief ?? "", h), h),
+      modelSelect(bot, config.model, catalog, h),
+      levelSelect(bot, config.thinkingLevel, config.model, catalog, h),
+      promptArea(bot, config.systemPrompt, h),
+      briefArea(bot, config.brief ?? "", h),
       h.div(
         [h.Class("botcard-actions")],
         [
-          h.button(
-            [
-              h.Class("btn primary"),
-              h.DataAttribute("save", bot),
-              h.OnClick(Message.ClickedSaveBot({ bot })),
-            ],
+          button(
+            {
+              className: "btn primary",
+              data: [["save", bot]],
+              onClick: Message.ClickedSaveBot({ bot }),
+            },
             ["Save"],
+            h,
           ),
         ],
       ),
@@ -184,36 +192,32 @@ const createCard = (model: Model, catalog: ModelCatalog, h: HtmlBuilder<Message>
     [h.Class("botcard new"), h.DataAttribute("new", "")],
     [
       h.div([h.Class("botcard-head")], [h.span([h.Class("botcard-id")], ["New bot"])]),
-      field(
-        "Id",
-        h.input([
-          h.Class("input"),
-          h.Type("text"),
-          h.DataAttribute("field", "id"),
-          h.Value(model.newBotId),
-          h.Placeholder("atlas"),
-          h.OnInput((value) => Message.EditedNewBotId({ id: value })),
-        ]),
+      textField(
+        {
+          id: fieldId(null, "id"),
+          label: "Id",
+          hook: "id",
+          value: model.newBotId,
+          placeholder: "atlas",
+          onInput: (id) => Message.EditedNewBotId({ id }),
+        },
         h,
       ),
-      field("Model", modelSelect(null, model.draft.model, catalog, h), h),
-      field(
-        "Thinking level",
-        levelSelect(null, model.draft.thinkingLevel, model.draft.model, catalog, h),
-        h,
-      ),
-      field("System prompt", promptArea(null, model.draft.systemPrompt, h), h),
-      field("Brief", briefArea(null, model.draft.brief, h), h),
+      modelSelect(null, model.draft.model, catalog, h),
+      levelSelect(null, model.draft.thinkingLevel, model.draft.model, catalog, h),
+      promptArea(null, model.draft.systemPrompt, h),
+      briefArea(null, model.draft.brief, h),
       h.div(
         [h.Class("botcard-actions")],
         [
-          h.button(
-            [
-              h.Class("btn primary"),
-              h.DataAttribute("create", ""),
-              h.OnClick(Message.ClickedCreateBot()),
-            ],
+          button(
+            {
+              className: "btn primary",
+              data: [["create", ""]],
+              onClick: Message.ClickedCreateBot(),
+            },
             ["Add bot"],
+            h,
           ),
         ],
       ),
@@ -264,9 +268,10 @@ export const bots = (model: Model, h: HtmlBuilder<Message>): Html => {
       h.header(
         [h.Class("hdr")],
         [
-          h.button(
-            [h.Class("icon"), h.AriaLabel("Back to Needs you"), h.OnClick(Message.ClickedBack())],
+          button(
+            { className: "icon", ariaLabel: "Back to Needs you", onClick: Message.ClickedBack() },
             ["‹"],
+            h,
           ),
           h.span(
             [h.Class("hdr-main stacked")],
@@ -275,7 +280,7 @@ export const bots = (model: Model, h: HtmlBuilder<Message>): Html => {
         ],
       ),
       h.main([h.Class("scroll")], body),
-      ...toast(model.toast, h),
+      ...toast(model, h),
     ],
   );
 };

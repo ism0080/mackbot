@@ -169,8 +169,13 @@ transcript, `/bots` for the roster); the Worker's asset binding serves
 `index.html` for any other path, so a deep link or a reload lands on the same
 screen. The composer posts to `POST /chat/:bot` with `wait=0`, then follows the
 run through `/events` plus a short transcript poll while work is in flight.
-Tool results appear as collapsed rows — expanded by default only when the tool
-failed — rather than as raw JSON in the conversation.
+Tool results appear as collapsed rows - expanded by default only when the tool
+failed - rather than as raw JSON in the conversation. A bot's own message is
+rendered as the Markdown it is written in, so a check-in arrives as a short
+outcome line, bullets and a numbered list instead of one paragraph of literal
+asterisks; a reply longer than six blocks folds its tail behind a disclosure, a
+URL standing on its own line becomes a tappable link, and each reply carries a
+copy button and the origin it came from.
 
 The layout is mobile-first but not device-shaped: the app fills any window, and
 one centred reading column keeps a desktop from stretching the triage rows.

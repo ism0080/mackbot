@@ -10,6 +10,7 @@ import type { Model } from "../src/model.ts";
 import { update } from "../src/update.ts";
 import { CATALOG, botConfigOf, modelWith, rosterOf } from "./support/fixtures.ts";
 import { dataOf, errorOf } from "./support/story.ts";
+import { settleToast, toastText } from "./support/toast.ts";
 
 const hermesConfig = (overrides: Partial<BotConfig> = {}) =>
   botConfigOf({
@@ -146,9 +147,9 @@ describe("saving a bot", () => {
       update,
       given(seededEmpty),
       message(Message.ClickedSaveBot({ bot: "hermes" })),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
-        expect(m.toast?.text).toBe("Couldn't save Hermes: the model is empty.");
+        expect(toastText(m)).toBe("Couldn't save Hermes: the model is empty.");
       }),
     );
   });
@@ -165,9 +166,9 @@ describe("saving a bot", () => {
       update,
       given(seededEmpty),
       message(Message.ClickedSaveBot({ bot: "hermes" })),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
-        expect(m.toast?.text).toBe("Couldn't save Hermes: the system prompt is empty.");
+        expect(toastText(m)).toBe("Couldn't save Hermes: the system prompt is empty.");
       }),
     );
   });
@@ -182,8 +183,9 @@ describe("saving a bot", () => {
         SaveBot({ bot: "hermes", config: hermesConfig() }),
         Message.BotSaved({ id: "hermes", bot: hermesConfig() }),
       ),
+      settleToast(),
       model((m) => {
-        expect(m.toast?.text).toBe("Saved Hermes.");
+        expect(toastText(m)).toBe("Saved Hermes.");
       }),
     );
   });
@@ -198,12 +200,12 @@ describe("saving a bot", () => {
       update,
       given(seeded()),
       message(Message.BotSaved({ id: "hermes", bot: stored })),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
         const bots = registryIn(m);
         expect(bots.hermes).toEqual(stored);
         expect(bots.scribe).toBeDefined();
-        expect(m.toast?.text).toBe("Saved Hermes.");
+        expect(toastText(m)).toBe("Saved Hermes.");
       }),
     );
   });
@@ -223,9 +225,9 @@ describe("creating a bot", () => {
       update,
       given({ ...seeded(), newBotId: "   ", draft: draft() }),
       message(Message.ClickedCreateBot()),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
-        expect(m.toast?.text).toBe("The new bot needs an id.");
+        expect(toastText(m)).toBe("The new bot needs an id.");
       }),
     );
   });
@@ -235,11 +237,9 @@ describe("creating a bot", () => {
       update,
       given({ ...seeded(), newBotId: "Not A Slug", draft: draft() }),
       message(Message.ClickedCreateBot()),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
-        expect(m.toast?.text).toBe(
-          "The id has to be a slug: lowercase letters, digits and dashes.",
-        );
+        expect(toastText(m)).toBe("The id has to be a slug: lowercase letters, digits and dashes.");
       }),
     );
   });
@@ -249,9 +249,9 @@ describe("creating a bot", () => {
       update,
       given({ ...seeded(), newBotId: "newbie", draft: draft({ model: "" }) }),
       message(Message.ClickedCreateBot()),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
-        expect(m.toast?.text).toBe("The new bot needs a model.");
+        expect(toastText(m)).toBe("The new bot needs a model.");
       }),
     );
   });
@@ -261,9 +261,9 @@ describe("creating a bot", () => {
       update,
       given({ ...seeded(), newBotId: "newbie", draft: draft({ systemPrompt: "  " }) }),
       message(Message.ClickedCreateBot()),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
-        expect(m.toast?.text).toBe("The new bot needs a system prompt.");
+        expect(toastText(m)).toBe("The new bot needs a system prompt.");
       }),
     );
   });
@@ -303,6 +303,7 @@ describe("creating a bot", () => {
           }),
         }),
       ),
+      settleToast(),
     );
   });
 
@@ -316,14 +317,14 @@ describe("creating a bot", () => {
       update,
       given({ ...seeded(), newBotId: "newbie", draft: draft() }),
       message(Message.BotCreated({ id: "newbie", bot: created })),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
         const bots = registryIn(m);
         expect(bots.newbie).toEqual(created);
         expect(bots.hermes).toBeDefined();
         expect(m.draft).toEqual(EMPTY_DRAFT);
         expect(m.newBotId).toBe("");
-        expect(m.toast?.text).toBe("Added Newbie.");
+        expect(toastText(m)).toBe("Added Newbie.");
       }),
     );
   });

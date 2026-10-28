@@ -225,6 +225,15 @@ button {
     background: var(--surface2);
   }
 
+  .msg-copy:hover {
+    color: var(--text);
+    background: var(--surface2);
+  }
+
+  .md-clip > summary:hover {
+    color: var(--text);
+  }
+
   .doneitem:hover {
     background: color-mix(in oklch, var(--surface), var(--white) 4%);
   }
@@ -638,30 +647,18 @@ button {
 }
 
 /* An approval that authorizes a real effect has to show the effect. Without the
-   draft you are approving an email you have never read. */
+   draft you are approving an email you have never read, so the line opens the
+   draft at full size rather than standing in for it. */
 .ap-draft {
   display: flex;
   flex-direction: column;
+  gap: 4px;
+  inline-size: 100%;
   border: 1px solid var(--warn-line-soft);
   background: var(--warn-quiet);
-  padding-inline: 10px;
-}
-
-.ap-draft[open] {
-  padding-block-end: 10px;
-}
-
-.ap-draft > summary {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  cursor: pointer;
-  list-style: none;
   padding-block: 9px;
-}
-
-.ap-draft > summary::-webkit-details-marker {
-  display: none;
+  padding-inline: 10px;
+  text-align: start;
 }
 
 .ap-draft-label {
@@ -684,35 +681,84 @@ button {
   color: var(--warn-muted);
 }
 
-.ap-draft[open] .ap-draft-peek {
-  -webkit-line-clamp: 99;
+/* ---------- the dialog that reads a draft ---------- */
+
+.dlg {
+  inline-size: min(560px, calc(100vw - 2 * var(--gutter)));
+  max-inline-size: none;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
 }
 
-.ap-draft pre {
+.dlg-backdrop {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklch, var(--black) 62%, transparent);
+}
+
+.dlg-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--warn-line);
+  border-radius: var(--r);
+  background: var(--bg-deep);
+  box-shadow: 0 24px 60px var(--shadow);
+}
+
+.dlg-title {
+  font-size: var(--step-0);
+  color: var(--warn-strong);
+}
+
+.dlg-question {
   margin: 0;
   font-size: var(--step--1);
-  line-height: 1.5;
+  color: var(--warn-body);
+}
+
+/* The one place the whole artifact is readable, so it scrolls on its own rather
+   than pushing the decision off the screen. */
+.dlg-artifact {
+  margin: 0;
+  max-block-size: 40vh;
+  overflow: auto;
+  padding: 10px;
+  border: 1px solid var(--warn-line-soft);
+  border-radius: 10px;
+  background: var(--warn-quiet);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--step--1);
+  line-height: 1.5;
   color: var(--warn-body);
   white-space: pre-wrap;
 }
 
-/* The draft is a `<details>` accordion; the entry animates its height. */
-details::details-content {
-  block-size: 0;
-  overflow: clip;
+.dlg-actions {
+  display: flex;
+  gap: 8px;
 }
 
-details[open]::details-content {
-  block-size: auto;
+.dlg-close {
+  flex: none;
+  padding-block: 16px;
+  padding-inline: 14px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--step--2);
 }
 
-@media (prefers-reduced-motion: no-preference) {
-  details::details-content {
-    transition:
-      block-size 0.3s ease-out,
-      content-visibility 0.3s allow-discrete;
-  }
+.dlg-tool {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--step--3);
+  color: var(--muted);
 }
 
 .ap-actions {
@@ -786,25 +832,109 @@ details[open]::details-content {
 
 /* ---------- toast ---------- */
 
-/* The server answer the screen has to say out loud: a decision that did not
-   stick, or one another client had already made. It is the shell's own child so
-   it rides the same centred column as the screen, and it sits above the scroll
-   region it interrupts. */
-.toast {
-  position: absolute;
+/* The answers the screen has to say out loud: a decision that did not stick, or
+   one another client had already made. The stack is the Foldkit UI toast
+   container, anchored to the viewport by the component, so the entry is only
+   its own pill and the container is only the column they stack in. */
+.toaststack {
+  position: fixed;
   inset-inline: var(--gutter);
   inset-block-end: calc(14px + env(safe-area-inset-bottom, 0px));
-  z-index: 2;
+  z-index: 3;
   display: flex;
-  align-items: center;
-  padding: 10px 12px;
+  flex-direction: column;
+  gap: 8px;
+  /* The container spans the screen so its entries can sit in the centred
+     column; only the entries themselves take the pointer. */
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
   border: 1px solid var(--warn-line);
   border-radius: var(--r);
   background: var(--warn-soft);
   color: var(--warn-strong);
   font-size: var(--step--1);
-  text-align: start;
   box-shadow: 0 10px 30px var(--shadow);
+}
+
+/* The enter and leave phases are the component's own animation, and it waits
+   for this transition to finish before it retires the entry. */
+@media (prefers-reduced-motion: no-preference) {
+  .toast {
+    transition:
+      opacity 180ms ease-out,
+      translate 180ms ease-out;
+  }
+}
+
+/* An answer that worked, or one that is merely information, is not a warning:
+   the variant the update chose is what colours it. */
+.toast[data-variant="Success"] {
+  border-color: color-mix(in oklch, var(--ok) 35%, var(--bg));
+  background: color-mix(in oklch, var(--ok) 14%, var(--bg));
+  color: color-mix(in oklch, var(--ok) 55%, var(--white));
+}
+
+.toast[data-variant="Info"] {
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+
+.toast-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.toast-close {
+  margin-inline-start: auto;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font-size: var(--step--3);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.7;
+}
+
+.toast-close:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .toast-close:hover {
+    opacity: 1;
+  }
+}
+
+/* The enter and leave phases are the component's own animation, and it waits
+   for this transition to finish before it retires the entry. */
+.toast[data-closed] {
+  opacity: 0;
+  translate: 0 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    transition: none;
+  }
+}
+
+.toast[data-closed] {
+  opacity: 0;
+  translate: 0 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .toast {
+    transition: none;
+  }
 }
 
 .ap-foot {
@@ -887,21 +1017,21 @@ details[open]::details-content {
   background: var(--surface);
 }
 
-.tool > summary {
+/* The disclosure owns the toggle, so the row is only its layout: no marker to
+   strip, and the open state is the button's own `aria-expanded`. */
+.tool-summary {
   display: flex;
   align-items: center;
   gap: 8px;
+  inline-size: 100%;
   min-block-size: 44px;
   padding: 10px 12px;
-  cursor: pointer;
-  list-style: none;
+  border: 0;
+  background: transparent;
+  text-align: start;
 }
 
-.tool > summary::-webkit-details-marker {
-  display: none;
-}
-
-.tool[open] > summary {
+.tool-summary[data-open] {
   border-block-end: 1px solid var(--line);
 }
 
@@ -949,12 +1079,144 @@ details[open]::details-content {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  max-inline-size: 86%;
+  /* The measure is capped in characters as well as percent: a long line on a
+     wide window is the reason the bubble had to be narrower than 86% at all. */
+  max-inline-size: min(86%, 62ch);
   font-size: var(--step-1);
 }
 
 .msg p {
   margin: 0;
+  /* A person types line breaks into the composer and expects them back. The
+     bot's prose is not this rule's business: it arrives as `.md` blocks. */
+  white-space: pre-line;
+}
+
+/* Rendered prose arrives as real block elements, so it is a block stack with
+   its own gap rather than one collapsed paragraph. */
+.md {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55em;
+  line-height: 1.55;
+}
+
+.md ul,
+.md ol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3em;
+  margin-block: 0;
+  margin-inline: 0;
+  padding-inline-start: 1.15em;
+}
+
+.md li::marker {
+  color: var(--muted);
+}
+
+.md h1,
+.md h2,
+.md h3 {
+  font-size: var(--step-1);
+  font-weight: 600;
+  margin-block: 0.15em 0;
+  margin-inline: 0;
+}
+
+.md strong {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.md a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9em;
+  padding-inline: 0.25em;
+  background: var(--surface2);
+}
+
+.md pre {
+  margin-block: 0;
+  margin-inline: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface2);
+  overflow-x: auto;
+  line-height: 1.5;
+}
+
+/* The block already sits on the code background, so the inline chip would
+   only add padding inside a padded box. */
+.md pre code {
+  padding-inline: 0;
+  background: none;
+  font-size: inherit;
+}
+
+.md blockquote {
+  margin-block: 0;
+  margin-inline: 0;
+  padding-inline-start: 0.75em;
+  border-inline-start: 3px solid var(--line);
+  color: var(--text-soft);
+}
+
+.md hr {
+  margin-block: 0.4em;
+  margin-inline: 0;
+  block-size: 0;
+  border: 0;
+  border-block-start: 1px solid var(--line);
+}
+
+/* A paragraph that is nothing but a bare URL is an approval link, not prose:
+   the whole row becomes the tap target so the affordance reads as a button. */
+.md-link-row a {
+  display: flex;
+  align-items: center;
+  inline-size: 100%;
+  min-block-size: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--accent-line);
+  border-radius: var(--r);
+  background: var(--accent-soft);
+  color: var(--accent);
+  overflow-wrap: anywhere;
+}
+
+/* The tail of a long message, folded away. The toggle carries the whole
+   affordance, so it is a finger-sized target on its own. The tail blocks keep
+   the body's rhythm inside the disclosure, which is its own formatting context
+   and so does not inherit the `.md` gap. */
+.md-clip-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  inline-size: 100%;
+  min-block-size: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-size: var(--step--1);
+  color: var(--muted);
+  text-align: start;
+}
+
+.md-clip-toggle::before {
+  content: "▸";
+  font-size: 0.9em;
+}
+
+.md-clip-toggle[data-open]::before {
+  content: "▾";
 }
 
 .msg.bot {
@@ -982,10 +1244,36 @@ details[open]::details-content {
 .origin {
   display: block;
   font-size: var(--step--4);
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--warn);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* The footer under a rendered body: who and when on one side, the copy
+   affordance on the other. It wraps instead of squeezing the meta on a narrow
+   bubble. */
+.msg-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.msg-meta {
+  font-size: var(--step--4);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.msg-copy {
+  flex: none;
+  font-size: var(--step--3);
+  color: var(--muted);
+  padding-block: 2px;
+  padding-inline: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: transparent;
 }
 
 .ap-ref {

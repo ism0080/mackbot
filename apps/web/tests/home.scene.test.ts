@@ -14,12 +14,15 @@ import {
   expect,
   expectAll,
   given,
+  Mount,
   role,
   scene,
   selector,
   within,
 } from "foldkit/scene";
 import { test } from "vitest";
+
+import { Dialog } from "@foldkit/ui";
 
 import {
   Catalog,
@@ -45,7 +48,7 @@ import {
   transcriptOf,
 } from "./support/fixtures.ts";
 import { appModel, botChannel, idleChannel } from "./support/scene.ts";
-
+import { settleToastScene } from "./support/toast.ts";
 const at = (minutesAgo: number): number => FIXTURE_NOW - minutesAgo * 60_000;
 
 const stream = {
@@ -92,13 +95,13 @@ test("a pending approval is a card with its tool, question, draft and foot", () 
     expect(within(selector('[data-approval="apr_send"]'), selector(".ap-q"))).toContainText(
       "Send the drafted reply to arena@northwind.co?",
     ),
-    // The artifact is opt-in reading: a summary line that opens.
-    expect(
-      within(selector('[data-approval="apr_send"]'), selector("details.ap-draft")),
-    ).toContainText("Draft reply"),
-    expect(
-      within(selector('[data-approval="apr_send"]'), selector("details.ap-draft")),
-    ).toContainText(body),
+    // The artifact is opt-in reading, and reading it means the whole draft.
+    expect(within(selector('[data-approval="apr_send"]'), selector(".ap-draft"))).toContainText(
+      "Draft reply",
+    ),
+    expect(within(selector('[data-approval="apr_send"]'), selector(".ap-draft"))).toContainText(
+      body,
+    ),
     expect(within(selector('[data-approval="apr_send"]'), selector(".ap-foot"))).toContainText(
       "waiting 4m",
     ),
@@ -108,6 +111,38 @@ test("a pending approval is a card with its tool, question, draft and foot", () 
     expect(
       within(selector('[data-approval="apr_send"]'), role("button", { name: "Deny" })),
     ).toBeEnabled(),
+  );
+});
+
+test("the draft button opens the whole draft in a dialog, with the decision in it", () => {
+  const body = "Hi Arena — the numbers are attached.";
+
+  scene(
+    { update, view },
+    given(
+      appModel(homeScreen(), {
+        hermes: botChannel({
+          status: statusOf({
+            approvals: [approvalOf({ artifact: { label: "Draft reply", body } })],
+          }),
+        }),
+      }),
+    ),
+    // Reading is opt-in: nothing is open until the draft line is pressed.
+    expect(selector(".dlg-panel")).toBeAbsent(),
+    click(selector('[data-review="apr_send"]')),
+    Command.resolve(Dialog.ShowDialog, Dialog.Message.SucceededShowDialog()),
+    // The dialog element mounts itself once it is in the tree; the acquisition
+    // is what takes the scroll lock and the focus trap.
+    Mount.resolve(Dialog.AcquireResources, Dialog.Message.SucceededAcquireResources()),
+    expect(within(selector(".dlg-panel"), role("heading", { name: "Draft reply" }))).toExist(),
+    expect(within(selector(".dlg-panel"), selector(".dlg-artifact"))).toHaveText(body),
+    expect(within(selector(".dlg-panel"), selector(".dlg-question"))).toHaveText(
+      "Send the drafted reply to arena@northwind.co?",
+    ),
+    // The decision sits with the draft rather than behind it.
+    expect(within(selector(".dlg-panel"), role("button", { name: "Allow" }))).toExist(),
+    expect(within(selector(".dlg-panel"), role("button", { name: "Deny" }))).toExist(),
   );
 });
 
@@ -188,6 +223,7 @@ test("a running bot is a row with its title and a Stop that asks the server", ()
     ),
     // The stop is only a request; the run leaves the screen when status says so.
     expect(selector('[data-group="running"]')).toBeVisible(),
+    settleToastScene(),
     Command.expectExact(Status()),
     Command.resolve(
       Status,
@@ -269,6 +305,7 @@ test("a parked task sits under Parked with a Retry, and live work does not", () 
       RetryTask,
       Message.TaskRetried({ bot: "hermes", taskId: "task_parked", retried: true }),
     ),
+    settleToastScene(),
     Command.expectExact(Status()),
     Command.resolve(
       Status,

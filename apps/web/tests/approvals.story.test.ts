@@ -2,12 +2,15 @@ import { AsyncData } from "foldkit";
 import { Command, given, message, model, story } from "foldkit/story";
 import { describe, expect, test } from "vitest";
 
+import { Dialog } from "@foldkit/ui";
+
 import { DecideApproval, Status } from "../src/api.ts";
 import { Message } from "../src/message.ts";
 import type { Model } from "../src/model.ts";
 import { update } from "../src/update.ts";
 import { FIXTURE_NOW, approvalOf, modelWith, statusOf } from "./support/fixtures.ts";
 import { botChannel, statusIn } from "./support/story.ts";
+import { drainToast, settleToast, toastEntry, toastText } from "./support/toast.ts";
 
 const at = FIXTURE_NOW;
 
@@ -31,6 +34,24 @@ const approvalIn = (m: Model, approvalId: string) => {
   if (approval === undefined) throw new Error(`no approval "${approvalId}"`);
   return approval;
 };
+
+/** The id the app gives the draft dialog; the Worker's own attribute is not
+ *  involved, so the test names it once here. */
+const DIALOG_ID = "approval-draft";
+
+const closeDialog = () => Dialog.CloseDialog({ id: DIALOG_ID });
+
+/**
+ * Reading a draft, as the parent sees it: the fact, the two Commands the
+ * dialog's update emits for the native element — the plain open, and the one
+ * that names the element to focus — and the browser's answer to each.
+ */
+const opened = () => [
+  message(Message.ClickedReviewApproval({ bot: "hermes", approvalId: "apr_send" })),
+  // The definition matcher, so the test does not restate the focus selector the
+  // dialog derives for itself.
+  Command.resolve(Dialog.ShowDialog, Dialog.Message.SucceededShowDialog()),
+];
 
 describe("deciding an approval", () => {
   test("DecidedApproval flips that approval and emits the decision Command", () => {
@@ -140,12 +161,12 @@ describe("deciding an approval", () => {
       update,
       given(optimistic),
       message(Message.ApprovalFailed({ bot: "hermes", approvalId: "apr_send", error: "boom" })),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
         const approval = approvalIn(m, "apr_send");
         expect(approval.status).toBe("pending");
         expect(approval.decidedAt).toBeUndefined();
-        expect(m.toast?.text).toBe("Couldn't record that decision (boom). Try again.");
+        expect(toastText(m)).toBe("Couldn't record that decision (boom). Try again.");
       }),
     );
   });
@@ -168,12 +189,80 @@ describe("deciding an approval", () => {
       update,
       given(seededRefused),
       message(Message.ApprovalRefused({ bot: "hermes", approvalId: "apr_send" })),
+      settleToast(),
       Command.expectExact(Status),
       model((m) => {
-        expect(m.toast?.text).toBe("That approval was already decided elsewhere.");
+        expect(toastText(m)).toBe("That approval was already decided elsewhere.");
         expect(approvalIn(m, "apr_send").status).toBe("allowed");
       }),
       Command.resolve(Status, Message.StatusFailed({ error: "offline", at })),
+    );
+  });
+
+  test("reading a draft opens the dialog on the approval under review", () => {
+    story(
+      update,
+      given(seeded()),
+      ...opened(),
+      model((m) => {
+        expect(m.reviewing).toBe("apr_send");
+        expect(m.dialog.isOpen).toBe(true);
+      }),
+    );
+  });
+
+  test("a decision taken while reading the draft closes it", () => {
+    story(
+      update,
+      given(seeded()),
+      ...opened(),
+      message(Message.DecidedApproval({ bot: "hermes", approvalId: "apr_send", action: "deny" })),
+      Command.expectExact(
+        DecideApproval({ bot: "hermes", approvalId: "apr_send", action: "deny" }),
+        closeDialog(),
+      ),
+      Command.resolve(closeDialog(), Dialog.Message.CompletedCloseDialog()),
+      settleToast(),
+      model((m) => {
+        // The decision retires the dialog as well as the card: both are views
+        // of the same approval.
+        expect(m.dialog.isOpen).toBe(false);
+        expect(approvalIn(m, "apr_send").status).toBe("denied");
+      }),
+      Command.resolve(
+        DecideApproval({ bot: "hermes", approvalId: "apr_send", action: "deny" }),
+        Message.ApprovalDecided({
+          bot: "hermes",
+          approvalId: "apr_send",
+          status: "denied",
+          decidedAt: at,
+        }),
+      ),
+    );
+  });
+
+  test("a decision on another approval leaves the open draft alone", () => {
+    story(
+      update,
+      given(seeded()),
+      ...opened(),
+      message(Message.DecidedApproval({ bot: "hermes", approvalId: "apr_other", action: "allow" })),
+      Command.expectExact(
+        DecideApproval({ bot: "hermes", approvalId: "apr_other", action: "allow" }),
+      ),
+      model((m) => {
+        expect(m.reviewing).toBe("apr_send");
+        expect(m.dialog.isOpen).toBe(true);
+      }),
+      Command.resolve(
+        DecideApproval({ bot: "hermes", approvalId: "apr_other", action: "allow" }),
+        Message.ApprovalDecided({
+          bot: "hermes",
+          approvalId: "apr_other",
+          status: "allowed",
+          decidedAt: at,
+        }),
+      ),
     );
   });
 
@@ -185,19 +274,42 @@ describe("deciding an approval", () => {
       Command.expectNone(),
       model((m) => {
         expect(m.channels.hermes).toBeUndefined();
-        expect(m.toast).toBeNull();
+        expect(m.toast.entries).toHaveLength(0);
       }),
     );
   });
 
-  test("DismissedToast clears the toast", () => {
+  test("an answer nobody reads retires itself", () => {
     story(
       update,
-      given(modelWith({ toast: { text: "something to dismiss" } })),
-      message(Message.DismissedToast()),
-      Command.expectNone(),
+      given(modelWith()),
+      message(Message.CopiedMessage()),
+      // The stack schedules the entry's own dismissal timer, so a toast that
+      // nobody clicks or hovers leaves on its own.
+      drainToast(toastEntry(0)),
       model((m) => {
-        expect(m.toast).toBeNull();
+        expect(m.toast.entries).toHaveLength(0);
+      }),
+    );
+  });
+
+  test("an answer enters the stack, and a second answer stacks under it", () => {
+    story(
+      update,
+      given(modelWith()),
+      message(Message.CopiedMessage()),
+      settleToast(toastEntry(0)),
+      message(Message.CopyFailed({ error: "denied" })),
+      settleToast(toastEntry(1)),
+      model((m) => {
+        // Neither answer replaced the other: the stack holds both, newest last.
+        expect(m.toast.entries.map((entry) => entry.payload.text)).toEqual([
+          "Copied to clipboard.",
+          "Couldn't copy that (denied). Select the text instead.",
+        ]);
+        // The variant is what gives the entry its role: an answer that failed
+        // is an alert, one that worked is a status.
+        expect(m.toast.entries.map((entry) => entry.variant)).toEqual(["Success", "Error"]);
       }),
     );
   });

@@ -240,3 +240,22 @@ export const homeTitle = (model: Model): string => {
 
 export const entryStampOf = (entry: EntryView): string =>
   entry.at === undefined ? "" : clockOf(entry.at);
+
+/**
+ * Whether a disclosure is open. Each panel carries its own default in the code
+ * that renders it — a failed tool result starts open — and the Model holds only
+ * the ones a person has changed, so a default never fights a toggle.
+ */
+export const isExpanded = (model: Model, id: string, byDefault = false): boolean =>
+  Object.hasOwn(model.expanded, id) ? model.expanded[id] : byDefault;
+
+/** The approval whose draft the dialog is showing, read from the channels so
+ *  the dialog agrees with the card that opened it. `null` when the dialog names
+ *  an approval the fleet no longer calls pending. */
+export const selectReview = (model: Model): Blocked | null => {
+  if (model.reviewing === null) return null;
+  const reviewing = model.reviewing;
+  return (
+    selectHome(model).blocked.find(({ approval }) => approval.approvalId === reviewing) ?? null
+  );
+};

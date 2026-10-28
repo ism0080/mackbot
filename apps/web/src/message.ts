@@ -7,8 +7,11 @@ import {
   ThinkingLevelSchema,
   TranscriptPageSchema,
 } from "@mackbot/contract";
+import { Dialog } from "@foldkit/ui";
 import { defineMessageUnion } from "foldkit/message";
 import * as Schema from "effect/Schema";
+
+import { Toast } from "./toast.ts";
 
 export const Message = defineMessageUnion({
   /** A poll tick. Update turns it into the `Status` Command unless one is
@@ -91,8 +94,16 @@ export const Message = defineMessageUnion({
   UrlChanged: { pathname: Schema.String },
   /** A link inside the app asked to navigate. */
   UrlRequested: { pathname: Schema.String },
-  /** A link left the app; this surface has nothing to open in its own view. */
+  /** A link left the app, so the app opens it rather than navigating away. */
   ExternalUrlRequested: { href: Schema.String },
+  /** The browser opened the link; the app's own screen is unchanged. */
+  LinkOpened: { href: Schema.String },
+  /** The user asked to take one message out of the transcript. */
+  ClickedCopy: { text: Schema.String },
+  /** The browser accepted the text onto the clipboard. */
+  CopiedMessage: {},
+  /** The clipboard refused, so the person has to select the text instead. */
+  CopyFailed: { error: Schema.String },
   /** The navigation effect finished; the URL is already the screen's. */
   Navigated: {},
   /** The server ran the parked task again, and says whether it did. */
@@ -107,7 +118,17 @@ export const Message = defineMessageUnion({
     taskId: Schema.String,
     error: Schema.String,
   },
-  DismissedToast: {},
+  /** One of the toast stack's own messages: an entry arriving, animating
+   *  out, being dismissed, or its timer elapsing. */
+  GotToastMessage: { message: Toast.Message },
+  /** One of the dialog's own messages: opening, closing, or a lifecycle step
+   *  of the native element. */
+  GotDialogMessage: { message: Dialog.Message },
+  /** The user asked to read a drafted artifact at full size. */
+  ClickedReviewApproval: { bot: Schema.String, approvalId: Schema.String },
+  /** A disclosure on the home or the transcript was toggled, and says whether
+   *  it is now open. */
+  ToggledPanel: { id: Schema.String, isOpen: Schema.Boolean },
   StatusLoaded: {
     bots: Schema.Record(Schema.String, BotViewSchema),
     errors: Schema.Record(Schema.String, Schema.String),

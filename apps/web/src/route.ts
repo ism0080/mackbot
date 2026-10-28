@@ -4,13 +4,14 @@
  * A transcript is a place, not a transient view: reloading while one is open
  * has to land back on that chat, and the browser's back button has to work.
  * Foldkit owns the URL listeners through `routing` in `entry.ts`; this module
- * owns the mapping between a pathname and the Model's `Screen`, plus the one
- * Command that pushes a new URL for an in-app navigation.
+ * owns the mapping between a pathname and the Model's `Screen`, plus the
+ * Commands that push a URL for an in-app navigation and that open one that
+ * leaves the app.
  */
 import * as Schema from "effect/Schema";
 import { Effect } from "effect";
 import { Command } from "foldkit";
-import { pushUrl } from "foldkit/navigation";
+import { openUrl, pushUrl } from "foldkit/navigation";
 
 import { Message } from "./message.ts";
 import { Screen } from "./model.ts";
@@ -50,4 +51,16 @@ export const Navigate = Command.define("Navigate", {
   args: { path: Schema.String },
   messages: [Message.Navigated],
   execute: ({ path }) => pushUrl(path).pipe(Effect.as(Message.Navigated())),
+});
+
+/**
+ * Open a URL that leaves the app. Foldkit intercepts every anchor click and
+ * asks the app what it means rather than letting the browser follow the href,
+ * so an external link only opens if the app opens it — and it opens in a new
+ * browsing context, leaving the transcript the reader was on in place.
+ */
+export const OpenLink = Command.define("OpenLink", {
+  args: { href: Schema.String },
+  messages: [Message.LinkOpened],
+  execute: ({ href }) => openUrl(href).pipe(Effect.as(Message.LinkOpened({ href }))),
 });

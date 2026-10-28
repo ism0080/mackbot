@@ -28,6 +28,7 @@ import type { PausedCall, PausedSink } from "./executor-mcp.ts";
 import { createExecutorPolicy } from "./executor-policy.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
 import { commitmentsExtension } from "./commitments.ts";
+import { voiceExtension } from "./voice.ts";
 import { syncExtensions } from "./registry-sync.ts";
 import { legacyThreadSession, recordThread, ThreadsDoc } from "./threads.ts";
 import { createFailureStore } from "./failures.ts";
@@ -238,6 +239,10 @@ export class Bot extends DurableObject<Env> {
         createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }, { onPaused }),
       );
       registry.install(createBotDelegation({ env, sourceBotId: botId }));
+      // The voice contract is fixed prose, not bot configuration: installing it
+      // here rather than through `syncExtensions` means an already-seeded bot
+      // gets it without its stored prompt being rewritten.
+      registry.install(voiceExtension);
       registry.install(
         createExecutorPolicy({
           approvalState: (requestId) => this.#approvals().stateOf(requestId),

@@ -13,6 +13,7 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, modelLabel, toast } from "./partials.ts";
+import { button } from "./ui.ts";
 
 const statusIn = (model: Model, bot: string): Option.Option<BotView> =>
   Option.match(Option.fromNullishOr(model.channels[bot]), {
@@ -57,13 +58,14 @@ export const newChat = (model: Model, h: HtmlBuilder<Message>): Html => {
             [
               h.strong([], ["No bots yet"]),
               h.p([], ["Add a bot to the roster, then start a chat with it from here."]),
-              h.button(
-                [
-                  h.Class("btn ghost"),
-                  h.DataAttribute("open", "bots"),
-                  h.OnClick(Message.ClickedOpenBots()),
-                ],
+              button(
+                {
+                  className: "btn ghost",
+                  data: [["open", "bots"]],
+                  onClick: Message.ClickedOpenBots(),
+                },
                 ["Open Bots"],
+                h,
               ),
             ],
           ),
@@ -81,9 +83,10 @@ export const newChat = (model: Model, h: HtmlBuilder<Message>): Html => {
       h.header(
         [h.Class("hdr")],
         [
-          h.button(
-            [h.Class("icon"), h.AriaLabel("Back to Needs you"), h.OnClick(Message.ClickedBack())],
+          button(
+            { className: "icon", ariaLabel: "Back to Needs you", onClick: Message.ClickedBack() },
             ["‹"],
+            h,
           ),
           h.span(
             [h.Class("hdr-main stacked")],
@@ -92,7 +95,7 @@ export const newChat = (model: Model, h: HtmlBuilder<Message>): Html => {
         ],
       ),
       h.main([h.Class("scroll")], [...body, h.div([h.Class("pad")])]),
-      ...toast(model.toast, h),
+      ...toast(model, h),
     ],
   );
 };

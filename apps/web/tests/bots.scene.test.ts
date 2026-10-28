@@ -29,6 +29,7 @@ import { update } from "../src/update.ts";
 import { view } from "../src/view.ts";
 import { botConfigOf, CATALOG, rosterOf } from "./support/fixtures.ts";
 import { appModel } from "./support/scene.ts";
+import { settleToastScene } from "./support/toast.ts";
 
 const botsScreen = (roster = rosterOf()) =>
   appModel(
@@ -139,6 +140,7 @@ test("Save sends the whole configuration, including the hidden fields", () => {
     click(selector('[data-save="hermes"]')),
     Command.expectExact(SaveBot({ bot: "hermes", config: saved })),
     Command.resolve(SaveBot, Message.BotSaved({ id: "hermes", bot: saved })),
+    settleToastScene(),
     expect(selector("[data-toast]")).toHaveText("Saved Hermes."),
     expect(fieldIn("hermes", "prompt")).toHaveValue(saved.systemPrompt),
     expect(fieldIn("hermes", "brief")).toHaveValue(saved.brief),
@@ -152,7 +154,7 @@ test("a save with no model is refused before it reaches the server", () => {
     change(fieldIn("hermes", "model"), ""),
     click(selector('[data-save="hermes"]')),
     expect(selector("[data-toast]")).toHaveText("Couldn't save Hermes: the model is empty."),
-    Command.expectNone(),
+    settleToastScene(),
   );
 });
 
@@ -174,6 +176,7 @@ test("Add bot sends the trimmed id and the draft's fields, then clears the draft
     click(selector("[data-create]")),
     Command.expectExact(CreateBot({ id: "atlas", bot: created })),
     Command.resolve(CreateBot, Message.BotCreated({ id: "atlas", bot: created })),
+    settleToastScene(),
     expect(selector('[data-bot="atlas"]')).toExist(),
     expect(selector("[data-toast]")).toHaveText("Added Atlas."),
     expect(newField("id")).toHaveValue(""),
@@ -212,6 +215,7 @@ test("Add bot with no brief leaves the brief off the wire", () => {
         },
       }),
     ),
+    settleToastScene(),
     expect(selector('[data-bot="atlas"]')).toExist(),
   );
 });
@@ -227,7 +231,7 @@ test("Add bot refuses an id that is not a slug", () => {
     expect(selector("[data-toast]")).toHaveText(
       "The id has to be a slug: lowercase letters, digits and dashes.",
     ),
-    Command.expectNone(),
+    settleToastScene(),
   );
 });
 

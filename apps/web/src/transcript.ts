@@ -7,12 +7,16 @@ import type {
 } from "@mackbot/contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
+import { Disclosure } from "@foldkit/ui";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { clockOf, elapsedOf, wordsOf } from "./format.ts";
+import { parseMarkdown, renderMarkdown } from "./markdown.ts";
 import { Message } from "./message.ts";
 import type { Channel, Model } from "./model.ts";
 import { avatar, botName, modelLabel, runTitle, statusTag, toast } from "./partials.ts";
+import { isExpanded } from "./select.ts";
+import { button, runningBar } from "./ui.ts";
 
 const statusIn = (channel: Channel | undefined): Option.Option<BotView> =>
   Option.match(Option.fromNullishOr(channel), {
@@ -46,7 +50,64 @@ const originOf = (entry: EntryView): string | undefined => {
   return entry.at === undefined ? entry.origin : `${entry.origin} · ${clockOf(entry.at)}`;
 };
 
-const messageRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
+/**
+ * The blocks a long message keeps before the rest moves behind a summary. A
+ * check-in that reports a whole week is longer than a screen, and what follows
+ * it is the part a person acts on, so the tail folds rather than truncates:
+ * the disclosure opens in place, with nothing thrown away.
+ */
+const COLLAPSED_BLOCKS = 6;
+
+/** An assistant entry's words, as the markdown blocks the prose is written in. */
+const messageBody = (
+  entry: EntryView,
+  text: string,
+  model: Model,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const blocks = parseMarkdown(text);
+  if (blocks.length <= COLLAPSED_BLOCKS) {
+    return h.div([h.Class("md")], renderMarkdown(blocks, h));
+  }
+
+  const tail = blocks.slice(COLLAPSED_BLOCKS);
+  const id = `rest:${entry.id}`;
+
+  return h.div(
+    [h.Class("md")],
+    [
+      ...renderMarkdown(blocks.slice(0, COLLAPSED_BLOCKS), h),
+      // The disclosure's open state is the Model's, so the tail a person opened
+      // stays open when the poll re-renders the entry underneath them.
+      Disclosure.view(
+        {
+          id,
+          isOpen: isExpanded(model, id),
+          onToggle: (isOpen) => Message.ToggledPanel({ id, isOpen }),
+          toView: ({ button: toggle, panel, animatePanel }) =>
+            h.div(
+              [h.Class("md-clip")],
+              [
+                h.button(
+                  [...toggle, h.Class("md-clip-toggle")],
+                  [`Show the rest · ${tail.length} more`],
+                ),
+                h.div([...panel], [animatePanel(h.div([], renderMarkdown(tail, h)))]),
+              ],
+            ),
+        },
+        h,
+      ),
+    ],
+  );
+};
+
+const messageRow = (
+  entry: EntryView,
+  words: string,
+  model: Model,
+  h: HtmlBuilder<Message>,
+): Html => {
   const origin = originOf(entry);
 
   return h.keyed("div")(
@@ -56,8 +117,32 @@ const messageRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
       h.DataAttribute("entry", `${entry.id}`),
     ],
     [
-      ...(origin === undefined ? [] : [h.span([h.Class("origin")], [origin])]),
-      h.p([], [entry.text]),
+      // A person's own words are plain text, so the bubble keeps them verbatim.
+      // A bot writes markdown, and rendering it is the difference between a
+      // bulleted list and one long line of asterisks and hyphens.
+      entry.role === "assistant" ? messageBody(entry, words, model, h) : h.p([], [words]),
+      // The origin is provenance and the copy button is an action on the words,
+      // so both sit under them the way a byline and a control do, rather than
+      // pushing the first line of the message down.
+      ...(entry.role === "assistant"
+        ? [
+            h.div(
+              [h.Class("msg-foot")],
+              [
+                ...(origin === undefined ? [] : [h.span([h.Class("origin")], [origin])]),
+                button(
+                  {
+                    className: "msg-copy",
+                    ariaLabel: "Copy message",
+                    onClick: Message.ClickedCopy({ text: words }),
+                  },
+                  ["Copy"],
+                  h,
+                ),
+              ],
+            ),
+          ]
+        : []),
     ],
   );
 };
@@ -65,30 +150,45 @@ const messageRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
 /**
  * A tool result is model context, not a chat message. It collapses to a row a
  * person can scan — tool name and outcome — and opens on demand for the raw
- * payload. A failed result starts open, because that is the one a person needs.
+ * payload. A failed result starts open, because that is the one a person needs,
+ * and stays closable because the open state is the Model's.
  */
-const toolRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
+const toolRow = (entry: EntryView, model: Model, h: HtmlBuilder<Message>): Html => {
   const failed = entry.toolFailed === true;
+  const id = `tool:${entry.id}`;
 
-  return h.keyed("details")(
-    `tool:${entry.id}`,
+  return h.keyed("div")(
+    id,
     [
       h.Class("tool"),
       h.DataAttribute("entry", `${entry.id}`),
       h.DataAttribute("tool", entry.toolName ?? ""),
-      ...(failed ? [h.Open(true)] : []),
     ],
     [
-      h.summary(
-        [h.Class("tool-summary")],
-        [
-          h.span([h.Class(failed ? "tag warn" : "tag")], ["tool"]),
-          h.span([h.Class("tool-name")], [entry.toolName ?? "tool result"]),
-          h.span([h.Class("tool-meta")], [failed ? "failed" : "ok"]),
-          h.span([h.Class("chev")], ["›"]),
-        ],
+      Disclosure.view(
+        {
+          id,
+          isOpen: isExpanded(model, id, failed),
+          onToggle: (isOpen) => Message.ToggledPanel({ id, isOpen }),
+          toView: ({ button: toggle, panel, animatePanel }) =>
+            h.div(
+              [h.Class("tool-inner")],
+              [
+                h.button(
+                  [...toggle, h.Class("tool-summary")],
+                  [
+                    h.span([h.Class(failed ? "tag warn" : "tag")], ["tool"]),
+                    h.span([h.Class("tool-name")], [entry.toolName ?? "tool result"]),
+                    h.span([h.Class("tool-meta")], [failed ? "failed" : "ok"]),
+                    h.span([h.Class("chev")], ["›"]),
+                  ],
+                ),
+                h.div([...panel], [animatePanel(h.pre([h.Class("tool-body")], [entry.text]))]),
+              ],
+            ),
+        },
+        h,
       ),
-      h.pre([h.Class("tool-body")], [entry.text]),
     ],
   );
 };
@@ -98,9 +198,10 @@ const toolRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
  * message whose text is empty is the turn's plumbing, and a person reading the
  * thread has nothing to gain from a bubble with no words in it.
  */
-const rowOf = (entry: EntryView, h: HtmlBuilder<Message>): readonly Html[] => {
-  if (entry.role === "tool") return [toolRow(entry, h)];
-  return wordsOf(entry) === undefined ? [] : [messageRow(entry, h)];
+const rowOf = (entry: EntryView, model: Model, h: HtmlBuilder<Message>): readonly Html[] => {
+  if (entry.role === "tool") return [toolRow(entry, model, h)];
+  const words = wordsOf(entry);
+  return words === undefined ? [] : [messageRow(entry, words, model, h)];
 };
 
 const pendingRow = (text: string, index: number, h: HtmlBuilder<Message>): Html =>
@@ -135,7 +236,7 @@ const runRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder<Mes
         [h.Class("runit-main")],
         [
           h.p([h.Class("live")], [`${runTitle(run)} — running ${elapsedOf(run.startedAt, now)}`]),
-          h.span([h.Class("bar indeterminate")], [h.i([])]),
+          runningBar({ id: `run-${bot}`, valueText: `${runTitle(run)} is still running` }, h),
         ],
       ),
     ],
@@ -150,13 +251,14 @@ const earlierRow = (bot: string, h: HtmlBuilder<Message>): Html =>
   h.div(
     [],
     [
-      h.button(
-        [
-          h.Class("btn ghost"),
-          h.DataAttribute("load", "earlier"),
-          h.OnClick(Message.ClickedLoadEarlier({ bot })),
-        ],
+      button(
+        {
+          className: "btn ghost",
+          data: [["load", "earlier"]],
+          onClick: Message.ClickedLoadEarlier({ bot }),
+        },
         ["Load earlier"],
+        h,
       ),
     ],
   );
@@ -175,7 +277,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
       onNone: () => [],
       onSome: (page) => (page.nextBefore === undefined ? [] : [earlierRow(bot, h)]),
     }),
-    ...entriesIn(channel).flatMap((entry) => rowOf(entry, h)),
+    ...entriesIn(channel).flatMap((entry) => rowOf(entry, model, h)),
     ...(entriesIn(channel).length === 0 && pending.length === 0
       ? [
           h.div(
@@ -207,13 +309,14 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
         h.AriaLabel(`Message ${botName(bot)}`),
         h.OnInput((text) => Message.EditedChatText({ bot, text })),
       ]),
-      h.button(
-        [
-          h.Class("btn primary composer-send"),
-          h.Type("submit"),
-          h.Disabled(sending || draft.trim().length === 0),
-        ],
+      button(
+        {
+          className: "btn primary composer-send",
+          type: "submit",
+          isDisabled: sending || draft.trim().length === 0,
+        },
         [sending ? "Sending…" : "Send"],
+        h,
       ),
     ],
   );
@@ -224,9 +327,10 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
       h.header(
         [h.Class("hdr")],
         [
-          h.button(
-            [h.Class("icon"), h.AriaLabel("Back to Needs you"), h.OnClick(Message.ClickedBack())],
+          button(
+            { className: "icon", ariaLabel: "Back to Needs you", onClick: Message.ClickedBack() },
             ["‹"],
+            h,
           ),
           avatar(bot, h),
           h.span(
@@ -252,7 +356,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
       ),
       h.main([h.Class("scroll")], body),
       composer,
-      ...toast(model.toast, h),
+      ...toast(model, h),
     ],
   );
 };

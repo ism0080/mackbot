@@ -1,33 +1,138 @@
 import type { ActiveRunView, ApprovalView } from "@mackbot/contract";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import { Dialog } from "@foldkit/ui";
+import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 
 import { elapsedOf } from "./format.ts";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, runTitle, toast } from "./partials.ts";
-import { type Chat, entryStampOf, selectChats, selectHome, selectStatusPanel } from "./select.ts";
+import {
+  entryStampOf,
+  selectChats,
+  selectHome,
+  selectReview,
+  selectStatusPanel,
+} from "./select.ts";
+import type { Chat } from "./select.ts";
 import { failurePanel, parkedPanel, taskPanel } from "./status-panel.ts";
 import { isParked } from "./task-retry.ts";
+import { button, runningBar } from "./ui.ts";
 
-const draftOf = (approval: ApprovalView, h: HtmlBuilder<Message>): readonly Html[] => {
+/**
+ * The way into the draft. An approval that authorizes a real effect has to show
+ * the effect, and a two-line peek is not reading it: this opens the artifact at
+ * full size in a dialog, where the whole draft and the decision sit together.
+ */
+const draftOf = (bot: string, approval: ApprovalView, h: HtmlBuilder<Message>): readonly Html[] => {
   const artifact = approval.artifact;
   if (artifact === undefined) return [];
 
   return [
-    h.details(
-      [h.Class("ap-draft")],
+    button(
+      {
+        className: "ap-draft",
+        data: [["review", approval.approvalId]],
+        onClick: Message.ClickedReviewApproval({ bot, approvalId: approval.approvalId }),
+      },
       [
-        h.summary(
-          [],
-          [
-            h.span([h.Class("ap-draft-label")], [artifact.label]),
-            h.span([h.Class("ap-draft-peek")], [artifact.body]),
-          ],
-        ),
-        h.pre([], [artifact.body]),
+        h.span([h.Class("ap-draft-label")], [artifact.label]),
+        h.span([h.Class("ap-draft-peek")], [artifact.body]),
       ],
+      h,
     ),
   ];
+};
+
+/** The dialog's body: the draft, the question it asks, and the decision. */
+const reviewPanel = (
+  bot: string,
+  approval: ApprovalView,
+  title: ReadonlyArray<ChildAttribute>,
+  description: ReadonlyArray<ChildAttribute>,
+  closeButton: ReadonlyArray<ChildAttribute>,
+  h: HtmlBuilder<Message>,
+): readonly Html[] => {
+  const artifact = approval.artifact;
+
+  return [
+    h.span([h.Class("tag warn")], ["approval"]),
+    h.h2([...title, h.Class("dlg-title")], [artifact?.label ?? approval.toolPath]),
+    h.p([...description, h.Class("dlg-question")], [approval.summary]),
+    ...(artifact === undefined ? [] : [h.pre([h.Class("dlg-artifact")], [artifact.body])]),
+    h.div(
+      [h.Class("dlg-actions")],
+      [
+        button(
+          {
+            className: "btn ghost",
+            onClick: Message.DecidedApproval({
+              bot,
+              approvalId: approval.approvalId,
+              action: "deny",
+            }),
+          },
+          ["Deny"],
+          h,
+        ),
+        button(
+          {
+            className: "btn primary",
+            onClick: Message.DecidedApproval({
+              bot,
+              approvalId: approval.approvalId,
+              action: "allow",
+            }),
+          },
+          ["Allow"],
+          h,
+        ),
+        // The escape hatch needs no Message of its own: the bundle closes the
+        // dialog, and the fold clears what was under review.
+        h.button([...closeButton, h.Class("dlg-close")], ["Close"]),
+      ],
+    ),
+    h.span([h.Class("dlg-tool")], [approval.toolPath]),
+  ];
+};
+
+/**
+ * The approval under review, read at full size. The native dialog traps the
+ * focus, makes the screen behind it inert and closes on Escape, so the decision
+ * is taken with the whole draft in front of the person.
+ */
+const reviewDialog = (model: Model, h: HtmlBuilder<Message>): Html => {
+  const review = selectReview(model);
+
+  return h.submodel({
+    slotId: model.dialog.id,
+    model: model.dialog,
+    view: Dialog.view,
+    viewInputs: {
+      hasDescription: review !== null,
+      toView: ({ dialog, backdrop, panel, title, description, closeButton, isVisible }) =>
+        h.dialog(
+          [...dialog, h.Class("dlg")],
+          isVisible
+            ? [
+                h.div([...backdrop, h.Class("dlg-backdrop")]),
+                h.div(
+                  [...panel, h.Class("dlg-panel")],
+                  review === null
+                    ? [
+                        h.p([h.Class("dlg-question")], ["That approval is no longer waiting."]),
+                        h.div(
+                          [h.Class("dlg-actions")],
+                          [h.button([...closeButton, h.Class("dlg-close")], ["Close"])],
+                        ),
+                      ]
+                    : reviewPanel(review.bot, review.approval, title, description, closeButton, h),
+                ),
+              ]
+            : [],
+        ),
+    },
+    toParentMessage: (message) => Message.GotDialogMessage({ message }),
+  });
 };
 
 const approvalCard = (
@@ -49,42 +154,44 @@ const approvalCard = (
         [
           h.span([h.Class("tag warn")], ["approval"]),
           h.span([h.Class("ap-tool")], [approval.toolPath]),
-          h.button(
-            [h.Class("ap-review"), h.OnClick(Message.ClickedOpenTranscript({ bot }))],
+          button(
+            {
+              className: "ap-review",
+              onClick: Message.ClickedOpenTranscript({ bot }),
+            },
             ["Review ›"],
+            h,
           ),
         ],
       ),
       h.p([h.Class("ap-q")], [approval.summary]),
-      ...draftOf(approval, h),
+      ...draftOf(bot, approval, h),
       h.div(
         [h.Class("ap-actions")],
         [
-          h.button(
-            [
-              h.Class("btn ghost"),
-              h.OnClick(
-                Message.DecidedApproval({
-                  bot,
-                  approvalId: approval.approvalId,
-                  action: "deny",
-                }),
-              ),
-            ],
+          button(
+            {
+              className: "btn ghost",
+              onClick: Message.DecidedApproval({
+                bot,
+                approvalId: approval.approvalId,
+                action: "deny",
+              }),
+            },
             ["Deny"],
+            h,
           ),
-          h.button(
-            [
-              h.Class("btn primary"),
-              h.OnClick(
-                Message.DecidedApproval({
-                  bot,
-                  approvalId: approval.approvalId,
-                  action: "allow",
-                }),
-              ),
-            ],
+          button(
+            {
+              className: "btn primary",
+              onClick: Message.DecidedApproval({
+                bot,
+                approvalId: approval.approvalId,
+                action: "allow",
+              }),
+            },
             ["Allow"],
+            h,
           ),
         ],
       ),
@@ -106,16 +213,17 @@ const runningRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder
             [h.Class("rmeta")],
             [`running ${elapsedOf(run.startedAt, now)} · ${run.stream.state}`],
           ),
-          h.span([h.Class("bar indeterminate")], [h.i([])]),
+          runningBar({ id: `run-${bot}`, valueText: `${runTitle(run)} is still running` }, h),
         ],
       ),
-      h.button(
-        [
-          h.Class("btn ghost"),
-          h.DataAttribute("stop", bot),
-          h.OnClick(Message.ClickedStop({ bot, session: run.session })),
-        ],
+      button(
+        {
+          className: "btn ghost",
+          data: [["stop", bot]],
+          onClick: Message.ClickedStop({ bot, session: run.session }),
+        },
         ["Stop"],
+        h,
       ),
     ],
   );
@@ -203,21 +311,23 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.div(
             [h.Class("hdr-actions")],
             [
-              h.button(
-                [
-                  h.Class("btn ghost"),
-                  h.DataAttribute("open", "new-chat"),
-                  h.OnClick(Message.ClickedNewChat()),
-                ],
+              button(
+                {
+                  className: "btn ghost",
+                  data: [["open", "new-chat"]],
+                  onClick: Message.ClickedNewChat(),
+                },
                 ["New chat"],
+                h,
               ),
-              h.button(
-                [
-                  h.Class("btn ghost"),
-                  h.DataAttribute("open", "bots"),
-                  h.OnClick(Message.ClickedOpenBots()),
-                ],
+              button(
+                {
+                  className: "btn ghost",
+                  data: [["open", "bots"]],
+                  onClick: Message.ClickedOpenBots(),
+                },
                 ["Bots"],
+                h,
               ),
             ],
           ),
@@ -308,7 +418,8 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.div([h.Class("pad")]),
         ],
       ),
-      ...toast(model.toast, h),
+      ...toast(model, h),
+      reviewDialog(model, h),
     ],
   );
 };

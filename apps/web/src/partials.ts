@@ -2,7 +2,8 @@ import type { ActiveRunView, BotView } from "@mackbot/contract";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { Message } from "./message.ts";
-import type { Toast } from "./model.ts";
+import type { Model } from "./model.ts";
+import { TOAST_ID, Toast } from "./toast.ts";
 
 export const botName = (bot: string): string =>
   bot.length === 0 ? bot : bot.charAt(0).toUpperCase() + bot.slice(1);
@@ -21,20 +22,33 @@ export const statusTag = (bot: BotView, h: HtmlBuilder<Message>) =>
   bot.busy ? h.span([h.Class("tag work")], ["working"]) : h.span([h.Class("tag")], ["idle"]);
 
 /**
- * The transient server answer, as an element both screens append inside their
- * `.screen` shell. A button, because dismissing it is the only action it has.
+ * The transient answers, as the toast stack the shell appends inside its
+ * `.screen`. The stack owns the container, the entries and their lifecycle; the
+ * app supplies the words and the styling hooks, so an answer nobody reads
+ * retires itself instead of waiting to be clicked away.
  */
-export const toast = (line: Toast | null, h: HtmlBuilder<Message>): readonly Html[] =>
-  line === null
-    ? []
-    : [
-        h.button(
+export const toast = (model: Model, h: HtmlBuilder<Message>): readonly Html[] => [
+  h.submodel({
+    slotId: TOAST_ID,
+    model: model.toast,
+    view: Toast.view,
+    viewInputs: {
+      position: "BottomCenter",
+      ariaLabel: "mackbot answers",
+      containerClassName: "toaststack",
+      entryClassName: "toast",
+      entryToView: (entry, handlers) =>
+        h.div(
+          [h.Class("toast-inner")],
           [
-            h.Class("toast"),
-            h.DataAttribute("toast", ""),
-            h.AriaLive("polite"),
-            h.OnClick(Message.DismissedToast()),
+            h.span(
+              [h.DataAttribute("toast", ""), h.DataAttribute("variant", entry.variant)],
+              [entry.payload.text],
+            ),
+            h.button([...handlers.dismiss, h.Class("toast-close")], ["Dismiss"]),
           ],
-          [line.text],
         ),
-      ];
+    },
+    toParentMessage: (message) => Message.GotToastMessage({ message }),
+  }),
+];

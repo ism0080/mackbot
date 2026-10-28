@@ -6,6 +6,7 @@ import { Chat, Status, Transcript } from "../src/api.ts";
 import { Message } from "../src/message.ts";
 import { update } from "../src/update.ts";
 import { FIXTURE_NOW, modelWith, statusOf, transcriptOf } from "./support/fixtures.ts";
+import { settleToast, toastText } from "./support/toast.ts";
 import {
   botChannel,
   channelOf,
@@ -167,7 +168,7 @@ describe("StatusLoaded", () => {
 describe("sending a chat message", () => {
   test("SubmittedChat trims the draft, clears it and emits Chat with the trimmed text", () => {
     const seeded = {
-      ...modelWith({ toast: { text: "an older toast" } }),
+      ...modelWith(),
       channels: {
         hermes: botChannel("hermes", {
           draft: "   hello there   ",
@@ -186,7 +187,7 @@ describe("sending a chat message", () => {
         expect(channel.draft).toBe("");
         expect(channel.sending).toBe(true);
         expect(channel.pending).toEqual(["hello there"]);
-        expect(m.toast).toBeNull();
+        expect(m.toast.entries).toHaveLength(0);
       }),
       Command.resolve(
         Chat({ bot: "hermes", text: "hello there" }),
@@ -290,13 +291,13 @@ describe("sending a chat message", () => {
       update,
       given(seeded),
       message(Message.ChatFailed({ bot: "hermes", error: "connection reset" })),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
         const channel = channelOf(m, "hermes");
         expect(channel.draft).toBe("hello");
         expect(channel.pending).toEqual([]);
         expect(channel.sending).toBe(false);
-        expect(m.toast?.text).toBe(
+        expect(toastText(m)).toBe(
           "Couldn't reach Hermes (connection reset). Your message is still here.",
         );
       }),
@@ -319,13 +320,13 @@ describe("sending a chat message", () => {
       update,
       given(seeded),
       message(Message.ChatFailed({ bot: "hermes", error: "timeout" })),
-      Command.expectNone(),
+      settleToast(),
       model((m) => {
         const channel = channelOf(m, "hermes");
         expect(channel.draft).toBe("a newer thought");
         expect(channel.pending).toEqual([]);
         expect(channel.sending).toBe(false);
-        expect(m.toast?.text).toBe("Couldn't reach Hermes (timeout). Your message is still here.");
+        expect(toastText(m)).toBe("Couldn't reach Hermes (timeout). Your message is still here.");
       }),
     );
   });
