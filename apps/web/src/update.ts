@@ -156,32 +156,6 @@ const prunePending = (channel: Channel, entries: readonly EntryView[]): Channel 
 const modifyStatus = (channel: Channel, change: (view: BotView) => BotView): Channel =>
   modifyFields(channel, { status: (status) => AsyncData.map(status, change) });
 
-const upsertApproval = (view: BotView, approval: ApprovalView): BotView =>
-  modifyFields(view, {
-    approvals: (approvals) => [
-      ...approvals.filter((existing) => existing.approvalId !== approval.approvalId),
-      approval,
-    ],
-  });
-
-const statusOfDecision = (decision: "allow" | "deny" | "expired"): ApprovalView["status"] =>
-  decision === "allow" ? "allowed" : decision === "deny" ? "denied" : "expired";
-
-const resolveApproval = (
-  view: BotView,
-  approvalId: string,
-  decision: "allow" | "deny" | "expired",
-  at: number,
-): BotView =>
-  modifyFields(view, {
-    approvals: (approvals) =>
-      approvals.map((approval) =>
-        approval.approvalId === approvalId
-          ? { ...approval, status: statusOfDecision(decision), decidedAt: at }
-          : approval,
-      ),
-  });
-
 /** A run that ended is no longer a reason to hold the connection. */
 const endRun = (view: BotView): BotView => modifyFields(view, { activeRun: () => undefined });
 
@@ -233,7 +207,7 @@ const windowFrames = (frames: readonly Frame[], frame: Frame): readonly Frame[] 
  * sequence number of the frame's `id:` line, so an acknowledgement cannot move
  * it — while a `snapshot`'s generation is the one thing that reseeds the fold.
  */
-const applyFrame = (channel: Channel, frame: Frame, seq: number, at: number): Channel => {
+const applyFrame = (channel: Channel, frame: Frame, seq: number): Channel => {
   const generation = frame.kind === "snapshot" ? frame.generation : channel.stream.generation;
   const cursor: Channel = {
     ...channel,
@@ -252,28 +226,21 @@ const applyFrame = (channel: Channel, frame: Frame, seq: number, at: number): Ch
 
   switch (frame.kind) {
     case "snapshot":
+    case "append":
+      // A snapshot is the whole window at attachment; an append is what one
+      // commit added. Both land in the same place: the transcript's entries,
+      // with a locally-sent message retired by the first server copy of it.
       return prunePending(
         { ...cursor, transcript: mergeEntriesInto(cursor.transcript, frame.entries) },
         frame.entries,
-      );
-    case "message":
-      return frame.phase === "end" && frame.entry !== undefined
-        ? prunePending(
-            { ...cursor, transcript: mergeEntriesInto(cursor.transcript, [frame.entry]) },
-            [frame.entry],
-          )
-        : cursor;
-    case "approval":
-      return modifyStatus(cursor, (view) => upsertApproval(view, frame.approval));
-    case "approval_resolved":
-      return modifyStatus(cursor, (view) =>
-        resolveApproval(view, frame.approvalId, frame.decision, at),
       );
     case "run":
       return frame.phase === "end" ? modifyStatus(cursor, endRun) : cursor;
     case "task_failed":
       return modifyStatus(cursor, endRun);
     default:
+      // `live`, `inbox` and `usage` change the in-flight tail, which `/status`
+      // and the next poll already carry; nothing here needs a second copy.
       return cursor;
   }
 };
@@ -377,8 +344,8 @@ export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
     PolledStatus: () =>
       model.polling ? { model } : { model: { ...model, polling: true }, commands: [Status()] },
-    FrameReceived: ({ bot, frame, seq, at }) => ({
-      model: withChannel(model, bot, (channel) => applyFrame(channel, frame, seq, at)),
+    FrameReceived: ({ bot, frame, seq }) => ({
+      model: withChannel(model, bot, (channel) => applyFrame(channel, frame, seq)),
     }),
     StreamUpToDate: ({ bot }) => ({
       model: withChannel(model, bot, (channel) => setStreamPhase(channel, "live")),

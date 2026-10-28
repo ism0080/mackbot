@@ -3,6 +3,9 @@
  * the routes wrote, so the home and the transcript see it without a refetch.
  * The cursor is the sequence number of the frame's `id:` line, and the control
  * events move the stream's phase.
+ *
+ * A snapshot is the whole window at attachment; an append is what one commit
+ * added. Approvals are not frames: `/status` is where they live.
  */
 import { AsyncData } from "foldkit";
 import { Option } from "effect";
@@ -31,34 +34,31 @@ const snapshot = {
   at: 10,
   session: "hermes",
   entries: [{ id: 45, kind: "assistant", role: "assistant", text: "New overnight note", at: 10 }],
+  live: { tools: [], compactions: [] },
   inbox: [],
   usage: { inputTokens: 0, outputTokens: 0, exchanges: 0 },
   transcriptFrom: 45,
 };
 
-const approval = {
-  kind: "approval",
-  approval: {
-    approvalId: "apr_followup",
-    bot: "hermes",
-    toolPath: "botmail.send",
-    summary: "Send the follow-up?",
-    status: "pending",
-    requestedAt: 11,
-  },
+const appended = {
+  kind: "append",
+  at: 11,
+  entries: [{ id: 46, kind: "assistant", role: "assistant", text: "Follow-up sent.", at: 11 }],
 };
 
-const settled = {
-  kind: "message",
-  phase: "end",
+const live = {
+  kind: "live",
   at: 12,
-  entry: { id: 46, kind: "assistant", role: "assistant", text: "Follow-up sent.", at: 12 },
+  live: {
+    generation: { attempt: 1, text: "Working on it" },
+    tools: [{ callId: "call-1", name: "botmail.send", status: "running", output: "sending" }],
+    compactions: [{ taskId: "9", reason: "manual", blocking: false }],
+  },
 };
 
 const main = () => {
   let model = base();
   let channel = channelOf(model);
-  const approvalsBefore = dataOf(channel.status).approvals.length;
 
   model = apply(model, Message.FrameReceived({ bot: "hermes", frame: snapshot, seq: 0, at: 10 }));
   channel = channelOf(model);
@@ -68,20 +68,23 @@ const main = () => {
   );
   report("the cursor is the frame's sequence number", channel.stream.lastSeq === 0);
   report("the snapshot names the generation", channel.stream.generation === 7);
+  report("three frames are in the window", channel.frames.length === 1);
 
-  model = apply(model, Message.FrameReceived({ bot: "hermes", frame: approval, seq: 1, at: 11 }));
+  model = apply(model, Message.FrameReceived({ bot: "hermes", frame: appended, seq: 1, at: 11 }));
   channel = channelOf(model);
   report(
-    "an approval frame adds a pending approval",
-    dataOf(channel.status).approvals.length === approvalsBefore + 1,
+    "an append merges its entries into the page",
+    dataOf(channel.transcript).entries.some((entry) => entry.id === 46),
   );
   report("the cursor advances", channel.stream.lastSeq === 1);
 
-  model = apply(model, Message.FrameReceived({ bot: "hermes", frame: settled, seq: 2, at: 12 }));
+  const entriesBefore = dataOf(channelOf(model).transcript).entries.length;
+  model = apply(model, Message.FrameReceived({ bot: "hermes", frame: live, seq: 2, at: 12 }));
   channel = channelOf(model);
+  report("a live frame advances the cursor", channel.stream.lastSeq === 2);
   report(
-    "a settled message merges into the page",
-    dataOf(channel.transcript).entries.some((entry) => entry.id === 46),
+    "a live frame does not touch the transcript",
+    dataOf(channel.transcript).entries.length === entriesBefore,
   );
   report("three frames are in the window", channel.frames.length === 3);
 
@@ -100,7 +103,7 @@ const main = () => {
     model,
     Message.FrameReceived({
       bot: "hermes",
-      frame: { kind: "run", phase: "end", at: 13, inputs: [] },
+      frame: { kind: "run", phase: "end", at: 13, operationId: "cron:hermes:2026-10-16T09:00" },
       seq: 3,
       at: 13,
     }),

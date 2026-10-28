@@ -3,38 +3,56 @@
  *
  * The cursor, resume, heartbeat and abort semantics are `Streams`/`sseResponse`;
  * this module owns the two things they cannot. The first is stream identity:
- * one stream per run — split into further segments only when the chunk ceiling
- * rotates mid-run — named `feed:<sessionId>:<ordinal>` and tagged
- * `feed:<botId>:<sessionId>`, so `list({ tag, limit: 1 })` finds a session's
- * newest segment. The second is the generation boundary. `sseResponse` writes
- * the raw seq as the SSE `id:` and a new run's stream restarts at zero, so a
- * client resuming on `Last-Event-ID` from run n would ask for `from = 413`
- * against a stream a few chunks long and silently skip its head. Every Frame
- * therefore carries its generation, sequence zero is a snapshot, and a request
- * whose `?gen=` disagrees with the stream's generation is replayed from
- * `from: 0` — a fresh snapshot the client recognises in band.
+ * one stream per segment of a session's feed — split into further segments only
+ * when the chunk ceiling rotates — named `feed:<sessionId>:<generation>` and
+ * tagged `feed:<botId>:<sessionId>`, so `list({ tag, limit: 1 })` finds a
+ * session's newest segment. The second is the generation boundary.
+ * `sseResponse` writes the raw seq as the SSE `id:` and a new segment's stream
+ * restarts at zero, so a client resuming on `Last-Event-ID` from generation n
+ * would ask for `from = 413` against a stream a few chunks long and silently
+ * skip its head. Every snapshot therefore carries its generation, sequence zero
+ * of a segment is a snapshot, and a request whose `?gen=` disagrees with the
+ * stream's generation is replayed from `from: 0` — a fresh snapshot the client
+ * recognises in band.
  *
- * One idempotent watcher per session appends one encoded Frame per harness
- * event. `StreamWriter.append` is a synchronous durable write made inside this
- * isolate, and batches are serialized through a per-session promise chain, so a
- * commit cannot be reordered or coalesced by a listener that is not awaited.
+ * The bridge no longer folds harness events: pi already commits the whole
+ * active transcript, `pi.live`, `pi.inbox` and `pi.usage` as one conversation
+ * view, so one watch callback per commit is the entire input. The entries whose
+ * ids the current segment has not delivered yet become one `append` frame, and
+ * the three documents become `live`/`inbox`/`usage` frames only when they
+ * changed. Run identity comes from `harness.inspect()`'s submissions, which say
+ * which input entry a run answers from and which entry answered it.
+ *
+ * One idempotent watcher per session appends those frames. `StreamWriter.append`
+ * is a synchronous durable write made inside this isolate, and batches are
+ * serialized through a per-session promise chain, so a commit cannot be
+ * reordered or coalesced by a listener that is not awaited.
  */
 
-import type {
-  AgentEvent,
-  AgentEventStream,
-  EntryRecord,
-  SnapshotEvent,
-} from "@earendil-works/pi-durable";
+import type { ConversationView, EntryRecord, SubmissionRecord } from "@earendil-works/pi-durable";
 import type { StreamJson, Streams, StreamWriter } from "agents/streams";
 import { sseResponse } from "agents/streams";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { streamIdFor } from "./runs.ts";
-import type { RunRow, RunStore } from "./runs.ts";
-import { EventsQuerySchema, encodeFrame, encodeSnapshot } from "@mackbot/contract";
-import type { EventsQuery, Frame } from "@mackbot/contract";
+import {
+  EventsQuerySchema,
+  inboxView,
+  liveView,
+  projectEntry,
+  runOfEntry,
+  streamIdFor,
+  usageView,
+} from "@mackbot/contract";
+import type {
+  EntryView,
+  EventsQuery,
+  Frame,
+  InboxView,
+  LiveView,
+  RunProjection,
+  UsageView,
+} from "@mackbot/contract";
 
 /** How long an idle tail may stay silent before it sends a comment frame. */
 const HEARTBEAT_MS = 25_000;
@@ -58,12 +76,31 @@ export const RETENTION_STREAMS = 4;
 export const streamTagFor = (botId: string, sessionId: string): string =>
   `feed:${botId}:${sessionId}`;
 
+/**
+ * The slice of pi's conversation watch this module needs.
+ *
+ * Structurally narrowed rather than imported whole, so a test can drive the
+ * bridge with a fake view stream: `WatchHandle<ConversationView>` satisfies it,
+ * and nothing here names a Cloudflare-only type.
+ */
+export interface WatchStart {
+  /** The committed view this watch acquired: the seed of a new segment. */
+  readonly value: ConversationView;
+  /** Install the sole asynchronous listener. Never invoked inline. */
+  start(listener: (value: ConversationView) => Promise<void>): void;
+}
+
 export interface FeedDeps {
   readonly botId: string;
   readonly streams: Streams;
-  readonly runs: RunStore;
-  /** pi's agent events for one session: a snapshot, then one batch per commit. */
-  readonly events: (session: string) => Promise<AgentEventStream>;
+  /** pi's own conversation view for one session. */
+  readonly watch: (session: string) => Promise<WatchStart>;
+  /**
+   * The session's unsettled and settled submissions, from
+   * `harness.inspect()`. A run's identity — its operation id, its input entry
+   * and its answer — is read from these rather than recorded beside them.
+   */
+  readonly submissions: (session: string) => Promise<readonly SubmissionRecord[]>;
   /** The pi session a `?thread=` names, or the root session when absent. */
   readonly sessionOf: (thread: string | undefined) => Promise<string | undefined>;
   /** Overrides {@link MAX_CHUNKS_PER_STREAM}; the generation test lowers it. */
@@ -84,6 +121,32 @@ interface SessionWriter {
   chunks: number;
 }
 
+/**
+ * What one segment has told its readers. `delivered` is the highest entry id
+ * the segment carried, so the next commit's new entries are the diff; the other
+ * fields are the last projected document, serialized, so an unchanged document
+ * costs no frame.
+ */
+interface SessionState {
+  delivered: number;
+  live: string;
+  inbox: string;
+  usage: string;
+  /** The run whose `run: start` frame the client has been sent. */
+  operation?: string;
+}
+
+/** One committed view with everything this module derives from it. */
+interface Projection {
+  readonly view: ConversationView;
+  readonly runs: readonly RunProjection[];
+  readonly live: LiveView;
+  readonly inbox: readonly InboxView[];
+  readonly usage: UsageView;
+  /** The operation of the newest submission that is still queued or placed. */
+  readonly operation?: string;
+}
+
 const methodNotAllowed = (): Response =>
   Response.json({ error: "method not allowed" }, { status: 405 });
 
@@ -97,7 +160,7 @@ const runStreams = <A>(task: () => Promise<A>): Promise<A> =>
   Effect.runPromise(Effect.tryPromise(task));
 
 /**
- * SAFETY: a Frame is JSON data by construction — the contract's encoders
+ * SAFETY: a Frame is JSON data by construction — the contract's projections
  * emit only strings, numbers, booleans and arrays of them — but its arrays are
  * `readonly` while `StreamJson`'s are mutable, so the two types differ only in
  * the compiler. The append serializes immediately, so no mutation can observe
@@ -105,99 +168,136 @@ const runStreams = <A>(task: () => Promise<A>): Promise<A> =>
  */
 const toChunk = (frame: Frame): StreamJson => frame as StreamJson;
 
-/** The generation encoded in `feed:<session>:<generation>`, when it parses. */
-const generationOf = (streamId: string): number | undefined => {
-  const parts = streamId.split(":");
-  if (parts.length !== 3 || parts[0] !== "feed") return undefined;
-  const generation = Number(parts[2]);
+/**
+ * The generation encoded in `feed:<session>:<generation>`, when it parses.
+ * Exported because the transcript route reports the newest segment a client
+ * should attach to, and it reads that segment's generation back the same way.
+ */
+export const generationFromStreamId = (streamId: string): number | undefined => {
+  const separator = streamId.lastIndexOf(":");
+  if (separator < 0) return undefined;
+  const generation = Number(streamId.slice(separator + 1));
   return Number.isSafeInteger(generation) && generation >= 0 ? generation : undefined;
 };
 
-const newestRun = (
-  runs: readonly RunRow[],
-  sessionId: string,
-  onlyRunning: boolean,
-): RunRow | undefined => {
-  let chosen: RunRow | undefined;
-  for (const run of runs) {
-    if (run.sessionId !== sessionId) continue;
-    if (onlyRunning && run.status !== "running") continue;
-    if (chosen === undefined || run.ordinal > chosen.ordinal) chosen = run;
+/**
+ * The run window each input submission names: its input entry through its
+ * answer, or through the tail while it is still live. A write submission is
+ * not a run, and an unanswered input never ran, so both are skipped.
+ *
+ * Exported because the transcript route joins the same projections onto the
+ * entries it pages: a run's identity is derived once, in one place.
+ */
+export const runProjections = (
+  submissions: readonly SubmissionRecord[],
+): readonly RunProjection[] => {
+  const runs: RunProjection[] = [];
+  for (const submission of submissions) {
+    if (submission.type !== "input") continue;
+    if (submission.status === "placed") {
+      runs.push({
+        operationId: submission.requestId ?? "",
+        startEntry: Number(submission.entry),
+      });
+    } else if (submission.status === "done") {
+      runs.push({
+        operationId: submission.requestId ?? "",
+        startEntry: Number(submission.entry),
+        answer: Number(submission.answer),
+      });
+    }
   }
-  return chosen;
+  return runs;
 };
 
 /**
- * The replay point. With no `?gen=`, the client's own `?from=`/`Last-Event-ID`
- * wins, unchanged. With a `?gen=` that does not name this stream's generation,
- * the recorded cursor is on a different basis and only `from: 0` is safe;
- * otherwise `?from=` passes through.
+ * The operation of the run in flight: the newest submission still queued or
+ * placed. A submission admitted without a request id names no operation, and a
+ * `run` frame naming nothing would be worse than none.
  */
-const resumeFrom = (streamId: string, query: EventsQuery): number | undefined => {
-  if (query.gen === undefined) return query.from;
-  return query.gen === generationOf(streamId) ? query.from : 0;
+const activeOperation = (submissions: readonly SubmissionRecord[]): string | undefined => {
+  let chosen: SubmissionRecord | undefined;
+  for (const submission of submissions) {
+    if (submission.type !== "input") continue;
+    if (submission.status !== "queued" && submission.status !== "placed") continue;
+    if (chosen === undefined || Number(submission.id) > Number(chosen.id)) chosen = submission;
+  }
+  return chosen?.requestId;
 };
 
-const decodeEvents = async (url: URL): Promise<EventsQuery> =>
-  await Effect.runPromise(
-    Schema.decodeUnknownEffect(EventsQuerySchema)(Object.fromEntries(url.searchParams)).pipe(
-      // The route stays lenient: an undecodable cursor falls back to the header
-      // rather than failing a connection the SDK's own writer can still serve.
-      Effect.orElseSucceed((): EventsQuery => ({})),
-    ),
-  );
+/** The operation id of the submission a `pi.live` run is answering. */
+const operationOfInput =
+  (submissions: readonly SubmissionRecord[]) =>
+  (input: string): string => {
+    for (const submission of submissions) {
+      if (String(submission.id) === input) return submission.requestId ?? "";
+    }
+    return "";
+  };
+
+/** One entry as the wire carries it: projected, and dated by its delivery. */
+const entryView = (record: EntryRecord, runs: readonly RunProjection[], at: number): EntryView => ({
+  ...projectEntry(record, runOfEntry(Number(record.id), runs)),
+  at,
+});
 
 export const createFeed = (deps: FeedDeps): Feed => {
   const maxChunks = deps.maxChunksPerStream ?? MAX_CHUNKS_PER_STREAM;
   const attached = new Set<string>();
   const writers = new Map<string, SessionWriter>();
-  const snapshots = new Map<string, SnapshotEvent>();
-  const seen = new Map<string, EntryRecord[]>();
+  const states = new Map<string, SessionState>();
   const queues = new Map<string, Promise<void>>();
 
-  const remember = (session: string, event: AgentEvent): void => {
-    if (event.type !== "entry_appended" && event.type !== "message_end") return;
-    const entries = seen.get(session);
-    if (entries === undefined) {
-      seen.set(session, [event.entry]);
-      return;
-    }
-    if (entries.some((entry) => entry.id === event.entry.id)) return;
-    entries.push(event.entry);
+  const stateOf = (session: string): SessionState => {
+    const existing = states.get(session);
+    if (existing !== undefined) return existing;
+    const created: SessionState = { delivered: -1, live: "", inbox: "", usage: "" };
+    states.set(session, created);
+    return created;
   };
 
-  const settle = (target: SessionWriter, session: string): void => {
-    target.writer.close();
-    if (writers.get(session) === target) writers.delete(session);
+  const project = async (session: string, view: ConversationView): Promise<Projection> => {
+    const submissions = await deps.submissions(session);
+    return {
+      view,
+      runs: runProjections(submissions),
+      live: liveView(view.docs["pi.live"], operationOfInput(submissions)),
+      inbox: inboxView(view.docs["pi.inbox"]),
+      usage: usageView(view.docs["pi.usage"]),
+      operation: activeOperation(submissions),
+    };
   };
 
   /**
-   * The snapshot a new segment seeds with. The attach-time snapshot is the base,
-   * but entries appended since attach are folded in, so a segment's sequence
-   * zero is current rather than stale. Without this, a client that resets its
-   * window on a generation change (the documented rule) would drop every entry
-   * the previous segment contributed.
+   * Fill a segment's sequence zero from the current view. The value the watch
+   * carries is the snapshot: its entries date from now, because now is the
+   * delivery of the commit that produced them, and its documents are the three
+   * projections the segment will report changes to.
    */
-  const snapshotFor = (session: string): SnapshotEvent | undefined => {
-    const base = snapshots.get(session);
-    if (base === undefined) return undefined;
-    const observed = seen.get(session);
-    if (observed === undefined || observed.length === 0) return base;
-    const byId = new Map(base.entries.map((entry) => [entry.id, entry]));
-    for (const entry of observed) byId.set(entry.id, entry);
-    const entries = [...byId.values()].sort((left, right) => Number(left.id) - Number(right.id));
-    return { ...base, entries };
-  };
-
-  const seed = (session: string, target: SessionWriter): void => {
-    const snapshot = snapshotFor(session);
-    if (snapshot === undefined) return;
-    target.writer.append(toChunk(encodeSnapshot(snapshot, session, Date.now(), target.generation)));
+  const seed = (session: string, target: SessionWriter, projection: Projection): void => {
+    const at = Date.now();
+    const entries = projection.view.entries.map((entry) => entryView(entry, projection.runs, at));
+    target.writer.append(
+      toChunk({
+        kind: "snapshot",
+        generation: target.generation,
+        at,
+        session,
+        entries,
+        live: projection.live,
+        inbox: projection.inbox,
+        usage: projection.usage,
+        transcriptFrom: entries[0]?.id ?? 0,
+      }),
+    );
     target.chunks += 1;
-    // Rebase: the base now carries everything seeded, so `seen` only has to hold
-    // the entries appended since the last segment rather than the whole session.
-    snapshots.set(session, snapshot);
-    seen.delete(session);
+
+    const state = stateOf(session);
+    state.delivered = entries[entries.length - 1]?.id ?? state.delivered;
+    state.live = JSON.stringify(projection.live);
+    state.inbox = JSON.stringify(projection.inbox);
+    state.usage = JSON.stringify(projection.usage);
+    state.operation = projection.operation;
   };
 
   const sweep = async (session: string): Promise<void> => {
@@ -215,70 +315,136 @@ export const createFeed = (deps: FeedDeps): Feed => {
     }
   };
 
-  const ensureOpen = async (
+  const openSegment = async (
     session: string,
     generation: number,
+    projection: Projection,
   ): Promise<SessionWriter | undefined> => {
-    const current = writers.get(session);
-    if (current !== undefined && current.generation === generation) return current;
     const streamId = streamIdFor(session, generation);
     const status = await runStreams(() => deps.streams.status(streamId));
     if (status !== null && status.state !== "streaming") return undefined;
     const writer = await runStreams(() =>
       deps.streams.open(streamId, { tag: streamTagFor(deps.botId, session) }),
     );
-    const opened: SessionWriter = { streamId, generation, writer, chunks: status?.cursor ?? 0 };
-    if (opened.chunks === 0) seed(session, opened);
-    writers.set(session, opened);
+    const target: SessionWriter = { streamId, generation, writer, chunks: status?.cursor ?? 0 };
+    writers.set(session, target);
+    if (target.chunks === 0) seed(session, target, projection);
     await sweep(session);
-    return opened;
+    return target;
   };
 
-  const rotateTo = async (session: string, generation: number): Promise<void> => {
-    const current = writers.get(session);
-    if (current !== undefined) settle(current, session);
-    await ensureOpen(session, generation);
+  /**
+   * Settle a segment a previous isolate left streaming, so retention can sweep
+   * it. Its readers see the stream end and reconnect, which is what they already
+   * do at a run's end.
+   */
+  const settleStream = async (streamId: string): Promise<void> => {
+    const writer = await runStreams(() => deps.streams.open(streamId));
+    writer.close();
   };
 
-  const rotateOnRunStart = async (session: string): Promise<void> => {
-    const run = newestRun(deps.runs.list(), session, false);
-    if (run === undefined) {
-      if (writers.get(session) === undefined) await ensureOpen(session, 1);
-      return;
+  /**
+   * Start this isolate's segment. A generation is a rotation counter, so the
+   * next one is one past every segment this session already has: a fresh
+   * segment always begins at sequence zero with a snapshot, which is the only
+   * state the bridge can prove it knows after a restart.
+   */
+  const seedSegment = async (
+    session: string,
+    projection: Projection,
+  ): Promise<SessionWriter | undefined> => {
+    const tag = streamTagFor(deps.botId, session);
+    const listed = await runStreams(() =>
+      deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 }),
+    );
+    let newest = 0;
+    for (const status of listed) {
+      const generation = generationFromStreamId(status.streamId);
+      if (generation !== undefined && generation > newest) newest = generation;
+      if (status.state === "streaming") await settleStream(status.streamId);
     }
-    const current = writers.get(session);
-    if (current !== undefined && current.generation >= run.ordinal) return;
-    await rotateTo(session, run.ordinal);
+    return await openSegment(session, newest + 1, projection);
   };
 
-  const applyEvent = async (session: string, event: AgentEvent): Promise<void> => {
-    remember(session, event);
-    if (event.type === "snapshot") snapshots.set(session, event);
-    if (event.type === "run_start") await rotateOnRunStart(session);
-    const target = writers.get(session);
+  const rotateTo = async (
+    session: string,
+    generation: number,
+    projection: Projection,
+  ): Promise<void> => {
+    const current = writers.get(session);
+    if (current !== undefined) {
+      current.writer.close();
+      writers.delete(session);
+    }
+    await openSegment(session, generation, projection);
+  };
+
+  const emit = async (session: string, projection: Projection, frame: Frame): Promise<void> => {
+    const target = writers.get(session) ?? (await openSegment(session, 1, projection));
     if (target === undefined) return;
-    const frame = encodeFrame(event, Date.now(), target.generation);
-    if (frame !== undefined) {
-      target.writer.append(toChunk(frame));
-      target.chunks += 1;
+    target.writer.append(toChunk(frame));
+    target.chunks += 1;
+    if (target.chunks >= maxChunks) await rotateTo(session, target.generation + 1, projection);
+  };
+
+  /**
+   * One commit: the run boundary it moved, the entries it appended, and the
+   * documents it changed. The order is the order a reader folds them in — a run
+   * starts before its input entry lands and ends after its answer does.
+   */
+  const deliver = async (session: string, projection: Projection): Promise<void> => {
+    const at = Date.now();
+    const state = stateOf(session);
+    if (writers.get(session) === undefined) await openSegment(session, 1, projection);
+
+    const operation = projection.operation;
+    if (operation !== undefined && operation !== state.operation) {
+      await emit(session, projection, { kind: "run", phase: "start", at, operationId: operation });
+    } else if (operation === undefined && state.operation !== undefined) {
+      await emit(session, projection, {
+        kind: "run",
+        phase: "end",
+        at,
+        operationId: state.operation,
+      });
     }
-    if (event.type === "run_end") {
-      settle(target, session);
-    } else if (target.chunks >= maxChunks) {
-      await rotateTo(session, target.generation + 1);
+    state.operation = operation;
+
+    const appended = projection.view.entries.filter((entry) => Number(entry.id) > state.delivered);
+    if (appended.length > 0) {
+      state.delivered = Number(appended[appended.length - 1]?.id ?? state.delivered);
+      await emit(session, projection, {
+        kind: "append",
+        at,
+        entries: appended.map((entry) => entryView(entry, projection.runs, at)),
+      });
+    }
+
+    const live = JSON.stringify(projection.live);
+    if (live !== state.live) {
+      state.live = live;
+      await emit(session, projection, { kind: "live", at, live: projection.live });
+    }
+
+    const inbox = JSON.stringify(projection.inbox);
+    if (inbox !== state.inbox) {
+      state.inbox = inbox;
+      await emit(session, projection, { kind: "inbox", at, items: projection.inbox });
+    }
+
+    const usage = JSON.stringify(projection.usage);
+    if (usage !== state.usage) {
+      state.usage = usage;
+      await emit(session, projection, { kind: "usage", at, usage: projection.usage });
     }
   };
 
-  const appendBatch = async (session: string, batch: readonly AgentEvent[]): Promise<void> => {
-    for (const event of batch) {
-      await applyEvent(session, event);
-    }
-  };
-
-  const enqueue = (session: string, batch: readonly AgentEvent[]): Promise<void> => {
+  const enqueue = (session: string, view: ConversationView): Promise<void> => {
     const previous = queues.get(session) ?? Promise.resolve();
     const next = previous
-      .then(() => appendBatch(session, batch))
+      .then(async () => {
+        await deliver(session, await project(session, view));
+      })
       .catch((cause: unknown) => {
         console.error(`mackbot: feed append for "${session}" failed: ${describeCause(cause)}`);
       });
@@ -287,16 +453,15 @@ export const createFeed = (deps: FeedDeps): Feed => {
   };
 
   const subscribe = async (session: string): Promise<void> => {
-    const stream = await deps.events(session);
-    snapshots.set(session, stream.snapshot);
-    const run = newestRun(deps.runs.list(), session, true);
-    if (run !== undefined) await ensureOpen(session, run.ordinal);
-    stream.start((batch) => enqueue(session, batch));
+    const watch = await deps.watch(session);
+    const projection = await project(session, watch.value);
+    await seedSegment(session, projection);
+    watch.start(async (value) => await enqueue(session, value));
   };
 
   const attach = async (session: string): Promise<void> => {
     // The guard is taken synchronously, before the first await, so a concurrent
-    // second attach in this isolate cannot register a second writer.
+    // second attach in this isolate cannot register a second watcher.
     if (attached.has(session)) return;
     attached.add(session);
     await Effect.runPromise(
@@ -343,3 +508,23 @@ export const createFeed = (deps: FeedDeps): Feed => {
 
   return { attach, serve };
 };
+
+/**
+ * The replay point. With no `?gen=`, the client's own `?from=`/`Last-Event-ID`
+ * wins, unchanged. With a `?gen=` that does not name this stream's generation,
+ * the recorded cursor is on a different basis and only `from: 0` is safe;
+ * otherwise `?from=` passes through.
+ */
+const resumeFrom = (streamId: string, query: EventsQuery): number | undefined => {
+  if (query.gen === undefined) return query.from;
+  return query.gen === generationFromStreamId(streamId) ? query.from : 0;
+};
+
+const decodeEvents = async (url: URL): Promise<EventsQuery> =>
+  await Effect.runPromise(
+    Schema.decodeUnknownEffect(EventsQuerySchema)(Object.fromEntries(url.searchParams)).pipe(
+      // The route stays lenient: an undecodable cursor falls back to the header
+      // rather than failing a connection the SDK's own writer can still serve.
+      Effect.orElseSucceed((): EventsQuery => ({})),
+    ),
+  );

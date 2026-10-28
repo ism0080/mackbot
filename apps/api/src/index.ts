@@ -1,14 +1,21 @@
 import { DurableObject } from "cloudflare:workers";
 import { Lifecycle } from "agents/lifecycle";
 import { PiHarness, ROOT_SESSION } from "agents/harness/pi";
-import type { PiHarnessFactory, PiReceipt, PiWhenBusy } from "agents/harness/pi";
+import type {
+  PiHarnessFactory,
+  PiPendingOperation,
+  PiReceipt,
+  PiWhenBusy,
+} from "agents/harness/pi";
 import { Streams } from "agents/streams";
 import { createAI } from "agents/models/pi-ai";
-import { Harness, createRegistry, defineExtension } from "@earendil-works/pi-durable";
+import { Harness, LiveDoc, createRegistry } from "@earendil-works/pi-durable";
 import type {
   AgentChange,
   ConversationId,
-  EntryRecord,
+  HarnessInspection,
+  Registry as ExtensionRegistry,
+  SubmissionId,
   TaskId,
   UsageState,
 } from "@earendil-works/pi-durable";
@@ -21,6 +28,8 @@ import type { PausedCall, PausedSink } from "./executor-mcp.ts";
 import { createExecutorPolicy } from "./executor-policy.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
 import { commitmentsExtension } from "./commitments.ts";
+import { syncExtensions } from "./registry-sync.ts";
+import { legacyThreadSession, recordThread, ThreadsDoc } from "./threads.ts";
 import { createFailureStore } from "./failures.ts";
 import type { FailureStore } from "./failures.ts";
 import { projectTasks } from "./liveness.ts";
@@ -37,31 +46,36 @@ import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
 import { MODEL_VARIANTS } from "@mackbot/contract/catalog";
 import type { ThinkingLevel } from "@mackbot/contract/catalog";
-import { ApprovalWait, createApprovalStore } from "./approvals.ts";
+import { createApprovalExtension, createApprovalStore, createApprovalWait } from "./approvals.ts";
 import type { ApprovalStore, ApprovalWaitInput, DecidedApproval } from "./approvals.ts";
-import { createRunStore, streamViewOf } from "./runs.ts";
-import type { RunStore } from "./runs.ts";
-import { activeRunOf, projectStatus } from "./status.ts";
-import { emptyTranscriptPage, highestEntryId, transcriptPage } from "./transcript.ts";
+import { projectStatus } from "./status.ts";
+import { emptyTranscriptPage, transcriptPage, transcriptRead } from "./transcript.ts";
+import { generationFromStreamId, runProjections, streamTagFor } from "./feed.ts";
 import {
   AbortRequestSchema,
   ApprovalDecisionSchema,
   BotCreateSchema,
   BotWriteSchema,
+  CompactRequestSchema,
   originOf,
+  projectEntry,
   RetryRequestSchema,
+  streamView,
   TranscriptQuerySchema,
 } from "@mackbot/contract";
 import type {
   AbortRequest,
   AbortResult,
+  ActiveRunView,
   ApprovalDecision,
   BotCreate,
   BotView,
   BotWrite,
+  CompactRequest,
   PendingOperationView,
   RetryRequest,
   RetryResult,
+  StreamStatusView,
   TranscriptPage,
   TranscriptQuery,
 } from "@mackbot/contract";
@@ -149,7 +163,6 @@ export class Bot extends DurableObject<Env> {
   readonly streams: Streams;
   readonly runtime: ManagedRuntime<BotRegistryService, never>;
   #auditSink: AuditLog | undefined;
-  #runStore: RunStore | undefined;
   #approvalStore: ApprovalStore | undefined;
   #failureStore: FailureStore | undefined;
   #feedService: Feed | undefined;
@@ -166,8 +179,27 @@ export class Bot extends DurableObject<Env> {
    * rather than from one settings object captured when the harness opened.
    */
   #loaded: BotConfig | undefined;
-  /** In-flight thread→session creations, so concurrent requests share one. */
-  readonly #threadSessions = new Map<string, Promise<string>>();
+  /**
+   * The registry the harness runs on, kept so a roster change can install or
+   * remove a per-bot extension without reopening the harness.
+   */
+  #registry: ExtensionRegistry | undefined;
+  /**
+   * The thread whose session is being created right now.
+   *
+   * `conversationCreated` runs inside the commit that creates the conversation,
+   * so it can only learn which thread a new conversation belongs to from here.
+   * Every session creation is serialized behind {@link #sessionCreations},
+   * which is what makes one field enough.
+   */
+  #pendingThread: string | undefined;
+  /**
+   * The tail of the session-creation chain.
+   *
+   * Creation is rare, so serializing all of it - not just per thread - is cheap,
+   * and it is what lets the single pending-thread field above be unambiguous.
+   */
+  #sessionCreations: Promise<void> = Promise.resolve();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -200,6 +232,7 @@ export class Bot extends DurableObject<Env> {
       const bot = await this.#botConfig();
       this.#loaded = bot;
       const registry = createRegistry();
+      this.#registry = registry;
       // The bridge detects the pause; `onPaused` turns it into the approval row.
       registry.install(
         createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }, { onPaused }),
@@ -219,8 +252,14 @@ export class Bot extends DurableObject<Env> {
           },
         }),
       );
-      if (bot.commitments === true) registry.install(commitmentsExtension);
-      registry.install(defineExtension({ name: "mackbot-approvals", tasks: [ApprovalWait] }));
+      // Only the per-bot extensions are re-synced later; the wiring above is
+      // installed once, when the harness opens.
+      syncExtensions(registry, bot, { commitments: commitmentsExtension });
+      // The store is built here, before `Harness.open`, so a wait a previous
+      // isolate left behind finds it when the harness resumes its tasks. A
+      // store created lazily on the first host call would be missing exactly
+      // when a resumed wait needs it.
+      registry.install(createApprovalExtension(this.#approvals()));
       const models = createModels();
       models.setProvider(opencodeGoProvider());
       models.setProvider(createAI({ binding: env.AI }).provider);
@@ -229,6 +268,13 @@ export class Bot extends DurableObject<Env> {
         {
           models,
           registry,
+          // Runs inside the commit that creates the conversation, so the thread
+          // that names it and the conversation itself are stored together.
+          conversationCreated: async (tx, conversation) => {
+            const thread = this.#pendingThread;
+            if (thread === undefined) return;
+            await recordThread(tx, thread, String(conversation.id));
+          },
           // pi reads the settings at every use when it is given a function,
           // so the run policy follows the configuration the bot last loaded:
           // a `runtime` edit lands without reopening the harness.
@@ -268,23 +314,11 @@ export class Bot extends DurableObject<Env> {
     // Attach before the submission is durable, so no harness event of the run
     // it admits can be produced before the watcher is listening.
     await this.#feed().attach(sessionId);
-    // Read the entry high-water mark before admission, so the run's window
-    // starts after everything pi had already written.
-    const startEntry = await this.#entryMark(sessionId);
     const receipt = await Effect.runPromise(
       Effect.tryPromise(() =>
         this.harness.submit(text, { operationId, whenBusy, session: sessionId }),
       ),
     );
-    if (receipt.accepted && startEntry !== undefined) {
-      this.#runs().open({
-        sessionId,
-        operationId: receipt.operationId,
-        inputs: [text],
-        startedAt: Date.now(),
-        startEntry,
-      });
-    }
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -341,7 +375,6 @@ export class Bot extends DurableObject<Env> {
         reason: result.reason ?? null,
       },
     });
-    await this.#settleRun(result.session, result.operationId);
     return {
       operationId: result.operationId,
       session: result.session,
@@ -405,6 +438,44 @@ export class Bot extends DurableObject<Env> {
     return { bot: this.lifecycle.name, taskId, retried: true };
   }
 
+  /**
+   * Compact one conversation by hand.
+   *
+   * pi summarizes while the conversation keeps working and places the summary
+   * through a write submission: at once when idle, otherwise at the next
+   * boundary. Nothing waits for it here, so the answer is the task a client can
+   * follow in `pi.live.compactions` and in the transcript.
+   */
+  async compact(
+    session: string = ROOT_SESSION,
+    instructions?: string,
+  ): Promise<{ bot: string; taskId: string }> {
+    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+    const conversation =
+      session === ROOT_SESSION
+        ? await Effect.runPromise(Effect.tryPromise(() => pi.root(BACKGROUND_CONTEXT)))
+        : await Effect.runPromise(
+            Effect.tryPromise(() => pi.conversation(conversationIdOf(session), BACKGROUND_CONTEXT)),
+          );
+    if (conversation === undefined) {
+      throw new Error(`session ${session} not found`);
+    }
+    const taskId = String(
+      await Effect.runPromise(
+        Effect.tryPromise(() => conversation.compact(instructions, BACKGROUND_CONTEXT)),
+      ),
+    );
+    await this.#appendAudit({
+      timestamp: Date.now(),
+      botId: this.lifecycle.name,
+      kind: "compaction.requested",
+      operationId: `compact:${taskId}`,
+      detail: { session, instructions: instructions ?? null },
+    });
+    return { bot: this.lifecycle.name, taskId };
+  }
+
   async status(): Promise<BotView> {
     await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
     const id = this.lifecycle.name;
@@ -426,9 +497,6 @@ export class Bot extends DurableObject<Env> {
       origin: originOf(operation.operationId),
       status: operation.status,
     }));
-    const runs = this.#runs().list();
-    const active = activeRunOf(pendingViews, runs);
-    const cursor = active === undefined ? 0 : await this.#streamCursor(active.streamId);
     return projectStatus({
       id,
       model: resolveModelRef(bot),
@@ -439,11 +507,81 @@ export class Bot extends DurableObject<Env> {
       pending: pendingViews,
       usage,
       approvals: this.#approvals().pending(),
-      runs,
-      activeRun: active === undefined ? undefined : { run: active, cursor },
+      activeRun: await this.#activeRun(pending, inspection, pi),
       failures: this.#failures().recent(FAILURE_LIMIT),
       tasks: projectTasks(inspection),
     });
+  }
+
+  /**
+   * The run in flight, as pi reports it.
+   *
+   * `pi.live.run` names the generation task and the submissions that run is
+   * answering; the inspection holds that task's record, which is the only
+   * durable start time there is. Nothing here is recorded beside those facts,
+   * so a run that settles without a waiter cannot leave a stale row behind.
+   */
+  async #activeRun(
+    pending: readonly PiPendingOperation[],
+    inspection: HarnessInspection,
+    pi: Harness,
+  ): Promise<ActiveRunView | undefined> {
+    const operation = pending.find((candidate) => candidate.status === "running") ?? pending[0];
+    if (operation === undefined) return undefined;
+    const session = operation.session;
+    const conversationId = conversationIdOf(session);
+    const live = await Effect.runPromise(
+      Effect.tryPromise(() => pi.snapshot(LiveDoc, conversationId, BACKGROUND_CONTEXT)),
+    );
+    const run = live?.run;
+    const startedAt =
+      run === undefined
+        ? undefined
+        : inspection.tasks.find((task) => task.record.id === run.taskId)?.record.startedAt;
+    const stream = await this.#newestStream(session);
+    return {
+      ordinal: stream.generation,
+      inputs: await this.#runInputs(pi, conversationId, run?.inputs, inspection),
+      startedAt: startedAt ?? Date.now(),
+      session,
+      stream,
+    };
+  }
+
+  /**
+   * The prompt a run is answering, for the status row's title. The submission
+   * that admitted it names the entry it was placed as, so the title is that
+   * entry's model text and never a second copy of the request.
+   */
+  async #runInputs(
+    pi: Harness,
+    conversationId: ConversationId,
+    inputs: readonly SubmissionId[] | undefined,
+    inspection: HarnessInspection,
+  ): Promise<readonly string[]> {
+    const first = inputs?.[0];
+    if (first === undefined) return [];
+    const submission = inspection.submissions.find(
+      (candidate) => String(candidate.id) === String(first),
+    );
+    const entryId = submission?.entry;
+    if (entryId === undefined) return [];
+    const conversation = await Effect.runPromise(
+      Effect.tryPromise(() => pi.conversation(conversationId, BACKGROUND_CONTEXT)),
+    );
+    if (conversation === undefined) return [];
+    const page = await Effect.runPromise(
+      Effect.tryPromise(() =>
+        conversation.entries(
+          { minEntryId: entryId, maxEntryId: entryId },
+          1,
+          undefined,
+          BACKGROUND_CONTEXT,
+        ),
+      ),
+    );
+    const entry = page.items[0];
+    return entry === undefined ? [] : [projectEntry(entry).text];
   }
 
   /**
@@ -460,7 +598,7 @@ export class Bot extends DurableObject<Env> {
       approvalId,
       decision,
       // The steer is a submission like any other, so it goes through `submit`:
-      // that is what gives it a run window, a stream and an audit row.
+      // that is what gives it a stream, a run and an audit row.
       (input, operationId, whenBusy, session) =>
         this.submit(input, operationId, whenBusy, undefined, session),
     );
@@ -475,8 +613,7 @@ export class Bot extends DurableObject<Env> {
     await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
     const thread = query.thread;
     if (thread !== undefined) {
-      this.#ensureThreadsTable();
-      const existing = this.#sessionIdForThread(thread);
+      const existing = await this.#sessionIdForThread(thread);
       return existing === undefined
         ? emptyTranscriptPage(thread)
         : await this.#transcriptOf(existing, query);
@@ -485,78 +622,65 @@ export class Bot extends DurableObject<Env> {
   }
 
   async #transcriptOf(session: string, query: TranscriptQuery): Promise<TranscriptPage> {
-    const records = await Effect.runPromise(
-      Effect.tryPromise(() => this.harness.messages({ session })),
+    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+    const conversation = await Effect.runPromise(
+      Effect.tryPromise(() => pi.conversation(conversationIdOf(session), BACKGROUND_CONTEXT)),
     );
-    const runs = this.#runs()
-      .list()
-      .filter((run) => run.sessionId === session);
-    const latest = runs.at(-1);
-    const cursor = latest === undefined ? 0 : await this.#streamCursor(latest.streamId);
-    return transcriptPage(session, records, runs, query, streamViewOf(session, latest, cursor));
+    const read = transcriptRead(query);
+    const page =
+      conversation === undefined
+        ? { items: [] as const }
+        : await Effect.runPromise(
+            Effect.tryPromise(() =>
+              conversation.entries(read.query, read.limit, undefined, BACKGROUND_CONTEXT),
+            ),
+          );
+    const inspection = await Effect.runPromise(
+      Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
+    );
+    const conversationId = conversationIdOf(session);
+    return transcriptPage(
+      session,
+      page,
+      runProjections(
+        inspection.submissions.filter(
+          (submission) => Number(submission.conversationId) === conversationId,
+        ),
+      ),
+      query,
+      await this.#newestStream(session),
+    );
   }
 
   /**
-   * The conversation's entries, or nothing when pi cannot read them. Admission's
-   * bookkeeping must not fail a submission that has already landed, so a read
-   * that fails costs the run its window, not the work.
+   * The newest segment of a session's feed, or generation zero before the
+   * bridge has opened one: the transcript route is what names the stream a
+   * client should attach to.
    */
-  async #messages(session: string): Promise<readonly EntryRecord[] | undefined> {
-    return await Effect.runPromise(
-      Effect.tryPromise(() => this.harness.messages({ session })).pipe(
-        Effect.match({
-          onSuccess: (records) => records,
-          onFailure: (cause) => {
-            console.error(
-              `mackbot: transcript read for "${this.lifecycle.name}" failed: ${describeCause(cause)}`,
-            );
-            return undefined;
-          },
-        }),
+  async #newestStream(session: string): Promise<StreamStatusView> {
+    const listed = await Effect.runPromise(
+      Effect.tryPromise(() =>
+        this.streams.list({ tag: streamTagFor(this.lifecycle.name, session), limit: 1 }),
       ),
     );
-  }
-
-  /** The conversation's next entry id: the run window's lower bound. */
-  async #entryMark(session: string): Promise<number | undefined> {
-    const records = await this.#messages(session);
-    return records === undefined ? undefined : highestEntryId(records) + 1;
-  }
-
-  async #settleRun(session: string, operationId: string): Promise<void> {
-    const records = await this.#messages(session);
-    if (records === undefined) return;
-    this.#runs().settle({
-      sessionId: session,
-      operationId,
-      endEntry: highestEntryId(records),
-      settledAt: Date.now(),
-    });
-  }
-
-  /**
-   * The newest chunk of a run's stream, or 0 before the bridge has written one:
-   * the transcript route is what names the stream a client should attach to.
-   */
-  async #streamCursor(streamId: string): Promise<number> {
-    const status = await Effect.runPromise(
-      Effect.tryPromise(() => this.streams.status(streamId)).pipe(Effect.orElseSucceed(() => null)),
-    );
-    return status?.cursor ?? 0;
-  }
-
-  #runs(): RunStore {
-    this.#runStore ??= createRunStore(this.ctx.storage);
-    return this.#runStore;
+    const newest = listed[0];
+    return newest === undefined
+      ? streamView(session, 0, 0, "completed")
+      : streamView(
+          session,
+          generationFromStreamId(newest.streamId) ?? 0,
+          newest.cursor,
+          newest.state,
+        );
   }
 
   #approvals(): ApprovalStore {
     this.#approvalStore ??= createApprovalStore(this.ctx.storage, {
       // A pause leaves a durable wait behind, so a decision cannot be lost
       // between the row being written and the steer being submitted.
-      startWait: (wait) => {
-        void this.#startWait(wait);
-      },
+      // Returned, not voided: the store logs a rejected wait so a pause that
+      // could not start its recovery task is not silent.
+      startWait: (wait) => this.#startWait(wait),
       submit: (input, operationId, whenBusy, session) =>
         this.submit(input, operationId, whenBusy, undefined, session),
     });
@@ -580,7 +704,7 @@ export class Bot extends DurableObject<Env> {
       Effect.tryPromise(() =>
         conversation.commit(
           (tx) =>
-            tx.createTask(ApprovalWait, wait, {
+            tx.createTask(createApprovalWait(this.#approvals()), wait, {
               ownership: { kind: "conversation" },
               background: true,
             }),
@@ -613,57 +737,98 @@ export class Bot extends DurableObject<Env> {
     this.#feedService ??= createFeed({
       botId: this.lifecycle.name,
       streams: this.streams,
-      runs: this.#runs(),
-      events: (session) => this.harness.session(session).events(BACKGROUND_CONTEXT),
-      sessionOf: (thread) =>
-        Promise.resolve(thread === undefined ? ROOT_SESSION : this.#sessionIdForThread(thread)),
+      // pi's own view is the input: the whole active transcript plus the
+      // documents a client renders, committed together, one callback per commit.
+      watch: async (session) => {
+        const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+        const conversation = await Effect.runPromise(
+          Effect.tryPromise(() => pi.conversation(conversationIdOf(session), BACKGROUND_CONTEXT)),
+        );
+        if (conversation === undefined) throw new Error(`session ${session} not found`);
+        return await Effect.runPromise(
+          Effect.tryPromise(() => conversation.watch(BACKGROUND_CONTEXT)),
+        );
+      },
+      // A run's identity is pi's: each input submission names the entry it was
+      // placed as and the entry that answered it.
+      submissions: async (session) => {
+        const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+        const inspection = await Effect.runPromise(
+          Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
+        );
+        const conversationId = conversationIdOf(session);
+        return inspection.submissions.filter(
+          (submission) => Number(submission.conversationId) === conversationId,
+        );
+      },
+      sessionOf: async (thread) =>
+        thread === undefined ? ROOT_SESSION : await this.#sessionIdForThread(thread),
     });
     return this.#feedService;
   }
 
+  /**
+   * The legacy table, kept only for threads created before the thread document
+   * existed. Nothing writes it any more.
+   */
   #ensureThreadsTable(): void {
     this.ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS mackbot_threads (thread TEXT PRIMARY KEY, session_id TEXT NOT NULL)",
     );
   }
 
-  #sessionIdForThread(thread: string): string | undefined {
-    const rows = this.ctx.storage.sql
-      .exec("SELECT session_id FROM mackbot_threads WHERE thread = ?", thread)
-      .toArray();
-    return rows.length > 0 ? String(rows[0].session_id) : undefined;
+  /**
+   * The conversation a thread names.
+   *
+   * The document is the truth; the table only answers for a thread an older
+   * isolate created, and a thread missing from both has no transcript yet.
+   */
+  async #sessionIdForThread(thread: string): Promise<string | undefined> {
+    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+    const threads = await Effect.runPromise(
+      Effect.tryPromise(() => pi.snapshot(ThreadsDoc, BACKGROUND_CONTEXT)),
+    );
+    const recorded =
+      threads !== undefined && Object.hasOwn(threads.threads, thread)
+        ? threads.threads[thread]
+        : undefined;
+    if (recorded !== undefined) return recorded;
+    this.#ensureThreadsTable();
+    return legacyThreadSession(this.ctx.storage, thread);
   }
 
-  async #sessionForThread(thread: string): Promise<string> {
-    // Serialize creation per thread: without this, two concurrent requests for
-    // the same new thread both call `sessions.create()`, and the loser's
-    // conversation is orphaned (pi conversations cannot be deleted yet).
-    const inFlight = this.#threadSessions.get(thread);
-    if (inFlight !== undefined) return inFlight;
-    const task = this.#createSessionForThread(thread).finally(() => {
-      this.#threadSessions.delete(thread);
-    });
-    this.#threadSessions.set(thread, task);
-    return task;
+  /**
+   * The session for a thread, creating one on first use.
+   *
+   * Every creation is serialized behind one chain: the creating commit learns
+   * which thread it is for from a single field on the bot, so two creations
+   * must never be in flight together.
+   */
+  #sessionForThread(thread: string): Promise<string> {
+    const created = this.#sessionCreations.then(() => this.#createSessionForThread(thread));
+    // A failed creation must not poison the chain for the next one.
+    this.#sessionCreations = created.then(
+      () => undefined,
+      () => undefined,
+    );
+    return created;
   }
 
   async #createSessionForThread(thread: string): Promise<string> {
-    this.#ensureThreadsTable();
-    const existing = this.#sessionIdForThread(thread);
+    const existing = await this.#sessionIdForThread(thread);
     if (existing !== undefined) return existing;
 
-    const session = await Effect.runPromise(
-      Effect.tryPromise(() => this.harness.sessions.create()),
-    );
-    const sessionId = session.id;
-    // Defense in depth: if a row already exists (for example across isolates),
-    // IGNORE + re-read keeps the first session id instead of throwing.
-    this.ctx.storage.sql.exec(
-      "INSERT OR IGNORE INTO mackbot_threads (thread, session_id) VALUES (?, ?)",
-      thread,
-      sessionId,
-    );
-    return this.#sessionIdForThread(thread) ?? sessionId;
+    // The mapping is written by `conversationCreated` inside the commit that
+    // creates the conversation, so a crash between the two cannot orphan it.
+    this.#pendingThread = thread;
+    try {
+      const session = await Effect.runPromise(
+        Effect.tryPromise(() => this.harness.sessions.create()),
+      );
+      return session.id;
+    } finally {
+      this.#pendingThread = undefined;
+    }
   }
 
   /**
@@ -678,6 +843,11 @@ export class Bot extends DurableObject<Env> {
   async #applyConfiguration(sessionId: string): Promise<void> {
     const bot = await this.#botConfig();
     this.#loaded = bot;
+    // The roster is read on every submit, so a flip of a per-bot extension
+    // lands here: pi applies it at the next task phase or request.
+    if (this.#registry !== undefined) {
+      syncExtensions(this.#registry, bot, { commitments: commitmentsExtension });
+    }
     // The configuration is a small object that is decoded the same way every
     // time, so its JSON text is a faithful comparison of two configurations.
     const applied = JSON.stringify(bot);
@@ -766,6 +936,7 @@ const TRANSCRIPT_ROUTE = /^\/transcript\/([^/]+)$/u;
 const APPROVAL_ROUTE = /^\/approvals\/([^/]+)\/([^/]+)$/u;
 const ABORT_ROUTE = /^\/abort\/([^/]+)$/u;
 const RETRY_ROUTE = /^\/retry\/([^/]+)$/u;
+const COMPACT_ROUTE = /^\/compact\/([^/]+)$/u;
 const BOT_ROUTE = /^\/bots\/([^/]+)$/u;
 
 const methodNotAllowed = (): Response =>
@@ -821,6 +992,7 @@ const API_ROUTES = [
   APPROVAL_ROUTE,
   ABORT_ROUTE,
   RETRY_ROUTE,
+  COMPACT_ROUTE,
   BOT_ROUTE,
 ];
 
@@ -1091,6 +1263,42 @@ const handleRetry = async (request: Request, env: Env, botId: string): Promise<R
 };
 
 /**
+ * The compaction's body. Every field is optional, so an empty body compacts the
+ * bot's root conversation with no instructions rather than being a bad request.
+ */
+const readCompactRequest = async (request: Request): Promise<CompactRequest | undefined> => {
+  const raw = await Effect.runPromise(
+    Effect.tryPromise(() => request.text()).pipe(Effect.orElseSucceed(() => "")),
+  );
+  const body = raw.trim().length === 0 ? "{}" : raw;
+  return await Effect.runPromise(
+    Schema.decodeUnknownEffect(Schema.fromJsonString(CompactRequestSchema))(body).pipe(
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+};
+
+/**
+ * Compact a bot's conversation by hand. The summary is made in a task, so the
+ * answer is that task's id: clients follow it through the feed and the status
+ * view rather than waiting for the whole summary here.
+ */
+const handleCompact = async (request: Request, env: Env, botId: string): Promise<Response> => {
+  const bots = await Effect.runPromise(rosterEffect(env));
+  if (!Object.hasOwn(bots, botId)) {
+    return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
+  }
+  const body = await readCompactRequest(request);
+  if (body === undefined) {
+    return Response.json({ error: "invalid request body" }, { status: 400 });
+  }
+  const result = await Effect.runPromise(
+    Effect.tryPromise(() => env.Bot.getByName(botId).compact(body.session, body.instructions)),
+  );
+  return Response.json(result);
+};
+
+/**
  * The roster: every bot the fleet runs, as the browser edits it.
  */
 const handleRoster = async (env: Env): Promise<Response> => {
@@ -1198,6 +1406,22 @@ const handleRegistryRoute = async (
     : methodNotAllowed();
 };
 
+/**
+ * One bot-scoped POST route. `undefined` means the path is not this route's,
+ * so the caller tries the next one.
+ */
+const botPostRoute = async (
+  request: Request,
+  env: Env,
+  url: URL,
+  route: RegExp,
+  handle: (request: Request, env: Env, botId: string) => Promise<Response>,
+): Promise<Response | undefined> => {
+  const match = route.exec(url.pathname);
+  if (match === null) return undefined;
+  return request.method === "POST" ? await handle(request, env, match[1]!) : methodNotAllowed();
+};
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     try {
@@ -1230,18 +1454,12 @@ export default {
           ? await handleApproval(request, env, approval[1]!, approval[2]!)
           : methodNotAllowed();
       }
-      const abort = ABORT_ROUTE.exec(url.pathname);
-      if (abort !== null) {
-        return request.method === "POST"
-          ? await handleAbort(request, env, abort[1]!)
-          : methodNotAllowed();
-      }
-      const retry = RETRY_ROUTE.exec(url.pathname);
-      if (retry !== null) {
-        return request.method === "POST"
-          ? await handleRetry(request, env, retry[1]!)
-          : methodNotAllowed();
-      }
+      const abort = await botPostRoute(request, env, url, ABORT_ROUTE, handleAbort);
+      if (abort !== undefined) return abort;
+      const retry = await botPostRoute(request, env, url, RETRY_ROUTE, handleRetry);
+      if (retry !== undefined) return retry;
+      const compact = await botPostRoute(request, env, url, COMPACT_ROUTE, handleCompact);
+      if (compact !== undefined) return compact;
       const events = EVENTS_ROUTE.exec(url.pathname);
       if (events !== null) {
         // The stream's resume cursor lives in `Last-Event-ID` / `?from=`, so the

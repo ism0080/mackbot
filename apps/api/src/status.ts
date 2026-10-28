@@ -5,14 +5,15 @@
  * facts the home cannot learn any other way: which approvals are pending and
  * which run is in flight. Deriving them from the SSE frames instead would mean
  * subscribing in order to discover whether to subscribe.
+ *
+ * The in-flight run is pi's: `pi.live.run` names the generation task and the
+ * submissions that run is answering, and `harness.inspect()` holds the task
+ * record that dates it. Nothing here is stored beside those facts, so a run
+ * that settles without anyone calling `wait()` cannot leave a stale row behind.
  */
 
 import type { UsageState } from "@earendil-works/pi-durable";
 
-import type { ModelRef } from "@mackbot/contract";
-import type { RunRow } from "./runs.ts";
-import { streamViewOf } from "./runs.ts";
-import { usageView } from "@mackbot/contract";
 import type {
   ActiveRunView,
   ApprovalView,
@@ -21,6 +22,8 @@ import type {
   PendingOperationView,
   TaskView,
 } from "@mackbot/contract";
+import { usageView } from "@mackbot/contract";
+import type { ModelRef } from "@mackbot/contract";
 import type { ThinkingLevel } from "@mackbot/contract/catalog";
 
 export interface StatusFacts {
@@ -31,40 +34,16 @@ export interface StatusFacts {
   readonly pending: readonly PendingOperationView[];
   readonly usage: UsageState;
   readonly approvals: readonly ApprovalView[];
-  readonly runs: readonly RunRow[];
-  readonly activeRun?: { readonly run: RunRow; readonly cursor: number };
+  /**
+   * The run in flight, derived from `pi.live` and the harness inspection. The
+   * caller builds it because only it can read those; this module is pure.
+   */
+  readonly activeRun?: ActiveRunView;
   /** What the harness reported and could not recover from, newest first. */
   readonly failures: readonly FailureView[];
   /** The work the harness still has live. */
   readonly tasks: readonly TaskView[];
 }
-
-/**
- * The run a client should attach to: the newest open run whose submission has
- * not settled. `pending` is pi's own answer to "is this still running", so a run
- * row left open by a settlement nobody observed cannot strand a client on a dead
- * stream.
- */
-export const activeRunOf = (
-  pending: readonly PendingOperationView[],
-  runs: readonly RunRow[],
-): RunRow | undefined => {
-  const live = new Set(pending.map((operation) => operation.operationId));
-  let chosen: RunRow | undefined;
-  for (const run of runs) {
-    if (run.status !== "running" || !live.has(run.operationId)) continue;
-    if (chosen === undefined || run.ordinal > chosen.ordinal) chosen = run;
-  }
-  return chosen;
-};
-
-const activeRunView = (run: RunRow, cursor: number): ActiveRunView => ({
-  ordinal: run.ordinal,
-  inputs: run.inputs,
-  startedAt: run.startedAt,
-  session: run.sessionId,
-  stream: streamViewOf(run.sessionId, run, cursor),
-});
 
 export const projectStatus = (facts: StatusFacts): BotView => ({
   id: facts.id,
@@ -74,10 +53,7 @@ export const projectStatus = (facts: StatusFacts): BotView => ({
   pending: facts.pending,
   usage: usageView(facts.usage),
   approvals: facts.approvals,
-  activeRun:
-    facts.activeRun === undefined
-      ? undefined
-      : activeRunView(facts.activeRun.run, facts.activeRun.cursor),
+  activeRun: facts.activeRun,
   failures: facts.failures,
   tasks: facts.tasks,
 });

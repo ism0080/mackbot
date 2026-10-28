@@ -7,20 +7,15 @@
  * module is imported by the browser bundle, so it must stay free of
  * Workers-only APIs and of the Worker's own modules.
  *
- * Request decoding happens at exactly two boundaries: the HTTP front door
- * decodes the `*Schema`s below, and the event bridge builds Frames with
- * {@link encodeFrame}. Nothing downstream validates again.
+ * Request decoding happens at exactly one boundary: the HTTP front door
+ * decodes the `*Schema`s below. Frames are built from pi's own committed
+ * conversation view — the whole active transcript, plus `pi.live`,
+ * `pi.inbox` and `pi.usage` — so nothing downstream validates them again.
  */
 
-import type {
-  AgentEvent,
-  EntryRecord,
-  MessageChange,
-  SnapshotEvent,
-  SubmissionRecord,
-  UsageState,
-} from "@earendil-works/pi-durable";
-import type { ImagesInputContent, Message, Usage } from "@earendil-works/pi-ai";
+import type { EntryRecord, JsonObject } from "@earendil-works/pi-durable";
+import type { ImagesInputContent, Message } from "@earendil-works/pi-ai";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import type { ThinkingLevel } from "./catalog.ts";
@@ -179,35 +174,6 @@ export const UsageViewSchema = Schema.Struct({
 });
 export type UsageView = typeof UsageViewSchema.Type;
 
-export const ToolOutputSchema = Schema.Struct({
-  append: Schema.optional(Schema.String),
-  set: Schema.optional(Schema.String),
-  trimStart: Schema.optional(Schema.Number),
-});
-export type ToolOutput = typeof ToolOutputSchema.Type;
-
-export const TailViewSchema = Schema.Struct({
-  attempt: Schema.Number,
-  text: Schema.String,
-  thinking: Schema.optional(Schema.String),
-  retryAt: Schema.optional(Schema.Number),
-  deferredAt: Schema.optional(Schema.Number),
-});
-export type TailView = typeof TailViewSchema.Type;
-
-export const RunStartViewSchema = Schema.Struct({
-  ordinal: Schema.Number,
-  inputs: Schema.Array(Schema.String),
-});
-export type RunStartView = typeof RunStartViewSchema.Type;
-
-export const QueuedItemViewSchema = Schema.Struct({
-  id: Schema.String,
-  mode: Schema.Literals(["followUp", "steer"]),
-  text: Schema.optional(Schema.String),
-});
-export type QueuedItemView = typeof QueuedItemViewSchema.Type;
-
 export const EntryViewSchema = Schema.Struct({
   id: Schema.Number,
   kind: Schema.String,
@@ -222,6 +188,26 @@ export const EntryViewSchema = Schema.Struct({
   toolFailed: Schema.optional(Schema.Boolean),
 });
 export type EntryView = typeof EntryViewSchema.Type;
+
+/**
+ * One item `pi.inbox` is holding for the next boundary: user input queued
+ * behind the run, or a passive entry write. `mode` is pi's own word, so a
+ * write queued for later is not mistaken for something a run will answer.
+ */
+export const InboxViewSchema = Schema.Struct({
+  id: Schema.String,
+  mode: Schema.Literals(["followUp", "steer", "write"]),
+  text: Schema.optional(Schema.String),
+});
+export type InboxView = typeof InboxViewSchema.Type;
+
+/**
+ * @deprecated The inbox item's earlier name. Kept so the browser can move to
+ * {@link InboxView} without a second wire shape.
+ */
+export const QueuedItemViewSchema = InboxViewSchema;
+/** @deprecated Use {@link InboxView}. */
+export type QueuedItemView = InboxView;
 
 export const ApprovalViewSchema = Schema.Struct({
   approvalId: Schema.String,
@@ -314,6 +300,20 @@ export const RetryResultSchema = Schema.Struct({
 export type RetryResult = typeof RetryResultSchema.Type;
 
 /**
+ * A request to compact a conversation by hand.
+ *
+ * `session` names the conversation; absent means the bot's root conversation.
+ * `instructions` is optional guidance for the summary, and may not be blank:
+ * a request that says nothing is a request with no instructions, not an empty
+ * string.
+ */
+export const CompactRequestSchema = Schema.Struct({
+  session: Schema.optional(Schema.String),
+  instructions: Schema.optional(trimmedNonEmpty),
+});
+export type CompactRequest = typeof CompactRequestSchema.Type;
+
+/**
  * A request to stop a bot's current work. `session` names the conversation to
  * stop; absent means the bot's root conversation.
  */
@@ -403,87 +403,127 @@ export const TranscriptPageSchema = Schema.Struct({
 export type TranscriptPage = typeof TranscriptPageSchema.Type;
 
 // ---------------------------------------------------------------------------
-// Frames — one harness event, projected for rendering
+// Frames — one committed conversation value, projected for rendering
 // ---------------------------------------------------------------------------
 
-// `generation` is the run ordinal the frame belongs to. It rides on every
-// frame because a new run restarts the stream's seq at 0, so a client resumed
-// on `Last-Event-ID` must be able to detect that the cursor changed basis.
+/**
+ * A JSON-safe value, as the projected documents carry it. The projections
+ * below decode pi's durable JSON into the views, so a `details` payload the
+ * browser renders is whatever the tool published, never a re-encoding of it.
+ */
+export type JsonValue = Schema.Json;
+
+/** The run a client can name: the operation that started it and its inputs. */
+export const LiveRunViewSchema = Schema.Struct({
+  /** The operation id of the input that started the run; `""` when pi has none. */
+  operationId: Schema.String,
+  /** The submission ids the run is answering, as strings. */
+  inputs: Schema.Array(Schema.String),
+});
+export type LiveRunView = typeof LiveRunViewSchema.Type;
+
+export const LiveRetryViewSchema = Schema.Struct({
+  at: Schema.Number,
+  error: Schema.String,
+});
+export type LiveRetryView = typeof LiveRetryViewSchema.Type;
+
+/**
+ * The in-flight generation. `text` and `thinking` are the text and thinking
+ * blocks of pi's committed partial response, so a client renders the same
+ * content the transcript will carry rather than a token stream it has to fold.
+ */
+export const LiveGenerationViewSchema = Schema.Struct({
+  attempt: Schema.Number,
+  text: Schema.optional(Schema.String),
+  thinking: Schema.optional(Schema.String),
+  retry: Schema.optional(LiveRetryViewSchema),
+});
+export type LiveGenerationView = typeof LiveGenerationViewSchema.Type;
+
+export const LiveToolViewSchema = Schema.Struct({
+  callId: Schema.String,
+  name: Schema.String,
+  status: Schema.Literals(["pending", "running", "done"]),
+  output: Schema.optional(Schema.String),
+  details: Schema.optional(Schema.Json),
+});
+export type LiveToolView = typeof LiveToolViewSchema.Type;
+
+export const LiveCompactionViewSchema = Schema.Struct({
+  taskId: Schema.String,
+  reason: Schema.String,
+  blocking: Schema.Boolean,
+});
+export type LiveCompactionView = typeof LiveCompactionViewSchema.Type;
+
+export const LiveCompactionFailureViewSchema = Schema.Struct({
+  taskId: Schema.String,
+  reason: Schema.String,
+  error: Schema.String,
+});
+export type LiveCompactionFailureView = typeof LiveCompactionFailureViewSchema.Type;
+
+/**
+ * `pi.live` as the browser renders it: the run in flight, the partial
+ * response, the current tool round, and the compaction work that is holding
+ * or repairing the context.
+ */
+export const LiveViewSchema = Schema.Struct({
+  run: Schema.optional(LiveRunViewSchema),
+  generation: Schema.optional(LiveGenerationViewSchema),
+  tools: Schema.Array(LiveToolViewSchema),
+  compactions: Schema.Array(LiveCompactionViewSchema),
+  compactionFailure: Schema.optional(LiveCompactionFailureViewSchema),
+});
+export type LiveView = typeof LiveViewSchema.Type;
+
+// `generation` is the segment the frame belongs to. It rides on every frame
+// because a new segment restarts the stream's seq at 0, so a client resumed on
+// `Last-Event-ID` must be able to tell that the cursor changed basis.
 const SnapshotFrameSchema = Schema.Struct({
   kind: Schema.Literals(["snapshot"]),
   generation: Schema.Number,
   at: Schema.Number,
   session: Schema.String,
+  /** The whole active transcript at delivery time, oldest first. */
   entries: Schema.Array(EntryViewSchema),
-  tail: Schema.optional(TailViewSchema),
-  inbox: Schema.Array(QueuedItemViewSchema),
-  run: Schema.optional(RunStartViewSchema),
+  live: LiveViewSchema,
+  inbox: Schema.Array(InboxViewSchema),
   usage: UsageViewSchema,
+  /** The oldest entry of the window; 0 when the window is empty. */
   transcriptFrom: Schema.Number,
+});
+
+const AppendFrameSchema = Schema.Struct({
+  kind: Schema.Literals(["append"]),
+  at: Schema.Number,
+  entries: Schema.Array(EntryViewSchema),
+});
+
+const LiveFrameSchema = Schema.Struct({
+  kind: Schema.Literals(["live"]),
+  at: Schema.Number,
+  live: LiveViewSchema,
+});
+
+const InboxFrameSchema = Schema.Struct({
+  kind: Schema.Literals(["inbox"]),
+  at: Schema.Number,
+  items: Schema.Array(InboxViewSchema),
+});
+
+const UsageFrameSchema = Schema.Struct({
+  kind: Schema.Literals(["usage"]),
+  at: Schema.Number,
+  usage: UsageViewSchema,
 });
 
 const RunFrameSchema = Schema.Struct({
   kind: Schema.Literals(["run"]),
   phase: Schema.Literals(["start", "end"]),
   at: Schema.Number,
-  inputs: Schema.Array(Schema.String),
-});
-
-const TurnFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["turn"]),
-  phase: Schema.Literals(["start", "end"]),
-});
-
-const MessageFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["message"]),
-  phase: Schema.Literals(["start", "end"]),
-  at: Schema.Number,
-  entry: Schema.optional(EntryViewSchema),
-});
-
-const DeltaFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["delta"]),
-  contentIndex: Schema.Number,
-  channel: Schema.Literals(["text", "thinking"]),
-  delta: Schema.String,
-  usage: UsageViewSchema,
-});
-
-const ToolFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["tool"]),
-  phase: Schema.Literals(["start", "update", "end"]),
-  toolCallId: Schema.String,
-  toolName: Schema.String,
-  args: Schema.optional(Schema.Unknown),
-  output: Schema.optional(ToolOutputSchema),
-  error: Schema.optional(Schema.String),
-  parentToolCallId: Schema.optional(Schema.String),
-});
-
-const InboxFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["inbox"]),
-  items: Schema.Array(QueuedItemViewSchema),
-});
-
-const SubmissionFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["submission"]),
-  record: SubmissionViewSchema,
-});
-
-const UsageFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["usage"]),
-  usage: UsageViewSchema,
-});
-
-const ApprovalFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["approval"]),
-  approval: ApprovalViewSchema,
-});
-
-const ApprovalResolvedFrameSchema = Schema.Struct({
-  kind: Schema.Literals(["approval_resolved"]),
-  approvalId: Schema.String,
-  decision: Schema.Literals(["allow", "deny", "expired"]),
+  operationId: Schema.String,
 });
 
 const TaskFailedFrameSchema = Schema.Struct({
@@ -495,19 +535,37 @@ const TaskFailedFrameSchema = Schema.Struct({
 
 export const FrameSchema = Schema.Union([
   SnapshotFrameSchema,
-  RunFrameSchema,
-  TurnFrameSchema,
-  MessageFrameSchema,
-  DeltaFrameSchema,
-  ToolFrameSchema,
+  AppendFrameSchema,
+  LiveFrameSchema,
   InboxFrameSchema,
-  SubmissionFrameSchema,
   UsageFrameSchema,
-  ApprovalFrameSchema,
-  ApprovalResolvedFrameSchema,
+  RunFrameSchema,
   TaskFailedFrameSchema,
 ]);
-export type Frame = typeof FrameSchema.Type;
+
+/**
+ * What the feed writes to a stream. The union is the wire vocabulary the
+ * browser decodes; {@link FrameSchema} is the runtime decoder of the same
+ * shape, kept beside it so the two cannot be written against different fields.
+ */
+export type Frame =
+  | {
+      kind: "snapshot";
+      generation: number;
+      at: number;
+      session: string;
+      entries: readonly EntryView[];
+      live: LiveView;
+      inbox: readonly InboxView[];
+      usage: UsageView;
+      transcriptFrom: number;
+    }
+  | { kind: "append"; at: number; entries: readonly EntryView[] }
+  | { kind: "live"; at: number; live: LiveView }
+  | { kind: "inbox"; at: number; items: readonly InboxView[] }
+  | { kind: "usage"; at: number; usage: UsageView }
+  | { kind: "run"; phase: "start" | "end"; at: number; operationId: string }
+  | { kind: "task_failed"; taskId: string; task: string; message: string };
 
 // ---------------------------------------------------------------------------
 // Request shapes — decoded at the front door
@@ -616,13 +674,42 @@ export const slicePage = <T extends { readonly id: number }>(
 // Projections
 // ---------------------------------------------------------------------------
 
-/** The run window an entry falls in, as `mackbot_runs` records it. */
-export interface RunWindow {
-  readonly ordinal: number;
-  readonly operationId?: string;
-  readonly startedAt: number;
-  readonly settledAt?: number;
+/**
+ * The run an entry belongs to, derived from pi's own submissions: a run spans
+ * the input entry it answers from through the entry that answered it. Nothing
+ * is stored to say so, because `SubmissionRecord.entry` and `.answer` already
+ * do, and they survive exactly as long as the run does.
+ */
+export interface RunProjection {
+  /** The operation that admitted the run; `""` when the submission named none. */
+  readonly operationId: string;
+  /** The entry the run's input was placed as. */
+  readonly startEntry: number;
+  /** The entry that answered the run; absent while it is still live. */
+  readonly answer?: number;
 }
+
+const contains = (run: RunProjection, entryId: number): boolean =>
+  entryId >= run.startEntry && (run.answer === undefined || entryId <= run.answer);
+
+/**
+ * The newest run projection whose window contains `entryId`.
+ *
+ * Windows can overlap only while an earlier run is still open, and the newest
+ * is the right owner there: pi admits one submission per placement, so the
+ * later input's window starts after the earlier one's.
+ */
+export const runOfEntry = (
+  entryId: number,
+  runs: readonly RunProjection[],
+): RunProjection | undefined => {
+  let chosen: RunProjection | undefined;
+  for (const run of runs) {
+    if (!contains(run, entryId)) continue;
+    if (chosen === undefined || run.startEntry >= chosen.startEntry) chosen = run;
+  }
+  return chosen;
+};
 
 const textOfBlockContent = (content: string | readonly ImagesInputContent[]): string => {
   if (Schema.is(Schema.String)(content)) return content;
@@ -667,16 +754,17 @@ const toolOfEntry = (record: EntryRecord) => {
 };
 
 /**
- * One transcript entry. `at` and `origin` are joined from the run window the
- * entry falls in, because pi's `EntryRecord` has no timestamp and no origin.
+ * One transcript entry. `origin` is joined from the run the entry falls in,
+ * because pi's `EntryRecord` carries no origin of its own. `at` is not: an
+ * entry pi committed has no commit timestamp, so only the delivery of the
+ * commit that carried it can date it, and that is the feed's to add.
  */
-export const projectEntry = (record: EntryRecord, run?: RunWindow): EntryView => ({
+export const projectEntry = (record: EntryRecord, run?: RunProjection): EntryView => ({
   id: Number(record.id),
   kind: record.kind,
   role: roleOfEntry(record),
   text: (record.model ?? []).map(textOfMessage).join("\n"),
-  at: run?.startedAt,
-  origin: run?.operationId === undefined ? undefined : originOf(run.operationId),
+  origin: run === undefined || run.operationId === "" ? undefined : originOf(run.operationId),
   data: record.data,
   ...toolOfEntry(record),
 });
@@ -687,11 +775,29 @@ const usageViewOf = (inputTokens: number, outputTokens: number, exchanges: numbe
   exchanges,
 });
 
-/** Sum a conversation's ledger. See {@link UsageView}. */
-export const usageView = (state: UsageState): UsageView => {
+// Only the counters a view shows: `pi.usage` buckets carry cost and cache
+// counters too, and a decode that required them would drop a bucket pi wrote
+// without one.
+const UsageBucketSchema = Schema.Struct({ input: Schema.Number, output: Schema.Number });
+const UsageDocSchema = Schema.Struct({
+  models: Schema.optional(Schema.Record(Schema.String, UsageBucketSchema)),
+});
+type UsageDoc = typeof UsageDocSchema.Type;
+const EMPTY_USAGE: UsageDoc = {};
+
+/**
+ * Sum a conversation's ledger. The ledger is pi's durable `pi.usage` document,
+ * decoded here rather than trusted, so a stale or partial document reads as
+ * the spend it actually records. See {@link UsageView}.
+ */
+export const usageView = (state: JsonObject | undefined): UsageView => {
+  const decoded = Option.getOrElse(
+    Schema.decodeUnknownOption(UsageDocSchema)(state),
+    () => EMPTY_USAGE,
+  );
+  const models = Object.values(decoded.models ?? {});
   let inputTokens = 0;
   let outputTokens = 0;
-  const models = Object.values(state.models);
   for (const model of models) {
     inputTokens += model.input;
     outputTokens += model.output;
@@ -699,221 +805,193 @@ export const usageView = (state: UsageState): UsageView => {
   return usageViewOf(inputTokens, outputTokens, models.length);
 };
 
-const usageViewOfUsage = (usage: Usage): UsageView => usageViewOf(usage.input, usage.output, 1);
+const TextBlockSchema = Schema.Struct({
+  type: Schema.Literals(["text"]),
+  text: Schema.String,
+});
 
-const inboxView = (
-  items: readonly { readonly id: number; readonly mode: string }[],
-): readonly QueuedItemView[] =>
-  items.flatMap((item) =>
-    item.mode === "followUp" || item.mode === "steer"
-      ? [{ id: String(item.id), mode: item.mode } satisfies QueuedItemView]
+const ThinkingBlockSchema = Schema.Struct({
+  type: Schema.Literals(["thinking"]),
+  thinking: Schema.String,
+});
+
+/**
+ * The text and thinking blocks of a committed partial response. A provider
+ * emits both as content blocks; a view shows them as the two streams a reader
+ * follows, so a client never has to reassemble deltas.
+ */
+const GenerationMessageSchema = Schema.Struct({ content: Schema.Array(Schema.Unknown) });
+
+const streamOfMessage = (
+  message: typeof GenerationMessageSchema.Type | undefined,
+): Pick<LiveGenerationView, "text" | "thinking"> => {
+  if (message === undefined) return {};
+  let text = "";
+  let thinking = "";
+  for (const block of message.content) {
+    const asText = Schema.decodeUnknownOption(TextBlockSchema)(block);
+    if (Option.isSome(asText)) text += asText.value.text;
+    const asThinking = Schema.decodeUnknownOption(ThinkingBlockSchema)(block);
+    if (Option.isSome(asThinking)) thinking += asThinking.value.thinking;
+  }
+  return { text: text === "" ? undefined : text, thinking: thinking === "" ? undefined : thinking };
+};
+
+const InboxContentSchema = Schema.Union([Schema.String, Schema.Array(Schema.Unknown)]);
+
+const InboxItemSchema = Schema.Struct({
+  id: Schema.Number,
+  mode: Schema.String,
+  content: Schema.optional(InboxContentSchema),
+});
+const InboxDocSchema = Schema.Struct({ items: Schema.Array(InboxItemSchema) });
+type InboxDoc = typeof InboxDocSchema.Type;
+const EMPTY_INBOX: InboxDoc = { items: [] };
+
+const textOfInboxContent = (
+  content: typeof InboxContentSchema.Type | undefined,
+): string | undefined => {
+  if (content === undefined) return undefined;
+  if (Schema.is(Schema.String)(content)) return content;
+  const text = content
+    .flatMap((block) => Option.toArray(Schema.decodeUnknownOption(TextBlockSchema)(block)))
+    .map((block) => block.text)
+    .join("");
+  return text === "" ? undefined : text;
+};
+
+/**
+ * `pi.inbox` as the browser renders it: what is queued for the next boundary.
+ * A write is queued too, and is named as one, so a client does not offer to
+ * answer it.
+ */
+export const inboxView = (state: JsonObject | undefined): readonly InboxView[] => {
+  const decoded = Option.getOrElse(
+    Schema.decodeUnknownOption(InboxDocSchema)(state),
+    () => EMPTY_INBOX,
+  );
+  return decoded.items.flatMap((item) =>
+    item.mode === "followUp" || item.mode === "steer" || item.mode === "write"
+      ? [{ id: String(item.id), mode: item.mode, text: textOfInboxContent(item.content) }]
       : [],
   );
+};
 
-const tailView = (generation: SnapshotEvent["generation"]): TailView | undefined => {
+const LiveDocSchema = Schema.Struct({
+  run: Schema.optional(Schema.Struct({ inputs: Schema.Array(Schema.Number) })),
+  generation: Schema.optional(
+    Schema.Struct({
+      attempt: Schema.Number,
+      message: Schema.optional(GenerationMessageSchema),
+      retry: Schema.optional(LiveRetryViewSchema),
+    }),
+  ),
+  tools: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        callId: Schema.String,
+        name: Schema.String,
+        status: Schema.Literals(["pending", "running", "done"]),
+        output: Schema.optional(Schema.String),
+        details: Schema.optional(Schema.Json),
+      }),
+    ),
+  ),
+  compactions: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        taskId: Schema.Number,
+        reason: Schema.String,
+        blocking: Schema.Boolean,
+      }),
+    ),
+  ),
+  compactionFailure: Schema.optional(
+    Schema.Struct({
+      taskId: Schema.Number,
+      reason: Schema.String,
+      error: Schema.String,
+    }),
+  ),
+});
+type LiveDoc = typeof LiveDocSchema.Type;
+const EMPTY_LIVE: LiveDoc = {};
+
+const generationOf = (generation: LiveDoc["generation"]): LiveGenerationView | undefined => {
   if (generation === undefined) return undefined;
-  const message = generation.message;
   return {
     attempt: generation.attempt,
-    text: message === undefined ? "" : textOfMessage(message),
-    retryAt: generation.retry?.at,
-    deferredAt: generation.deferred?.pollAt,
+    ...streamOfMessage(generation.message),
+    retry: generation.retry,
   };
 };
 
-const submissionView = (record: SubmissionRecord): SubmissionView => ({
-  id: String(record.id),
-  type: record.type,
-  status: record.status,
-  operationId: record.requestId,
-  entry: record.entry === undefined ? undefined : Number(record.entry),
-  answer: record.answer === undefined ? undefined : Number(record.answer),
-  reason: record.reason,
-});
-
-const toolOutputView = (
-  output: Extract<AgentEvent, { type: "tool_execution_update" }>["output"],
-): ToolOutput | undefined => {
-  if (output === undefined) return undefined;
-  if ("set" in output) return { set: output.set };
-  return { append: output.append, trimStart: output.trimStart };
-};
-
-const deltaOf = (
-  changes: readonly MessageChange[],
-): { contentIndex: number; channel: "text" | "thinking"; delta: string } | undefined => {
-  for (const change of changes) {
-    if (change.type === "text_delta") {
-      return { contentIndex: change.contentIndex, channel: "text", delta: change.delta };
-    }
-    if (change.type === "thinking_delta") {
-      return { contentIndex: change.contentIndex, channel: "thinking", delta: change.delta };
-    }
-  }
-  return undefined;
-};
-
-const parentOf = (event: { readonly parentToolCallId?: string }) => ({
-  parentToolCallId: event.parentToolCallId,
-});
-
-// ---------------------------------------------------------------------------
-// Encoders
-// ---------------------------------------------------------------------------
-
 /**
- * The session a snapshot belongs to. A snapshot carries no session id of its
- * own; its entries name the conversation, so a fresh transcript has no name
- * here — the bridge seeds through {@link encodeSnapshot}, which takes the
- * session explicitly.
+ * `pi.live` as the browser renders it. `operationOf` maps a submission id to
+ * the operation that admitted it, so the run's identity is pi's own and not a
+ * second record; `""` means pi reported no request id for it.
  */
-const sessionOf = (event: SnapshotEvent): string =>
-  event.entries[0] === undefined ? "" : String(event.entries[0].conversationId);
-
-export const encodeSnapshot = (
-  event: SnapshotEvent,
-  session: string,
-  at: number,
-  generation: number,
-): Frame => {
-  const tail = tailView(event.generation);
-  const first = event.entries[0];
+export const liveView = (
+  state: JsonObject | undefined,
+  operationOf: (input: string) => string,
+): LiveView => {
+  const decoded = Option.getOrElse(
+    Schema.decodeUnknownOption(LiveDocSchema)(state),
+    () => EMPTY_LIVE,
+  );
+  const inputs = (decoded.run?.inputs ?? []).map(String);
+  const first = inputs[0];
   return {
-    kind: "snapshot",
-    generation,
-    at,
-    session,
-    entries: event.entries.map((entry) => projectEntry(entry)),
-    tail,
-    inbox: inboxView(event.inbox),
     run:
-      event.run === undefined
+      decoded.run === undefined
         ? undefined
-        : { ordinal: generation, inputs: event.run.inputs.map(String) },
-    usage: usageView(event.usage),
-    transcriptFrom: first === undefined ? 0 : Number(first.id),
+        : { operationId: first === undefined ? "" : operationOf(first), inputs },
+    generation: generationOf(decoded.generation),
+    tools: (decoded.tools ?? []).map((tool) => ({
+      callId: tool.callId,
+      name: tool.name,
+      status: tool.status,
+      output: tool.output,
+      details: tool.details,
+    })),
+    compactions: (decoded.compactions ?? []).map((compaction) => ({
+      taskId: String(compaction.taskId),
+      reason: compaction.reason,
+      blocking: compaction.blocking,
+    })),
+    compactionFailure:
+      decoded.compactionFailure === undefined
+        ? undefined
+        : {
+            taskId: String(decoded.compactionFailure.taskId),
+            reason: decoded.compactionFailure.reason,
+            error: decoded.compactionFailure.error,
+          },
   };
 };
 
-// The events with no rendered surface: retry/deferred bookkeeping and agent
-// reconfiguration change the tail the next snapshot carries; the compaction
-// task's own start/end are bookkeeping for the entry it eventually appends.
-type UnrenderedEvent = Extract<
-  AgentEvent,
-  {
-    type:
-      | "auto_retry_start"
-      | "auto_retry_end"
-      | "deferred_poll"
-      | "agent_changed"
-      | "compaction_start"
-      | "compaction_end";
-  }
->;
-
-type RenderableEvent = Exclude<AgentEvent, UnrenderedEvent>;
-
-/** The `never` bindings below are the totality guarantee: a new `AgentEvent`
- * variant fails `tsc` at whichever arm cannot place it, rather than being
- * silently dropped. */
-const encodeRenderable = (
-  event: RenderableEvent,
-  at: number,
-  generation: number,
-): Frame | undefined => {
-  switch (event.type) {
-    case "snapshot":
-      return encodeSnapshot(event, sessionOf(event), at, generation);
-    case "run_start":
-      return { kind: "run", phase: "start", at, inputs: event.inputs.map(String) };
-    case "run_end":
-      return { kind: "run", phase: "end", at, inputs: event.inputs.map(String) };
-    case "turn_start":
-      return { kind: "turn", phase: "start" };
-    case "turn_end":
-      return { kind: "turn", phase: "end" };
-    case "message_start":
-      return { kind: "message", phase: "start", at };
-    case "message_end":
-    case "entry_appended":
-      return { kind: "message", phase: "end", at, entry: projectEntry(event.entry) };
-    case "message_update": {
-      const delta = deltaOf(event.changes);
-      return delta === undefined
-        ? undefined
-        : { kind: "delta", ...delta, usage: usageViewOfUsage(event.usage) };
-    }
-    case "tool_execution_start":
-      return {
-        kind: "tool",
-        phase: "start",
-        toolCallId: event.toolCallId,
-        toolName: event.toolName,
-        args: event.args,
-        ...parentOf(event),
-      };
-    case "tool_execution_update": {
-      const output = toolOutputView(event.output);
-      return {
-        kind: "tool",
-        phase: "update",
-        toolCallId: event.toolCallId,
-        toolName: event.toolName,
-        output,
-        ...parentOf(event),
-      };
-    }
-    case "tool_execution_end":
-      return {
-        kind: "tool",
-        phase: "end",
-        toolCallId: event.toolCallId,
-        toolName: event.toolName,
-        ...parentOf(event),
-      };
-    case "inbox_update":
-      return { kind: "inbox", items: inboxView(event.items) };
-    case "submission":
-      return { kind: "submission", record: submissionView(event.record) };
-    case "usage_changed":
-      return { kind: "usage", usage: usageView(event.usage) };
-    case "task_failed":
-      return {
-        kind: "task_failed",
-        taskId: String(event.taskId),
-        task: event.kind,
-        message: event.message,
-      };
-    default: {
-      const unhandled: never = event;
-      return unhandled;
-    }
-  }
-};
+// ---------------------------------------------------------------------------
+// Streams — the name a feed segment is filed under
+// ---------------------------------------------------------------------------
 
 /**
- * Encode one harness event as a Frame, or `undefined` when it changes no
- * rendered surface.
- *
- * The unrendered variants are the switch's cases, so its default hands the
- * remainder to {@link encodeRenderable} — typed as the complement, which makes
- * a new variant fail `tsc` there. Each switch stays under the complexity
- * budget only because the union is split this way.
+ * The durable name of one session's feed segment. A session's segments share a
+ * tag and differ only here, so `list({ tag, limit: 1 })` finds the newest, and
+ * a client resuming on `Last-Event-ID` can tell a new segment from a chunk of
+ * the one it was reading.
  */
-export const encodeFrame = (
-  event: AgentEvent,
-  at: number,
+export const streamIdFor = (sessionId: string, generation: number): string =>
+  `feed:${sessionId}:${generation}`;
+
+/** The stream a client attaches to for one generation of one session. */
+export const streamView = (
+  sessionId: string,
   generation: number,
-): Frame | undefined => {
-  switch (event.type) {
-    case "auto_retry_start":
-    case "auto_retry_end":
-    case "deferred_poll":
-    case "agent_changed":
-    case "compaction_start":
-    case "compaction_end":
-      return undefined;
-    default:
-      return encodeRenderable(event, at, generation);
-  }
-};
+  cursor: number,
+  state: StreamStatusView["state"] = "streaming",
+): StreamStatusView => ({
+  stream: streamIdFor(sessionId, generation),
+  generation,
+  cursor,
+  state,
+});

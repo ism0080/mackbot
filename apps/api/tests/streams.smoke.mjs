@@ -93,12 +93,13 @@ const ctx = {
 
 const streams = new Streams();
 // The route's bridge is exercised by feed.smoke.mjs; here every request carries
-// an explicit `?stream=`, so the session resolver and run table are never read.
+// an explicit `?stream=`, so the session resolver, the watch and the submissions
+// are never read.
 const feed = createFeed({
   botId: "hermes",
   streams,
-  runs: { list: () => [] },
-  events: () => Promise.reject(new Error("unused")),
+  watch: () => Promise.reject(new Error("unused")),
+  submissions: () => Promise.resolve([]),
   sessionOf: () => Promise.resolve(undefined),
 });
 const host = { ctx, onRequest: (request) => feed.serve(request) };

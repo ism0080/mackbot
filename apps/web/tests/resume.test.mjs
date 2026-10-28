@@ -35,6 +35,7 @@ const snapshot = {
   at: 1,
   session: "hermes",
   entries: [],
+  live: { tools: [], compactions: [] },
   inbox: [],
   usage: { inputTokens: 0, outputTokens: 0, exchanges: 0 },
   transcriptFrom: 0,
@@ -42,6 +43,7 @@ const snapshot = {
 
 const usage = (output) => ({
   kind: "usage",
+  at: 1,
   usage: { inputTokens: 0, outputTokens: output, exchanges: 1 },
 });
 

@@ -47,6 +47,40 @@ export const cronOperationId = (botId: string, scheduledTime: number): string =>
  */
 export const abortOperationId = (session: string): string => `abort:${session}`;
 
+/**
+ * The operation one delegated tool call submits under.
+ *
+ * The id comes from the call's durable task, not from the model, so a replay of
+ * the call after an eviction derives the same id and the target's idempotent
+ * submission joins the first attempt instead of submitting the work twice.
+ * Nothing the model says can move it.
+ */
+export const delegateTaskOperationId = (sourceBotId: string, taskId: string): string =>
+  `${DELEGATE_PREFIX}${sourceBotId}:task:${taskId}`;
+
+/**
+ * An explicit caller override for that id, namespaced into its own `caller:`
+ * segment so a supplied id can never look like the target's own `http:`,
+ * `cron:`, or `delegate:` work. Callers normally omit it; the task-derived id
+ * above is the retry-safe one.
+ */
+export const delegateCallerOperationId = (sourceBotId: string, supplied: string): string =>
+  `${DELEGATE_PREFIX}${sourceBotId}:caller:${supplied}`;
+
+/**
+ * The request id a delegation's answer arrives under in the delegating
+ * conversation. It is derived from the call rather than from the reporter task,
+ * so a reporter that restarts — or a second reporter for the same call — finds
+ * the first report instead of posting another.
+ */
+export const delegateReportRequestId = (sourceBotId: string, taskId: string): string =>
+  `delegate-report:${sourceBotId}:task:${taskId}`;
+
+/**
+ * The earlier, model-supplied delegation id. Kept because other callers may
+ * still name a delegation explicitly; the tool now derives its id from the
+ * call's task (see {@link delegateTaskOperationId}).
+ */
 export const delegateOperationId = (sourceBotId: string, supplied: string | undefined): string => {
   if (supplied === undefined) return `${DELEGATE_PREFIX}${sourceBotId}:${crypto.randomUUID()}`;
   // Honoring an id the tool already returned is what makes a timed-out

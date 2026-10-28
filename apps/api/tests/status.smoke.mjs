@@ -7,8 +7,9 @@
  * The claims this file has to break if they stop holding:
  *   1. An approval recorded as pending is what `/status` reports as pending;
  *      a decided one is not.
- *   2. The active run is the open run whose submission pi still lists as
- *      pending, and it disappears when the submission settles.
+ *   2. The active run is a view the caller derived from pi's own live state, and
+ *      the projection carries it through unchanged — including its stream cursor
+ *      and its prompt — or omits it when the bot is idle.
  *   3. Usage reaches the client as the view the contract defines, not as pi's
  *      ledger.
  */
@@ -16,8 +17,7 @@ import { Database } from "bun:sqlite";
 import { sqliteStorage } from "./support/sqlite.mjs";
 
 const { createApprovalStore } = await import("../src/approvals.ts");
-const { createRunStore } = await import("../src/runs.ts");
-const { activeRunOf, projectStatus } = await import("../src/status.ts");
+const { projectStatus } = await import("../src/status.ts");
 
 const failures = [];
 const check = (label, condition, detail = "") => {
@@ -27,8 +27,7 @@ const check = (label, condition, detail = "") => {
 
 const fresh = () => {
   const database = new Database(":memory:");
-  const storage = sqliteStorage(database);
-  return { database, approvals: createApprovalStore(storage), runs: createRunStore(storage) };
+  return { database, approvals: createApprovalStore(sqliteStorage(database)) };
 };
 
 const approval = (overrides) => ({
@@ -84,19 +83,13 @@ const approval = (overrides) => ({
 // The projection: the home screen's two facts come out of `/status`.
 // ---------------------------------------------------------------------------
 
-const run = (overrides) => ({
+const activeRun = {
   ordinal: 1,
-  sessionId: "1",
-  operationId: "http:a",
-  streamId: "feed:1:1",
   inputs: ["reconcile the invoices"],
   startedAt: 1_000,
-  startEntry: 5,
-  status: "running",
-  ...overrides,
-});
-
-const pending = (operationId) => ({ operationId, origin: "http", status: "running" });
+  session: "1",
+  stream: { stream: "feed:1:1", generation: 1, cursor: 7, state: "streaming" },
+};
 
 const facts = (overrides) => ({
   id: "hermes",
@@ -106,25 +99,17 @@ const facts = (overrides) => ({
   pending: [],
   usage: { models: {}, tools: {} },
   approvals: [],
-  runs: [],
+  activeRun,
   ...overrides,
 });
 
 {
-  const { approvals, runs } = fresh();
+  const { approvals } = fresh();
   approvals.record(approval({}));
-  runs.open({
-    sessionId: "1",
-    operationId: "http:a",
-    inputs: ["reconcile the invoices"],
-    startedAt: 1_000,
-    startEntry: 5,
-  });
   const view = projectStatus(
     facts({
       approvals: approvals.pending(),
-      runs: runs.list(),
-      pending: [pending("http:a")],
+      pending: [{ operationId: "http:a", origin: "http", status: "running" }],
       usage: {
         models: {
           "opencode-go/x": {
@@ -138,7 +123,6 @@ const facts = (overrides) => ({
         },
         tools: {},
       },
-      activeRun: { run: activeRunOf([pending("http:a")], runs.list()), cursor: 7 },
     }),
   );
 
@@ -147,11 +131,7 @@ const facts = (overrides) => ({
     view.approvals.length === 1 && view.approvals[0].status === "pending",
     JSON.stringify(view.approvals.map((a) => a.status)),
   );
-  check(
-    "the status view reports the active run",
-    view.activeRun?.ordinal === 1,
-    `${view.activeRun?.ordinal}`,
-  );
+  check("the status view reports the active run", view.activeRun?.ordinal === 1);
   check(
     "the active run carries its inputs",
     view.activeRun?.inputs[0] === "reconcile the invoices",
@@ -168,6 +148,11 @@ const facts = (overrides) => ({
     `${view.activeRun?.stream.cursor}`,
   );
   check(
+    "the active run carries pi's start time",
+    view.activeRun?.startedAt === 1_000,
+    `${view.activeRun?.startedAt}`,
+  );
+  check(
     "usage is projected, not raw",
     view.usage.inputTokens === 10 && view.usage.exchanges === 1,
     JSON.stringify(view.usage),
@@ -175,23 +160,10 @@ const facts = (overrides) => ({
 }
 
 {
-  const rows = [run({})];
-  check("an unsettled run is active", activeRunOf([pending("http:a")], rows)?.ordinal === 1);
-  check("a settled submission is not active", activeRunOf([], rows) === undefined);
-  check(
-    "an unrelated pending operation is not active",
-    activeRunOf([pending("http:zzz")], rows) === undefined,
-  );
-  check(
-    "a completed run is not active",
-    activeRunOf([pending("http:a")], [run({ status: "completed", endEntry: 1 })]) === undefined,
-  );
-}
-
-{
-  const view = projectStatus(facts({ activeRun: undefined }));
+  const view = projectStatus(facts({ activeRun: undefined, busy: false }));
   check("an idle bot has no active run", view.activeRun === undefined);
   check("an idle bot reports empty approvals", view.approvals.length === 0);
+  check("an idle bot is not busy", view.busy === false);
 }
 
 if (failures.length > 0) {

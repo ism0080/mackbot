@@ -20,6 +20,8 @@
  *      approval under the same operation id the HTTP path used, so a second
  *      delivery joins the first submission instead of starting a second run.
  *   6. The wait gives up when nobody decides it before its deadline.
+ *   7. A wait a previous isolate started delivers after a restart, because it
+ *      carries the store it needs rather than looking one up in module scope.
  *
  * The Executor bridge has no live Executor, so this supplies its own connection
  * through the `connect` seam, exactly as tests/executor-mcp-connection.smoke.mjs
@@ -37,11 +39,11 @@ withWorkersShim(import.meta.url);
 const { Database } = await import("bun:sqlite");
 const { Schema } = await import("effect");
 const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
-const { Harness, MemoryStorage, createRegistry, defineExtension } =
-  await import("@earendil-works/pi-durable");
+const { Harness, MemoryStorage, createRegistry } = await import("@earendil-works/pi-durable");
 const { createModels } = await import("@earendil-works/pi-ai/models");
 const { sqliteStorage } = await import("./support/sqlite.mjs");
-const { createApprovalStore, ApprovalWait } = await import("../src/approvals.ts");
+const { createApprovalStore, createApprovalWait, createApprovalExtension } =
+  await import("../src/approvals.ts");
 const { createExecutorPolicy } = await import("../src/executor-policy.ts");
 const { createExecutorMcp } = await import("../src/executor-mcp.ts");
 const { projectStatus } = await import("../src/status.ts");
@@ -99,8 +101,11 @@ const recorder = (submissions) => async (input, operationId, whenBusy, session) 
  * Drive one phase of the wait task. The fake runtime records what the phase
  * committed and the clock it slept until, so the test reads the wait's own
  * decisions rather than the harness's machinery.
+ *
+ * The task is the wait over a store, so the phase under test delivers through
+ * that store and nowhere else.
  */
-const drivePhase = async (phase, { input, checkpoint, now }) => {
+const drivePhase = async (wait, phase, { input, checkpoint, now }) => {
   const commits = [];
   const sleeps = [];
   const runtime = {
@@ -113,7 +118,7 @@ const drivePhase = async (phase, { input, checkpoint, now }) => {
     },
   };
   const task = { id: 1, input, state: { status: "running", checkpoint } };
-  await ApprovalWait.definition.phases[phase](task, runtime, BACKGROUND_CONTEXT);
+  await wait.definition.phases[phase](task, runtime, BACKGROUND_CONTEXT);
   return { commits, sleeps };
 };
 
@@ -279,19 +284,18 @@ const call = (tools) =>
     envelope: JSON.stringify(PAUSE),
   });
   const view = store.pending()[0];
-  const frame = { kind: "approval", approval: view };
-  const serialized = JSON.stringify(frame);
-  check("the approval view is a valid Frame payload", Schema.is(FrameSchema)(frame));
-  check("the Frame names the approval", serialized.includes(view.approvalId));
+  const serialized = JSON.stringify(view);
+  // Approvals are status payloads, not frames: the feed carries the transcript
+  // and the live documents, and `/status` is where a pending approval belongs.
   check(
-    "the requestId appears in no Frame",
-    occurrences(serialized, REQUEST_ID) === 0,
-    `requestId x${occurrences(serialized, REQUEST_ID)}`,
+    "the approval view is not a Frame payload",
+    !Schema.is(FrameSchema)({ kind: "approval", approval: view }),
   );
+  check("the approval view names the approval", serialized.includes(view.approvalId));
   check(
     "the requestId appears in no projected view",
-    occurrences(JSON.stringify(view), REQUEST_ID) === 0,
-    `requestId x${occurrences(JSON.stringify(view), REQUEST_ID)}`,
+    occurrences(serialized, REQUEST_ID) === 0,
+    `requestId x${occurrences(serialized, REQUEST_ID)}`,
   );
 }
 
@@ -734,8 +738,9 @@ const routeEnv = (store, submissions) => ({
   });
   const approvalId = store.pending()[0].approvalId;
   const wait = waits[0];
+  const task = createApprovalWait(store);
 
-  const undecided = await drivePhase("deliver", {
+  const undecided = await drivePhase(task, "deliver", {
     input: wait,
     checkpoint: { phase: "deliver", delivered: false },
     now: Date.now(),
@@ -752,7 +757,11 @@ const routeEnv = (store, submissions) => ({
   );
 
   const now = Date.now();
-  const slept = await drivePhase("wait", { input: wait, checkpoint: { phase: "wait" }, now });
+  const slept = await drivePhase(task, "wait", {
+    input: wait,
+    checkpoint: { phase: "wait" },
+    now,
+  });
   check(
     "the wait sleeps about half a minute",
     slept.sleeps[0]?.until === now + 30_000,
@@ -764,7 +773,7 @@ const routeEnv = (store, submissions) => ({
     JSON.stringify(slept.sleeps[0]?.checkpoint),
   );
 
-  const capped = await drivePhase("wait", {
+  const capped = await drivePhase(task, "wait", {
     input: { ...wait, deadline: now + 1_000 },
     checkpoint: { phase: "wait" },
     now,
@@ -779,7 +788,7 @@ const routeEnv = (store, submissions) => ({
   await store.decide(approvalId, { action: "allow" }, recorder(submissions));
   check("the decision steers at once", submissions.length === 1, `${submissions.length}`);
 
-  const delivery = await drivePhase("deliver", {
+  const delivery = await drivePhase(task, "deliver", {
     input: wait,
     checkpoint: { phase: "deliver", delivered: false },
     now: Date.now(),
@@ -805,7 +814,7 @@ const routeEnv = (store, submissions) => ({
     JSON.stringify(delivery.commits[0]),
   );
 
-  const finished = await drivePhase("deliver", {
+  const finished = await drivePhase(task, "deliver", {
     input: wait,
     checkpoint: { phase: "deliver", delivered: true },
     now: Date.now(),
@@ -820,6 +829,135 @@ const routeEnv = (store, submissions) => ({
     "the receipt names the operation id",
     finished.commits[0]?.outcome?.result?.operationId === submissions[1]?.operationId,
     JSON.stringify(finished.commits[0]?.outcome?.result),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// A restart: a wait that comes back with its own store delivers from its
+// committed state alone.
+// ---------------------------------------------------------------------------
+
+{
+  const database = new Database(":memory:");
+  const storage = sqliteStorage(database);
+  const submissions = [];
+
+  // The isolate that ran before the restart: it recorded the pause and the
+  // human's decision, and the HTTP path's steer went out.
+  const before = createApprovalStore(storage, { submit: recorder(submissions) });
+  before.recordPaused({
+    bot: "hermes",
+    session: "7",
+    requestId: REQUEST_ID,
+    envelope: JSON.stringify(PAUSE),
+  });
+  const approvalId = before.pending()[0].approvalId;
+  const input = {
+    approvalId,
+    requestId: REQUEST_ID,
+    session: "7",
+    deadline: Date.now() + 600_000,
+  };
+  await before.decide(approvalId, { action: "allow" }, recorder(submissions));
+  check(
+    "the decision steers once before the restart",
+    submissions.length === 1,
+    `${submissions.length}`,
+  );
+
+  // The isolate that comes back: the Harness resumes the wait before any host
+  // route has asked this bot for its approvals, so nothing has registered a
+  // store anywhere. The wait carries its own, so the decision is still found.
+  const after = createApprovalStore(storage, { submit: recorder(submissions) });
+  const delivery = await drivePhase(createApprovalWait(after), "deliver", {
+    input,
+    checkpoint: { phase: "deliver", delivered: false },
+    now: Date.now(),
+  });
+  check(
+    "a wait resumed after a restart delivers the decision",
+    submissions.length === 2,
+    `${submissions.length}`,
+  );
+  check(
+    "the resumed wait's steer carries the decision's operation id",
+    submissions[1]?.operationId === submissions[0]?.operationId,
+    `${submissions[1]?.operationId} vs ${submissions[0]?.operationId}`,
+  );
+  check(
+    "the resumed wait records the delivery",
+    delivery.commits[0]?.checkpoint?.delivered === true,
+    JSON.stringify(delivery.commits[0]),
+  );
+  check(
+    "the resumed wait does not re-sleep a decision it delivered",
+    delivery.sleeps.length === 0 && delivery.commits[0]?.status !== "sleeping",
+    JSON.stringify(delivery.commits[0]),
+  );
+}
+
+// ---------------------------------------------------------------------------
+// The wait holds the store it was built over: which store came first cannot
+// decide whether a decision is delivered.
+// ---------------------------------------------------------------------------
+
+{
+  const database = new Database(":memory:");
+  const storage = sqliteStorage(database);
+  const submissions = [];
+
+  const first = createApprovalStore(storage, { submit: recorder(submissions) });
+  first.recordPaused({
+    bot: "hermes",
+    session: "7",
+    requestId: REQUEST_ID,
+    envelope: JSON.stringify(PAUSE),
+  });
+  const approvalId = first.pending()[0].approvalId;
+  const input = {
+    approvalId,
+    requestId: REQUEST_ID,
+    session: "7",
+    deadline: Date.now() + 600_000,
+  };
+  await first.decide(approvalId, { action: "allow" }, recorder(submissions));
+
+  // A task object from before the second store existed.
+  const early = createApprovalWait(first);
+  // A store created after that task: the old lookup would have run against a
+  // set the resumed wait had never seen, and delivered nothing.
+  const later = createApprovalStore(storage, { submit: recorder(submissions) });
+  const late = createApprovalWait(later);
+
+  const fromEarly = await drivePhase(early, "deliver", {
+    input,
+    checkpoint: { phase: "deliver", delivered: false },
+    now: Date.now(),
+  });
+  const fromLate = await drivePhase(late, "deliver", {
+    input,
+    checkpoint: { phase: "deliver", delivered: false },
+    now: Date.now(),
+  });
+  check(
+    "the task built first delivers through its own store",
+    fromEarly.commits[0]?.checkpoint?.delivered === true,
+    JSON.stringify(fromEarly.commits[0]),
+  );
+  check(
+    "a wait over a store created after the task object still delivers",
+    fromLate.commits[0]?.checkpoint?.delivered === true,
+    JSON.stringify(fromLate.commits[0]),
+  );
+  check(
+    "both waits submit the same one steer per approval",
+    submissions.length === 3,
+    `${submissions.length}`,
+  );
+  check(
+    "every delivery carries the decision's operation id",
+    new Set(submissions.map((submission) => submission.operationId)).size === 1,
+    submissions.map((submission) => submission.operationId).join(" "),
   );
 }
 
@@ -843,8 +981,9 @@ const routeEnv = (store, submissions) => ({
     envelope: JSON.stringify(PAUSE),
   });
   const wait = waits[0];
+  const task = createApprovalWait(store);
 
-  const past = await drivePhase("deliver", {
+  const past = await drivePhase(task, "deliver", {
     input: wait,
     checkpoint: { phase: "deliver", delivered: false },
     now: wait.deadline + 1,
@@ -860,7 +999,7 @@ const routeEnv = (store, submissions) => ({
     `${submissions.length}`,
   );
 
-  const asleep = await drivePhase("wait", {
+  const asleep = await drivePhase(task, "wait", {
     input: wait,
     checkpoint: { phase: "wait" },
     now: wait.deadline + 1,
@@ -893,10 +1032,14 @@ const routeEnv = (store, submissions) => ({
   const approvalId = store.pending()[0].approvalId;
   await store.decide(approvalId, { action: "allow" }, recorder(submissions));
 
-  // A harness of its own, over memory, on a clock the test moves by hand.
+  // A harness of its own, over memory, on a clock the test moves by hand. The
+  // registry takes the extension the host installs, so the wait under test is
+  // the one this store delivers through.
   let clock = 1_000_000;
   const registry = createRegistry();
-  registry.install(defineExtension({ name: "mackbot-approvals", tasks: [ApprovalWait] }));
+  const extension = createApprovalExtension(store);
+  registry.install(extension);
+  const waitTask = extension.tasks[0];
   const harness = await Harness.open(
     new MemoryStorage(),
     {
@@ -914,7 +1057,7 @@ const routeEnv = (store, submissions) => ({
   const taskId = await root.commit(
     (tx) =>
       tx.createTask(
-        ApprovalWait,
+        waitTask,
         { approvalId, requestId: REQUEST_ID, session: "7", deadline: clock + 600_000 },
         { ownership: { kind: "conversation" }, background: true },
       ),

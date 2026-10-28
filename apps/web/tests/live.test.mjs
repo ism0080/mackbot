@@ -1,11 +1,14 @@
 /*
  * The live channel, end to end against a real event stream.
  *
- * The stub serves `text/event-stream` bytes: a snapshot and an approval frame,
+ * The stub serves `text/event-stream` bytes: a snapshot, a `task_failed` frame,
  * an `up-to-date`, then a `done` and a close. The app connects because Hermes is
- * running and blocked on an approval, folds the approval frame into the same
- * channel `/status` wrote, and stops when the stream finishes. Scribe is idle,
- * so it must hold no connection at all.
+ * running and blocked on an approval, folds the failed task into the same
+ * channel `/status` wrote (which clears the run), and stops when the stream
+ * finishes. Scribe is idle, so it must hold no connection at all.
+ *
+ * Approvals are status payloads, not frames: the pending one the home shows is
+ * read from `/status`, and the stream only changes what pi commits during a run.
  */
 import { Effect, Schema } from "effect";
 
@@ -33,35 +36,23 @@ const snapshot = {
   generation: 7,
   at: 1_792_145_000_000,
   session: "hermes",
-  entries: [
-    {
-      id: 45,
-      kind: "assistant",
-      role: "assistant",
-      text: "The Botmail send is still waiting on you.",
-      at: 1_792_145_000_000,
-    },
-  ],
+  entries: [],
+  live: { tools: [], compactions: [] },
   inbox: [],
   usage: { inputTokens: 12_500, outputTokens: 3_200, exchanges: 2 },
-  transcriptFrom: 45,
+  transcriptFrom: 0,
 };
 
-const approval = {
-  kind: "approval",
-  approval: {
-    approvalId: "apr_calendar",
-    bot: "hermes",
-    toolPath: "calendar.hold",
-    summary: "Hold Thursday 09:00 for the renewal call?",
-    status: "pending",
-    requestedAt: 1_792_145_100_000,
-  },
+const failed = {
+  kind: "task_failed",
+  taskId: "task_invoice_ledger",
+  task: "reconcile",
+  message: "the ledger read failed",
 };
 
 for (const [label, frame] of [
   ["snapshot", snapshot],
-  ["approval", approval],
+  ["task_failed", failed],
 ]) {
   decode(FrameSchema, `Frame(${label})`, frame);
 }
@@ -76,7 +67,7 @@ const stub = startStub({
     hermes: () => ({
       frames: [
         { id: 0, data: snapshot },
-        { id: 1, data: approval },
+        { id: 1, data: failed },
         { event: "up-to-date", data: {} },
         { event: "done", data: {} },
       ],
@@ -90,20 +81,25 @@ const { query, all, text, display, waitFor } = app;
 
 try {
   await waitFor(
-    () => query('[data-approval="apr_calendar"]') !== null,
-    "the approval frame arrived",
+    () => query('[data-approval="apr_botmail_send"]') !== null,
+    "the status approval is on screen",
   );
 
   check(
-    "the Frame the stream carried is folded into the same channel",
-    all("[data-approval]").length === 2 &&
-      text('[data-approval="apr_calendar"] .ap-tool') === "calendar.hold",
+    "the pending approval comes from /status, once",
+    all("[data-approval]").length === 1,
+    `${all("[data-approval]").length}`,
   );
   check(
-    "the home counts the new approval",
-    text(".hdr.tall .hdr-sub") === "2 bots · 2 blocked · 1 running",
+    "the approval names the tool it is gated on",
+    text('[data-approval="apr_botmail_send"] .ap-tool') === "botmail.send",
   );
-  check("the run is still live", display('[data-group="running"]') !== "none");
+
+  await waitFor(
+    () => display('[data-group="running"]') === "none",
+    "the failed task ended the run",
+  );
+  check("a failed task clears the run", display('[data-group="running"]') === "none");
 
   const hermesEvents = stub.requests.filter((request) => request.path === "/events/hermes");
   check(

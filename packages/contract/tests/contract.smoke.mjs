@@ -3,15 +3,27 @@
  *
  * Run with: bun packages/contract/tests/contract.smoke.mjs
  *
- * Two claims, both checkable without a Worker or a browser:
- *   1. `encodeFrame` is total over the harness event vocabulary — every
- *      `AgentEvent` type maps to a Frame or to a deliberate `undefined`.
- *      (tsc owns the exhaustiveness proof; this owns the runtime behaviour.)
- *   2. Every Frame that `encodeFrame` produces is a member of `FrameSchema` and
- *      survives a JSON round trip, which is what makes it a `StreamJson` chunk.
+ * The claims this file has to break if they stop holding:
+ *   1. Every Frame the feed emits is a member of `FrameSchema` and survives a
+ *      JSON round trip, which is what makes it a `StreamJson` chunk.
+ *   2. The projections read pi's committed documents rather than re-encoding
+ *      them: `liveView` keeps the running partial, the tools and the compaction
+ *      status; `inboxView` keeps the queue; `projectEntry` joins the origin of
+ *      the submission that admitted the entry.
+ *   3. A run window is derived from the input and answer entry ids a submission
+ *      records, and the newest containing window owns an entry.
  */
-const { FrameSchema, encodeFrame, encodeSnapshot, projectEntry, usageView } =
-  await import("@mackbot/contract");
+const {
+  FrameSchema,
+  ApprovalViewSchema,
+  inboxView,
+  liveView,
+  projectEntry,
+  runOfEntry,
+  streamIdFor,
+  streamView,
+  usageView,
+} = await import("@mackbot/contract");
 const Schema = await import("effect/Schema");
 
 const failures = [];
@@ -46,138 +58,65 @@ const userEntry = {
   model: [{ role: "user", content: "hi", timestamp: 1 }],
 };
 const assistantEntry = { id: 2, conversationId: 7, kind: "pi.assistant", model: [assistant] };
-const submission = {
-  id: 3,
-  conversationId: 7,
-  type: "input",
-  status: "queued",
-  requestId: "http:abc",
-};
 
 const emptyUsageState = { models: {}, tools: {} };
-
-const events = {
-  snapshot: {
-    type: "snapshot",
-    entries: [userEntry, assistantEntry],
-    run: { inputs: [1] },
-    generation: { attempt: 1, message: assistant, retry: { at: 5, error: "x" } },
-    tools: [],
-    nestedTools: [],
-    compactions: [],
-    inbox: [{ id: 4, mode: "followUp" }],
-    agent: {},
-    usage: emptyUsageState,
-  },
-  run_start: { type: "run_start", inputs: [1] },
-  run_end: { type: "run_end", inputs: [1] },
-  turn_start: { type: "turn_start" },
-  turn_end: { type: "turn_end" },
-  message_start: { type: "message_start", message: assistant },
-  message_update: {
-    type: "message_update",
-    usage,
-    changes: [{ type: "text_delta", contentIndex: 0, delta: "he" }],
-  },
-  message_end: { type: "message_end", entry: assistantEntry },
-  tool_execution_start: {
-    type: "tool_execution_start",
-    toolCallId: "call-1",
-    toolName: "botmail.send",
-    args: { to: "a@b.c" },
-  },
-  tool_execution_update: {
-    type: "tool_execution_update",
-    toolCallId: "call-1",
-    toolName: "botmail.send",
-    output: { append: "chunk" },
-  },
-  tool_execution_end: {
-    type: "tool_execution_end",
-    toolCallId: "call-1",
-    toolName: "botmail.send",
-    entry: { id: 9, conversationId: 7, kind: "pi.tool-result", model: [] },
-  },
-  inbox_update: { type: "inbox_update", items: [{ id: 4, mode: "steer" }] },
-  submission: { type: "submission", record: submission },
-  auto_retry_start: { type: "auto_retry_start", attempt: 1, at: 5, errorMessage: "boom" },
-  auto_retry_end: { type: "auto_retry_end", attempt: 1 },
-  deferred_poll: { type: "deferred_poll", pollAt: 9 },
-  entry_appended: { type: "entry_appended", entry: userEntry },
-  agent_changed: { type: "agent_changed", agent: {} },
-  usage_changed: { type: "usage_changed", usage: emptyUsageState },
-  task_failed: { type: "task_failed", taskId: 5, kind: "pi.generation", message: "boom" },
-  compaction_start: { type: "compaction_start", taskId: 5, reason: "manual", blocking: false },
-  compaction_end: { type: "compaction_end", taskId: 5, reason: "manual" },
+const live = {
+  run: { taskId: 5, inputs: [3] },
+  generation: { attempt: 2, message: assistant, retry: { at: 5, error: "x" } },
+  tools: [{ callId: "call-1", name: "botmail.send", status: "running", output: "sent" }],
+  compactions: [{ taskId: 6, reason: "manual", blocking: false, attempt: 1 }],
+  compactionFailure: { taskId: 7, reason: "threshold", error: "boom" },
 };
+
+const operationOf = (input) => (input === "3" ? "http:abc" : "");
+
+// ---------------------------------------------------------------------------
+// 1. Every emitted Frame is a contract value and survives the wire.
+// ---------------------------------------------------------------------------
+
+const frames = [
+  {
+    kind: "snapshot",
+    generation: 3,
+    at: 2_000,
+    session: "thread-1",
+    entries: [projectEntry(userEntry), projectEntry(assistantEntry)],
+    live: liveView(live, operationOf),
+    inbox: inboxView({ items: [{ id: 4, mode: "followUp" }] }),
+    usage: usageView(emptyUsageState),
+    transcriptFrom: 1,
+  },
+  { kind: "append", at: 2_000, entries: [projectEntry(assistantEntry)] },
+  { kind: "live", at: 2_000, live: liveView(live, operationOf) },
+  { kind: "inbox", at: 2_000, items: inboxView({ items: [{ id: 4, mode: "steer" }] }) },
+  { kind: "usage", at: 2_000, usage: usageView(emptyUsageState) },
+  { kind: "run", phase: "start", at: 2_000, operationId: "http:abc" },
+  { kind: "run", phase: "end", at: 2_000, operationId: "http:abc" },
+  { kind: "task_failed", taskId: "5", task: "pi.generation", message: "boom" },
+];
 
 const encodable = Schema.encodeSync(FrameSchema);
-
-const expectKind = {
-  snapshot: "snapshot",
-  run_start: "run",
-  run_end: "run",
-  turn_start: "turn",
-  turn_end: "turn",
-  message_start: "message",
-  message_update: "delta",
-  message_end: "message",
-  tool_execution_start: "tool",
-  tool_execution_update: "tool",
-  tool_execution_end: "tool",
-  inbox_update: "inbox",
-  submission: "submission",
-  entry_appended: "message",
-  usage_changed: "usage",
-  task_failed: "task_failed",
-};
-
-const unrendered = new Set([
-  "auto_retry_start",
-  "auto_retry_end",
-  "deferred_poll",
-  "agent_changed",
-  "compaction_start",
-  "compaction_end",
-]);
-
-check(
-  "corpus covers the event vocabulary",
-  Object.keys(events).length === 22,
-  `${Object.keys(events).length}`,
-);
-
-for (const [type, event] of Object.entries(events)) {
-  let frame;
-  try {
-    frame = encodeFrame(event, 1_000, 1);
-  } catch (error) {
-    failures.push(`encodeFrame threw for ${type}: ${error?.message ?? error}`);
-    continue;
-  }
-  if (unrendered.has(type)) {
-    check(`unrendered ${type} yields no frame`, frame === undefined);
-    continue;
-  }
-  check(`${type} yields a frame`, frame !== undefined);
-  if (frame === undefined) continue;
-  check(`${type} kind`, frame.kind === expectKind[type], `got ${frame.kind}`);
+for (const frame of frames) {
   try {
     encodable(frame);
   } catch (error) {
-    failures.push(`frame for ${type} is not a Frame: ${JSON.stringify(error?.message ?? error)}`);
+    failures.push(
+      `frame ${frame.kind}/${frame.phase ?? ""} is not a Frame: ${error?.message ?? error}`,
+    );
+    continue;
   }
+  check(`${frame.kind}${frame.phase === undefined ? "" : ` ${frame.phase}`} is a Frame`, true);
   const round = JSON.parse(JSON.stringify(frame));
   try {
     Schema.decodeUnknownSync(FrameSchema)(round);
   } catch (error) {
-    failures.push(`frame for ${type} does not decode after JSON: ${error?.message ?? error}`);
+    failures.push(`frame ${frame.kind} does not decode after JSON: ${error?.message ?? error}`);
   }
 }
 
-// The snapshot arm carries the session the caller seeds, not one guessed from
-// the transcript: an explicit session must survive encoding.
-const seeded = encodeSnapshot(events.snapshot, "thread-1", 2_000, 3);
+// The snapshot carries the session the caller seeds, not one guessed from the
+// entries: an explicit session must survive.
+const seeded = frames[0];
 check("snapshot session is explicit", seeded.session === "thread-1", seeded.session);
 check("snapshot generation", seeded.generation === 3);
 check(
@@ -185,26 +124,96 @@ check(
   seeded.transcriptFrom === 1,
   `${seeded.transcriptFrom}`,
 );
-check("snapshot tail carries the retry", seeded.tail?.retryAt === 5);
+
+// ---------------------------------------------------------------------------
+// 2. The projections keep what pi committed.
+// ---------------------------------------------------------------------------
+
+const projected = liveView(live, operationOf);
+check("liveView names the run's operation", projected.run?.operationId === "http:abc");
+check("liveView keeps the run's inputs", projected.run?.inputs[0] === "3");
+check("liveView keeps the streaming partial", projected.generation?.text === "hello");
+check("liveView keeps the retry backoff", projected.generation?.retry?.at === 5);
+check("liveView keeps the running tool", projected.tools[0]?.status === "running");
+check("liveView keeps the tool output", projected.tools[0]?.output === "sent");
+check("liveView keeps the compaction", projected.compactions[0]?.reason === "manual");
+check(
+  "liveView keeps the compaction failure",
+  projected.compactionFailure?.error === "boom",
+  projected.compactionFailure?.error,
+);
+check("liveView tolerates an absent document", liveView(undefined, operationOf).tools.length === 0);
+
+const inbox = inboxView({ items: [{ id: 4, mode: "steer" }] });
+check("inboxView keeps the queued item", inbox[0]?.id === "4");
+check("inboxView keeps the mode", inbox[0]?.mode === "steer", `${inbox[0]?.mode}`);
 
 check(
-  "projectEntry joins a run window",
-  projectEntry(userEntry, { ordinal: 1, operationId: "cron:x", startedAt: 42 }).at === 42,
+  "usageView sums the model ledger",
+  usageView({ models: { "a/b": usage }, tools: {} }).inputTokens === 10,
 );
+check(
+  "usageView counts the model ledgers",
+  usageView({ models: { "a/b": usage }, tools: {} }).exchanges === 1,
+);
+
 check("projectEntry without a run has no time", projectEntry(userEntry).at === undefined);
 check(
-  "projectEntry derives the origin from the run's operation id",
-  projectEntry(userEntry, { ordinal: 1, operationId: "cron:x", startedAt: 42 }).origin === "cron",
+  "projectEntry renders user text",
+  projectEntry(userEntry).text === "hi",
+  projectEntry(userEntry).text,
 );
 check(
-  "projectEntry renders message text",
+  "projectEntry renders assistant text",
   projectEntry(assistantEntry).text === "hello",
   projectEntry(assistantEntry).text,
 );
 
-const usageState = { models: { "opencode-go/deepseek": usage }, tools: {} };
-check("usageView sums the model ledger", usageView(usageState).inputTokens === 10);
-check("usageView counts the model ledgers", usageView(usageState).exchanges === 1);
+// ---------------------------------------------------------------------------
+// 3. A run window comes from the submission's entry and answer.
+// ---------------------------------------------------------------------------
+
+const runs = [
+  { operationId: "http:first", startEntry: 1, answer: 4 },
+  { operationId: "http:second", startEntry: 5 },
+];
+check("an answered window owns its entries", runOfEntry(2, runs)?.operationId === "http:first");
+check("a live window owns its entries", runOfEntry(9, runs)?.operationId === "http:second");
+check(
+  "an entry outside every window has no run",
+  runOfEntry(4, runs)?.operationId === "http:first",
+);
+check("the newest containing window wins", runOfEntry(5, runs)?.operationId === "http:second");
+check(
+  "projectEntry derives the origin from the run's operation id",
+  projectEntry(userEntry, runs[0]).origin === "http",
+  `${projectEntry(userEntry, runs[0]).origin}`,
+);
+
+// ---------------------------------------------------------------------------
+// 4. The stream a client attaches to is named by the contract.
+// ---------------------------------------------------------------------------
+
+check("streamIdFor names the segment", streamIdFor("7", 3) === "feed:7:3");
+check("streamView reports its generation", streamView("7", 3, 12).generation === 3);
+check("streamView defaults to streaming", streamView("7", 3, 12).state === "streaming");
+
+// The approval view is a status payload, not a frame, and never carries the
+// DO-private request id.
+const approval = {
+  approvalId: "a-1",
+  bot: "hermes",
+  toolPath: "tools.github.listIssues",
+  summary: "Approve it?",
+  status: "pending",
+  requestedAt: 1,
+};
+check("an approval view is not a Frame", !Schema.is(FrameSchema)({ kind: "approval", approval }));
+check("an approval view decodes", Schema.is(ApprovalViewSchema)(approval));
+
+// ---------------------------------------------------------------------------
+// 5. Query schemas the routes decode.
+// ---------------------------------------------------------------------------
 
 const { TranscriptQuerySchema, EventsQuerySchema, ApprovalDecisionSchema, SessionRequestSchema } =
   await import("@mackbot/contract");

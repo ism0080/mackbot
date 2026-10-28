@@ -18,20 +18,25 @@
  * Two steps are two chances to lose the second one. A Durable Object that
  * dies between the decision and the steer leaves a decided approval and a
  * paused call nobody resumes: the human's answer is on record and the call
- * waits forever. The wait is the recovery. {@link ApprovalWait} is a durable
- * task that polls for the decision and submits the HTTP path's own steer under
- * the same operation id, so pi's request-id idempotency joins the second
- * submission to the first instead of starting a second run.
+ * waits forever. The wait is the recovery. {@link createApprovalWait} builds a
+ * durable task that polls for the decision and submits the HTTP path's own
+ * steer under the same operation id, so pi's request-id idempotency joins the
+ * second submission to the first instead of starting a second run.
+ *
+ * The wait carries the store it delivers through, because a task must continue
+ * from its committed state alone: after a restart the Harness resumes the task
+ * before any route has asked the bot for its approvals, so a wait that looked
+ * its store up in module scope would find none and poll until its deadline.
  *
  * `request_id` and `session_id` are Executor's and pi's, and stay here. The
  * `ApprovalView` the browser sees is this module's projection of the row, and
  * it carries neither.
  */
 
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 import type { PiWhenBusy } from "agents/harness/pi";
-import { defineTask } from "@earendil-works/pi-durable";
-import type { NextTaskState, Task } from "@earendil-works/pi-durable";
+import { defineExtension, defineTask } from "@earendil-works/pi-durable";
+import type { Extension, NextTaskState, Task } from "@earendil-works/pi-durable";
 
 import type { ApprovalState } from "./executor-policy.ts";
 import { approvalOperationId } from "./operation.ts";
@@ -178,8 +183,8 @@ export interface DecidedApproval {
 
 /**
  * The one way a decision becomes a submission. `Bot.submit` is the intended
- * implementation, so the steer gets a run window, a stream and an audit row
- * like any other work.
+ * implementation, so the steer gets a stream, a run and an audit row like any
+ * other work.
  */
 export type ApprovalSubmitter = (
   input: string,
@@ -200,8 +205,12 @@ export interface ApprovalStoreOptions {
    * know the harness's type. The task belongs to the conversation of the
    * session it waits for, and it is a background task: a wait nobody answers
    * must not hold that conversation's idle wait open.
+   *
+   * A host that returns its promise gets the failure logged; one that returns
+   * nothing keeps the pause recorded and the HTTP decision path as the only
+   * way left to resume the call.
    */
-  readonly startWait?: (wait: ApprovalWaitInput) => void;
+  readonly startWait?: (wait: ApprovalWaitInput) => void | Promise<void>;
   /**
    * Submits the steer a decision admits. The wait needs one of its own: the
    * HTTP path's steer is exactly what may have been lost.
@@ -255,6 +264,10 @@ export type ApprovalStore = {
 
 const envelopeOf = (raw: string): Envelope | undefined =>
   Option.getOrUndefined(Schema.decodeUnknownOption(EnvelopeFromText)(raw));
+
+/** A cause as one log line: the failure's own words when it has any. */
+const describeCause = (cause: unknown): string =>
+  cause instanceof Error ? cause.message : String(cause);
 
 const toolOf = (envelope: Envelope | undefined): string | undefined =>
   envelope?.invocation?.path ?? envelope?.invocation?.tool;
@@ -385,12 +398,30 @@ export function createApprovalStore(
       paused.session,
     );
     if (known.length > 0) return;
-    options?.startWait?.({
+    const wait: ApprovalWaitInput = {
       approvalId,
       requestId: paused.requestId,
       session: paused.session,
       deadline: now + WAIT_DEADLINE_MS,
-    });
+    };
+    // The wait starts behind the tool, never inside it: a tool that paused has
+    // a result to return, and the wait's failure is a log line rather than a
+    // failed call. The store is not consulted again from module scope, so the
+    // wait the host starts here is the one the Harness can resume.
+    void Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => options?.startWait?.(wait),
+        catch: (cause: unknown) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            console.error(
+              `mackbot: starting the approval wait for "${approvalId}" failed: ${describeCause(cause)}`,
+            );
+          }),
+        ),
+      ),
+    );
   };
 
   const pending = (): readonly ApprovalView[] => {
@@ -508,7 +539,6 @@ export function createApprovalStore(
     decide,
     deliver,
   };
-  stores.add(store);
   return store;
 }
 
@@ -561,24 +591,6 @@ export interface ApprovalWaitOutcome {
   readonly operationId: string;
 }
 
-/**
- * The stores this isolate holds. The wait runs inside the harness, which knows
- * nothing of the store that minted its input, so the wait asks here for the
- * store that holds the approval. One Durable Object is one bot, so an isolate
- * holds one store; the lookup asks each of them and stops at the one that
- * holds the approval.
- */
-const stores = new Set<ApprovalStore>();
-
-/** The delivery a wait asks for: the store that holds the approval answers. */
-const deliverApproval = async (approvalId: string): Promise<ApprovalDelivery> => {
-  for (const store of stores) {
-    const delivery = await store.deliver(approvalId);
-    if (delivery !== "unknown") return delivery;
-  }
-  return "unknown";
-};
-
 /** The clock of the next look, or the deadline when that comes first. */
 const nextPoll = (now: number, deadline: number): number => Math.min(now + WAIT_POLL_MS, deadline);
 
@@ -612,6 +624,11 @@ const expired = (
  * Object that dies between a decision and its steer finds the wait when it
  * comes back, and the wait delivers what the HTTP path never got to.
  *
+ * The store is the factory's, not a module-level lookup: the Harness resumes a
+ * wait before the host has asked the bot for anything, so the wait has to carry
+ * everything it delivers through. A task that looked its store up would resume
+ * with nothing to look at and poll until its deadline.
+ *
  * The delivery is the HTTP path's own steer under the same operation id, so
  * pi's request-id idempotency joins it to the first submission instead of
  * starting a second run.
@@ -619,44 +636,52 @@ const expired = (
  * The wait phase owns the sleep: the deliver phase hands the wait over to it
  * when the approval is still undecided, so one poll is one sleep long.
  */
-export const ApprovalWait: Task<
-  ApprovalWaitInput,
-  ApprovalWaitCheckpoint,
-  ApprovalWaitOutcome,
-  object
-> = defineTask<ApprovalWaitInput, ApprovalWaitCheckpoint, ApprovalWaitOutcome>({
-  name: "mackbot.approval-wait",
-  version: 1,
-  initial: () => ({ phase: "wait" }),
-  phases: {
-    wait: async (task, runtime, context) => {
-      const until = nextPoll(runtime.now(), task.input.deadline);
-      if (until <= runtime.now()) {
-        await runtime.commit(() => expired(task.input.approvalId), context);
-        return;
-      }
-      await runtime.sleepUntil(until, { phase: "deliver", delivered: false }, context);
+export const createApprovalWait = (
+  store: ApprovalStore,
+): Task<ApprovalWaitInput, ApprovalWaitCheckpoint, ApprovalWaitOutcome, object> =>
+  defineTask<ApprovalWaitInput, ApprovalWaitCheckpoint, ApprovalWaitOutcome>({
+    name: "mackbot.approval-wait",
+    version: 1,
+    initial: () => ({ phase: "wait" }),
+    phases: {
+      wait: async (task, runtime, context) => {
+        const until = nextPoll(runtime.now(), task.input.deadline);
+        if (until <= runtime.now()) {
+          await runtime.commit(() => expired(task.input.approvalId), context);
+          return;
+        }
+        await runtime.sleepUntil(until, { phase: "deliver", delivered: false }, context);
+      },
+      deliver: async (task, runtime, context) => {
+        if (task.state.checkpoint.delivered) {
+          await runtime.commit(() => delivered(task.input.approvalId), context);
+          return;
+        }
+        if ((await store.deliver(task.input.approvalId)) === "delivered") {
+          await runtime.commit(
+            () => ({ status: "running", checkpoint: { phase: "deliver", delivered: true } }),
+            context,
+          );
+          return;
+        }
+        if (runtime.now() >= task.input.deadline) {
+          await runtime.commit(() => expired(task.input.approvalId), context);
+          return;
+        }
+        await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait" } }), context);
+      },
     },
-    deliver: async (task, runtime, context) => {
-      if (task.state.checkpoint.delivered) {
-        await runtime.commit(() => delivered(task.input.approvalId), context);
-        return;
-      }
-      if ((await deliverApproval(task.input.approvalId)) === "delivered") {
-        await runtime.commit(
-          () => ({ status: "running", checkpoint: { phase: "deliver", delivered: true } }),
-          context,
-        );
-        return;
-      }
-      if (runtime.now() >= task.input.deadline) {
-        await runtime.commit(() => expired(task.input.approvalId), context);
-        return;
-      }
-      await runtime.commit(() => ({ status: "running", checkpoint: { phase: "wait" } }), context);
+    abort: async (task, runtime, context) => {
+      await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
     },
-  },
-  abort: async (task, runtime, context) => {
-    await runtime.commit(() => ({ status: "terminal", outcome: { status: "aborted" } }), context);
-  },
-});
+  });
+
+/**
+ * The extension the host installs in its harness factory: the wait over the
+ * store the same bot's approvals live in. The extension keeps the name
+ * `mackbot-approvals` and the task keeps the kind `mackbot.approval-wait` at
+ * version 1, so a wait a previous revision started still resolves to this
+ * definition and resumes where it slept.
+ */
+export const createApprovalExtension = (store: ApprovalStore): Extension =>
+  defineExtension({ name: "mackbot-approvals", tasks: [createApprovalWait(store)] });
