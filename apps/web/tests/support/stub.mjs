@@ -45,6 +45,7 @@ export const startStub = ({
   decisions = {},
   aborts = {},
   retries = {},
+  chats = {},
   roster = { bots: {} },
   catalog = { models: {} },
   writes = {},
@@ -77,10 +78,13 @@ export const startStub = ({
       const decision = /^\/approvals\/([^/]+)\/([^/]+)$/.exec(url.pathname);
       const abort = /^\/abort\/([^/]+)$/.exec(url.pathname);
       const retry = /^\/retry\/([^/]+)$/.exec(url.pathname);
+      const chatRoute = /^\/chat\/([^/]+)$/.exec(url.pathname);
       const botWrite = /^\/bots\/([^/]+)$/.exec(url.pathname);
       const isWrite = request.method === "PUT" && botWrite !== null;
       const isCreate = request.method === "POST" && url.pathname === "/bots";
-      const hasBody = decision !== null || abort !== null || retry !== null || isWrite || isCreate;
+      const isChat = request.method === "POST" && chatRoute !== null;
+      const hasBody =
+        decision !== null || abort !== null || retry !== null || isWrite || isCreate || isChat;
       const body = hasBody ? await request.json().catch(() => undefined) : undefined;
       requests.push({
         method: request.method,
@@ -142,6 +146,19 @@ export const startStub = ({
         const spec =
           handler === undefined ? undefined : await handler({ body, query, bot: retry[1] });
         const answer = spec ?? { status: 404, body: { error: "no retry handler" } };
+        return Response.json(answer.body, { status: answer.status });
+      }
+
+      if (isChat) {
+        const handler = chats[url.pathname];
+        const spec =
+          handler === undefined ? undefined : await handler({ body, query, bot: chatRoute[1] });
+        // The default is the route's own `wait=0` answer: admitted, receipt
+        // now, result later over the transcript and its stream.
+        const answer = spec ?? {
+          status: 202,
+          body: { operationId: "op_test", accepted: true },
+        };
         return Response.json(answer.body, { status: answer.status });
       }
 

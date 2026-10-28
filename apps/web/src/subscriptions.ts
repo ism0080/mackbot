@@ -25,6 +25,8 @@ import type { Channel, Model, Screen } from "./model.ts";
 /** The home folds every bot, so it wants a fresher roster than a transcript. */
 const HOME_POLL_MS = 5_000;
 const TRANSCRIPT_POLL_MS = 10_000;
+/** While a chat is in flight, the open transcript is read more often. */
+const CHAT_POLL_MS = 3_000;
 
 const pollMsOf = (screen: Screen): number =>
   screen._tag === "Home" ? HOME_POLL_MS : TRANSCRIPT_POLL_MS;
@@ -63,6 +65,31 @@ const isLive = (channel: Channel | undefined): boolean =>
   channel.stream.phase !== "closed" &&
   streamIdOf(channel) !== "" &&
   holdsWork(channel);
+
+/**
+ * Whether the open bot has work that can still put entries in its transcript:
+ * a send that has not been admitted, a message the transcript has not caught
+ * up with, a run the status still calls busy, or a user message left without an
+ * answer. The last case matters because the status can still say idle for a
+ * moment after a fast send, and the answer would otherwise wait for a manual
+ * reload.
+ */
+const awaitingAnswer = (channel: Channel): boolean =>
+  Option.match(AsyncData.getData(channel.transcript), {
+    onNone: () => false,
+    onSome: (page) => page.entries[page.entries.length - 1]?.role === "user",
+  });
+
+const chatWatching = (channel: Channel | undefined): boolean =>
+  channel !== undefined &&
+  (channel.sending ||
+    channel.refreshing ||
+    channel.pending.length > 0 ||
+    awaitingAnswer(channel) ||
+    Option.match(statusOf(channel), {
+      onNone: () => false,
+      onSome: (view) => view.busy || view.activeRun !== undefined,
+    }));
 
 const sourceOf = (bot: string, channel: Channel | undefined): Source => ({
   bot,
@@ -174,6 +201,38 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
           Stream.drop(1),
           Stream.map(() => Message.PolledStatus()),
         ),
+    },
+  ),
+  transcriptPoll: entry(
+    { bot: Schema.String, watching: Schema.Boolean },
+    {
+      modelToDependencies: (model) =>
+        model.screen._tag === "Transcript"
+          ? {
+              bot: model.screen.bot,
+              watching: chatWatching(model.channels[model.screen.bot]),
+            }
+          : { bot: "", watching: false },
+      // The poll's own result changes `refreshing` and `pending`; restarting on
+      // those would reset the interval. Only entering or leaving the watched
+      // window is a dependency change.
+      keepAliveEquivalence: Equivalence.Struct({
+        bot: Equivalence.String,
+        watching: Equivalence.Boolean,
+      }),
+      dependenciesToStream: ({
+        bot,
+        watching,
+      }: {
+        readonly bot: string;
+        readonly watching: boolean;
+      }) =>
+        watching
+          ? Stream.tick(Duration.millis(CHAT_POLL_MS)).pipe(
+              Stream.drop(1),
+              Stream.map(() => Message.PolledTranscript({ bot })),
+            )
+          : Stream.empty,
     },
   ),
   events: entry(

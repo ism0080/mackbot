@@ -136,14 +136,22 @@ input and its output against a Schema there, so the two cannot drift apart.
 
 `apps/web/` is the first-party channel, built and served by the same Worker:
 a home screen that groups the fleet into blocked, running, parked and recent
-work, per-bot transcripts with backward paging, approval cards with allow and
-deny, Stop and retry controls, and the roster editor. It polls `/status`, reads
-`/bots`, and follows `/events` for each bot with a run in flight.
+work plus a persistent chats list that keeps every bot's thread reachable once
+it goes idle, per-bot transcripts with backward paging, a composer that starts
+new work, approval cards with allow and deny, Stop and retry controls, and the
+roster editor. It polls `/status`, reads `/bots`, and follows `/events` for each
+bot with a run in flight.
 
-Navigation is in-app (home, then a bot's transcript); the Worker's asset binding
-serves `index.html` for any other path, so a deep link still loads the app. It
-cannot originate work yet: there is no composer for `POST /chat/:bot`, so today
-the API starts work and the app observes and steers it.
+Navigation is URL-backed (home, `/new` for the bot picker, `/chat/:bot` for a
+transcript, `/bots` for the roster); the Worker's asset binding serves
+`index.html` for any other path, so a deep link or a reload lands on the same
+screen. The composer posts to `POST /chat/:bot` with `wait=0`, then follows the
+run through `/events` plus a short transcript poll while work is in flight.
+Tool results appear as collapsed rows — expanded by default only when the tool
+failed — rather than as raw JSON in the conversation.
+
+The layout is mobile-first but not device-shaped: the app fills any window, and
+one centred reading column keeps a desktop from stretching the triage rows.
 
 ## Deploy
 

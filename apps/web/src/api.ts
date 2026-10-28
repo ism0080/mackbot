@@ -161,6 +161,47 @@ const refusalOf = (
   );
 
 /**
+ * `POST /chat/:bot`'s accepted answer: the operation the server recorded, and
+ * whether it admitted it. `wait=0` asks for the receipt immediately rather than
+ * holding the request open for the run's result; the transcript and its SSE
+ * stream are how the answer arrives.
+ */
+const ChatAcceptedSchema = Schema.Struct({
+  operationId: Schema.String,
+  accepted: Schema.Boolean,
+});
+
+/**
+ * `POST /chat/:bot` with the text the composer holds. This is the app's one
+ * route that starts work instead of observing it.
+ */
+export const Chat = Command.define("Chat", {
+  args: { bot: Schema.String, text: Schema.String },
+  messages: [Message.ChatSent, Message.ChatFailed],
+  execute: ({ bot, text }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.post(
+        apiUrl(`/chat/${encodeURIComponent(bot)}?wait=0`),
+      ).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson({ text }),
+      );
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(yield* refusalOf(response));
+      }
+      const accepted = yield* HttpClientResponse.schemaBodyJson(ChatAcceptedSchema)(response);
+      return Message.ChatSent({ bot, operationId: accepted.operationId });
+    }).pipe(
+      Effect.catch((cause) => Effect.succeed(Message.ChatFailed({ bot, error: describe(cause) }))),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/**
  * `PUT /bots/:id` with the contract's write body. The whole configuration of
  * the bot is sent, so the fields the form does not show survive the round
  * trip.

@@ -25,8 +25,8 @@ const css = readFileSync(
   "utf8",
 );
 
-export const boot = async (origin) => {
-  const window = new Window({ url: `${origin}/` });
+export const boot = async (origin, path = "/") => {
+  const window = new Window({ url: `${origin}${path}` });
   const globals = globalThis;
   globals.window = window;
   globals.self = window;

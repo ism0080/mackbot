@@ -1,11 +1,13 @@
 import { AsyncData } from "foldkit";
+import type { Url } from "foldkit/url";
 
 import { Status } from "./api.ts";
 import { EMPTY_DRAFT, Screen } from "./model.ts";
+import { screenOfPath } from "./route.ts";
 
-export const init = () => ({
+export const init = (url?: Url) => ({
   model: {
-    screen: Screen.Home(),
+    screen: url === undefined ? Screen.Home() : screenOfPath(url.pathname),
     now: 0,
     roster: AsyncData.Idle(),
     toast: null,

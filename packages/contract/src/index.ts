@@ -216,6 +216,10 @@ export const EntryViewSchema = Schema.Struct({
   at: Schema.optional(Schema.Number),
   origin: Schema.optional(OperationOriginSchema),
   data: Schema.optional(Schema.Unknown),
+  /** The tool a `role: "tool"` entry reports on, when pi names it. */
+  toolName: Schema.optional(Schema.String),
+  /** Whether that tool result was an error, so the UI can surface it. */
+  toolFailed: Schema.optional(Schema.Boolean),
 });
 export type EntryView = typeof EntryViewSchema.Type;
 
@@ -652,6 +656,17 @@ const roleOfEntry = (record: EntryRecord): EntryRole => {
 };
 
 /**
+ * The tool facts a result entry carries for the view. The response body is
+ * model context and stays in `text`; the name and the failure bit are what a
+ * human-facing summary can be built from without parsing that body.
+ */
+const toolOfEntry = (record: EntryRecord) => {
+  const first = record.model?.[0];
+  if (first?.role !== "toolResult") return {};
+  return { toolName: first.toolName, toolFailed: first.isError };
+};
+
+/**
  * One transcript entry. `at` and `origin` are joined from the run window the
  * entry falls in, because pi's `EntryRecord` has no timestamp and no origin.
  */
@@ -663,6 +678,7 @@ export const projectEntry = (record: EntryRecord, run?: RunWindow): EntryView =>
   at: run?.startedAt,
   origin: run?.operationId === undefined ? undefined : originOf(run.operationId),
   data: record.data,
+  ...toolOfEntry(record),
 });
 
 const usageViewOf = (inputTokens: number, outputTokens: number, exchanges: number): UsageView => ({

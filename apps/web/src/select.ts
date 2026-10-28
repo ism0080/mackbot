@@ -9,7 +9,7 @@ import type {
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 
-import { clockOf } from "./format.ts";
+import { clockOf, elapsedOf } from "./format.ts";
 import { botName } from "./partials.ts";
 import type { Channel, Model } from "./model.ts";
 
@@ -26,6 +26,18 @@ export interface Running {
 export interface Recent {
   readonly bot: string;
   readonly entry: EntryView;
+}
+
+/** A bot's thread as the home lists it: the persistent way back into any chat,
+ *  including one that is idle and finished. */
+export interface Chat {
+  readonly bot: string;
+  readonly preview: string;
+  readonly stamp: string;
+  readonly busy: boolean;
+  /** The clock the row sorts by: the newest entry's time, or zero when the
+   *  thread has none. It is not rendered. */
+  readonly sortAt: number;
 }
 
 export interface BotFailures {
@@ -143,6 +155,38 @@ export const selectHome = (model: Model): Home => {
     recent,
   };
 };
+
+/**
+ * Every bot's thread for the home's chats list. The list is not a triage fold:
+ * it holds one row per bot whatever the bot is doing, so an idle bot with a
+ * finished conversation stays reachable after its triage row disappears.
+ */
+export const selectChats = (model: Model): readonly Chat[] =>
+  Object.entries(model.channels)
+    .map(([bot, channel]): Chat => {
+      const entries = Option.match(AsyncData.getData(channel.transcript), {
+        onNone: () => [],
+        onSome: (page) => page.entries,
+      });
+      const last = entries[entries.length - 1];
+      const busy = Option.match(statusOf(channel), {
+        onNone: () => false,
+        onSome: (view) => view.busy,
+      });
+      return {
+        bot,
+        preview: AsyncData.hasError(channel.transcript)
+          ? "Couldn't load this thread"
+          : (last?.text ?? "No messages yet"),
+        stamp: last?.at === undefined ? "" : elapsedOf(last.at, model.now),
+        busy,
+        sortAt: last?.at ?? 0,
+      };
+    })
+    .sort(
+      (left, right) =>
+        right.sortAt - left.sortAt || (left.bot < right.bot ? -1 : left.bot > right.bot ? 1 : 0),
+    );
 
 /**
  * What the harness reported and what it still has live, folded per bot.

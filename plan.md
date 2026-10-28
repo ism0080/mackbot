@@ -182,7 +182,7 @@ Implementation: `@modelcontextprotocol/sdk` `StreamableHTTPClientTransport` (wor
 4. `alchemy dev` local test via `POST /chat/:bot`
 5. `bun run deploy` (HTTP API live)
 6. `/status` + cron briefs
-7. First-party webapp — **built**: home, transcripts, generation-guarded per-run SSE, approvals, stop/retry, and the roster editor. Still open: a composer for `POST /chat/:bot`, per-chat sessions, sandbox/"own computer" phase
+7. First-party webapp — **built**: home, transcripts, generation-guarded per-run SSE, approvals, stop/retry, the roster editor, and a composer over `POST /chat/:bot`. Still open: per-chat sessions, sandbox/"own computer" phase
 8. **Telegram integration — last, and optional**: `setWebhook` per bot (with per-bot `secret_token`); approval buttons in that channel come later still
 
 ## Cross-bot memory (cut)

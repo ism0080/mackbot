@@ -31,6 +31,16 @@ export const Message = defineMessageUnion({
   ClickedOpenTranscript: { bot: Schema.String },
   ClickedLoadEarlier: { bot: Schema.String },
   ClickedBack: {},
+  /** The user asked for the bot picker, where a chat can be started. */
+  ClickedNewChat: {},
+  /** The user changed what the transcript's composer holds. */
+  EditedChatText: { bot: Schema.String, text: Schema.String },
+  /** The user sent the composer's text to a bot. */
+  SubmittedChat: { bot: Schema.String },
+  /** The server admitted the message, and names the operation it recorded. */
+  ChatSent: { bot: Schema.String, operationId: Schema.String },
+  /** The message did not reach the bot, so the composer keeps its text. */
+  ChatFailed: { bot: Schema.String, error: Schema.String },
   DecidedApproval: {
     bot: Schema.String,
     approvalId: Schema.String,
@@ -75,6 +85,16 @@ export const Message = defineMessageUnion({
     bot: Schema.String,
     taskId: Schema.String,
   },
+  /** A periodic refresh of the open transcript while work is in flight. */
+  PolledTranscript: { bot: Schema.String },
+  /** The browser reported a URL change, from a push or the back button. */
+  UrlChanged: { pathname: Schema.String },
+  /** A link inside the app asked to navigate. */
+  UrlRequested: { pathname: Schema.String },
+  /** A link left the app; this surface has nothing to open in its own view. */
+  ExternalUrlRequested: { href: Schema.String },
+  /** The navigation effect finished; the URL is already the screen's. */
+  Navigated: {},
   /** The server ran the parked task again, and says whether it did. */
   TaskRetried: {
     bot: Schema.String,

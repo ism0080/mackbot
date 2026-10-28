@@ -101,10 +101,6 @@ foundation pieces are already implemented and are intentionally omitted here:
 
 ## Channels and integration
 
-- **A composer.** The web app is the first-party channel for reading and
-  steering a fleet — status, transcripts, approvals, stop, retry, and the roster
-  — but it cannot originate work. Add a composer over `POST /chat/:bot` that
-  follows the run through `/events`.
 - **Additional channel adapters.** Reuse proven implementations for Discord,
   Slack, or other platforms instead of hand-rolling each one.
 - **Service binding access.** Allow private Workers or applications to reach bots
@@ -130,5 +126,5 @@ foundation pieces are already implemented and are intentionally omitted here:
 1. Sandbox and workspace graduation and dynamic code execution.
 2. Async delegation and thread lineage.
 3. Bot presets and saved routines.
-4. A composer, then additional channels.
+4. Additional channels.
 5. Spend controls, tracing, and audit-runtime integration.

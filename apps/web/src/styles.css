@@ -60,12 +60,18 @@
 
   --r: 14px;
 
+  /* The reading column. The shell itself fills the window — there is no phone
+     frame on desktop — so the header, the scroller and the composer all use
+     `--gutter` to keep their content on one centred column while their
+     backgrounds and borders stay full-bleed. */
+  --shell: 48rem;
+  --gutter: max(14px, calc((100% - var(--shell)) / 2));
+
   /* One fluid type scale. It is measured against the app shell, not the window:
-     the shell is a fixed 390px on desktop, so a `vw` clamp would follow the
-     desktop window instead, and `100cqi` (the shell's inline size, set on
-     `.screen` below) is the correct axis. Each step runs from its 320px value
-     to its 370px value, and past 370px it holds the wide value, which is the
-     size the verified design used. */
+     `.screen` below is the query container, so `100cqi` follows the shell's
+     inline size. Each step runs from its 320px value to its 370px value, and
+     past 370px it holds the wide value, which is the size the verified design
+     used; a desktop window simply keeps the wide end. */
   --narrow: 20;
   --wide: 23.125;
   --fluid: clamp(0rem, (100cqi - var(--narrow) * 1rem) / (var(--wide) - var(--narrow)), 1rem);
@@ -223,6 +229,10 @@ button {
     background: color-mix(in oklch, var(--surface), var(--white) 4%);
   }
 
+  .chatitem:hover {
+    background: color-mix(in oklch, var(--surface), var(--white) 4%);
+  }
+
   .ap-ref:hover {
     background: color-mix(in oklch, var(--warn-quiet), var(--white) 4%);
   }
@@ -233,6 +243,7 @@ button {
 .btn:active,
 .ap-review:active,
 .doneitem:active,
+.chatitem:active,
 .icon:active {
   transform: scale(0.97);
 }
@@ -241,6 +252,7 @@ button {
   .btn,
   .ap-review,
   .doneitem,
+  .chatitem,
   .icon {
     transition: transform 160ms ease-out;
   }
@@ -252,8 +264,8 @@ button {
   /* The query container for the type scale above. Every fluid token resolves
      `100cqi` here, on the shell, not on the desktop window. */
   container-type: inline-size;
-  /* The positioned ancestor for the toast, so it stays on the phone frame when
-     the desktop centres the shell. */
+  /* The positioned ancestor for the toast, so it rides the same column as the
+     rest of the app. */
   position: relative;
   block-size: 100dvh;
   display: flex;
@@ -262,20 +274,9 @@ button {
   background: var(--bg);
 }
 
-@media (min-width: 760px) {
-  body {
-    display: grid;
-    place-items: center;
-  }
-
-  .screen {
-    inline-size: 390px;
-    block-size: min(844px, calc(100dvh - 28px));
-    border: 10px solid var(--surface2);
-    border-radius: 46px;
-    box-shadow: 0 30px 90px var(--shadow);
-  }
-}
+/* The phone frame is gone: on any window the app is the window. The content
+   still reads on one column through `--gutter`, which is what keeps a wide
+   desktop from turning the triage rows into a single very long line. */
 
 /* ---------- header ---------- */
 
@@ -284,7 +285,8 @@ button {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 10px 14px;
+  padding-block: 10px;
+  padding-inline: var(--gutter);
   padding-block-start: calc(10px + env(safe-area-inset-top, 0px));
   background: var(--hdr-bg);
   backdrop-filter: blur(14px);
@@ -363,7 +365,7 @@ button {
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
   padding-block: 12px 18px;
-  padding-inline: 14px;
+  padding-inline: var(--gutter);
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -442,7 +444,8 @@ button {
 }
 
 .runit,
-.doneitem {
+.doneitem,
+.chatitem {
   display: flex;
   gap: 10px;
   align-items: center;
@@ -521,9 +524,22 @@ button {
   }
 }
 
-.doneitem {
+.doneitem,
+.chatitem {
   inline-size: 100%;
   min-block-size: 44px;
+}
+
+/* A thread's last line is a preview, so it stays on one line and ends in an
+   ellipsis rather than pushing the status tag out of the row. */
+.chat-preview {
+  overflow: clip;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.chatitem .tag {
+  flex: none;
 }
 
 .chev {
@@ -772,10 +788,11 @@ details[open]::details-content {
 
 /* The server answer the screen has to say out loud: a decision that did not
    stick, or one another client had already made. It is the shell's own child so
-   it rides the phone frame, and it sits above the scroll region it interrupts. */
+   it rides the same centred column as the screen, and it sits above the scroll
+   region it interrupts. */
 .toast {
   position: absolute;
-  inset-inline: 14px;
+  inset-inline: var(--gutter);
   inset-block-end: calc(14px + env(safe-area-inset-bottom, 0px));
   z-index: 2;
   display: flex;
@@ -818,6 +835,103 @@ details[open]::details-content {
 .btn.ghost {
   flex: 1;
   background: transparent;
+}
+
+/* ---------- composer ---------- */
+
+/* The composer is a sibling of the scroller, not a child: a message box that
+   scrolls away with the transcript is useless on a long conversation. */
+.composer {
+  flex: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px));
+  padding-inline: var(--gutter);
+  border-block-start: 1px solid var(--line);
+  background: var(--hdr-bg);
+  backdrop-filter: blur(14px);
+}
+
+.composer .input {
+  flex: 1;
+  min-block-size: 44px;
+  max-block-size: 10rem;
+  /* Grows with the text where the browser supports it; otherwise the box
+     scrolls, which is still usable. */
+  field-sizing: content;
+  resize: none;
+}
+
+.composer .btn.primary {
+  flex: none;
+  padding-block: 12px;
+}
+
+.composer .btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* A message the server has not confirmed yet. It is dimmed rather than hidden:
+   the words are already sent, the acknowledgement is what is missing. */
+.msg.pending {
+  opacity: 0.72;
+}
+
+/* A tool result is a collapsed record, not a chat bubble: it is model context
+   that only becomes interesting when a person asks for it. */
+.tool {
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+
+.tool > summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-block-size: 44px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tool > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tool[open] > summary {
+  border-block-end: 1px solid var(--line);
+}
+
+.tool-name {
+  flex: 1;
+  overflow: clip;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--step--1);
+  color: var(--text-soft);
+}
+
+.tool-meta {
+  flex: none;
+  font-size: var(--step--3);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.tool-body {
+  margin: 0;
+  padding: 10px 12px 12px;
+  max-block-size: 22rem;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--step--2);
+  line-height: 1.5;
+  color: var(--muted);
+  white-space: pre-wrap;
 }
 
 /* ---------- transcript ---------- */

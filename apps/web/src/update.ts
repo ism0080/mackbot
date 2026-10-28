@@ -16,6 +16,7 @@ import type { Update } from "foldkit";
 
 import {
   Catalog,
+  Chat,
   CreateBot,
   DecideApproval,
   RetryTask,
@@ -29,12 +30,17 @@ import { Message } from "./message.ts";
 import { botName } from "./partials.ts";
 import { EMPTY_DRAFT, FRAME_WINDOW, Screen } from "./model.ts";
 import type { BotDraft, Channel, Model, ThinkingLevel } from "./model.ts";
+import { Navigate, pathOf, screenOfPath } from "./route.ts";
 
 const emptyChannel = (): Channel => ({
   status: AsyncData.Idle(),
   transcript: AsyncData.Idle(),
   stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0 },
   frames: [],
+  draft: "",
+  sending: false,
+  refreshing: false,
+  pending: [],
 });
 
 /** A record read that admits the key it does not have. */
@@ -62,10 +68,20 @@ const mergePage = (
   previous: TranscriptPage | undefined,
   page: TranscriptPage,
   before: number | undefined,
-): TranscriptPage =>
-  previous === undefined || before === undefined
-    ? page
-    : { ...page, entries: [...page.entries, ...previous.entries] };
+): TranscriptPage => {
+  if (previous === undefined) return page;
+  if (before === undefined) {
+    // A reload of the newest page keeps the older pages already on screen, and
+    // keeps their cursor so "Load earlier" still points past the oldest entry
+    // rather than past the newest page's first one.
+    return {
+      ...page,
+      entries: mergeEntries(previous.entries, page.entries),
+      nextBefore: previous.nextBefore,
+    };
+  }
+  return { ...page, entries: [...page.entries, ...previous.entries] };
+};
 
 const decideOne = (approval: ApprovalView, action: "allow" | "deny", at: number): ApprovalView =>
   modifyFields(approval, {
@@ -117,6 +133,25 @@ const mergeEntriesInto = (
   entries: readonly EntryView[],
 ): AsyncData.AsyncData<TranscriptPage, string> =>
   AsyncData.map(transcript, (page) => ({ ...page, entries: mergeEntries(page.entries, entries) }));
+
+/**
+ * Retire the optimistic messages the transcript has caught up with. Matching on
+ * the text is enough because a pending message is only ever this client's own
+ * last few sends, and the first user entry carrying that text is the one the
+ * server recorded for it.
+ */
+const confirmedPending = (
+  pending: readonly string[],
+  entries: readonly EntryView[],
+): readonly string[] => {
+  const recorded = new Set(
+    entries.filter((entry) => entry.role === "user").map((entry) => entry.text),
+  );
+  return pending.filter((text) => !recorded.has(text));
+};
+
+const prunePending = (channel: Channel, entries: readonly EntryView[]): Channel =>
+  modifyFields(channel, { pending: (pending) => confirmedPending(pending, entries) });
 
 const modifyStatus = (channel: Channel, change: (view: BotView) => BotView): Channel =>
   modifyFields(channel, { status: (status) => AsyncData.map(status, change) });
@@ -217,10 +252,16 @@ const applyFrame = (channel: Channel, frame: Frame, seq: number, at: number): Ch
 
   switch (frame.kind) {
     case "snapshot":
-      return { ...cursor, transcript: mergeEntriesInto(cursor.transcript, frame.entries) };
+      return prunePending(
+        { ...cursor, transcript: mergeEntriesInto(cursor.transcript, frame.entries) },
+        frame.entries,
+      );
     case "message":
       return frame.phase === "end" && frame.entry !== undefined
-        ? { ...cursor, transcript: mergeEntriesInto(cursor.transcript, [frame.entry]) }
+        ? prunePending(
+            { ...cursor, transcript: mergeEntriesInto(cursor.transcript, [frame.entry]) },
+            [frame.entry],
+          )
         : cursor;
     case "approval":
       return modifyStatus(cursor, (view) => upsertApproval(view, frame.approval));
@@ -344,17 +385,101 @@ export const update = (model: Model, message: Message) =>
     }),
     StreamClosed: ({ bot }) => ({
       model: withChannel(model, bot, (channel) => setStreamPhase(channel, "closed")),
+      // The stream ends when the run does. Reading the transcript now catches
+      // the final entries even if the last frame was the one that got away.
+      commands: [Transcript({ bot })],
     }),
+    PolledTranscript: ({ bot }) => {
+      const channel = channelOf(model, bot);
+      if (channel === undefined || channel.refreshing) return { model };
+      return {
+        model: withChannel(model, bot, (current) =>
+          modifyFields(current, { refreshing: () => true }),
+        ),
+        commands: [Transcript({ bot })],
+      };
+    },
     StreamDropped: ({ bot }) => ({
       model: withChannel(model, bot, reconnect),
     }),
     ClickedBack: () => ({
       model: modifyFields(model, { screen: () => Screen.Home() }),
+      commands: [Navigate({ path: pathOf(Screen.Home()) })],
+    }),
+    ClickedNewChat: () => ({
+      model: modifyFields(model, { screen: () => Screen.NewChat() }),
+      commands: [Navigate({ path: pathOf(Screen.NewChat()) })],
+    }),
+    UrlChanged: ({ pathname }) => {
+      const screen = screenOfPath(pathname);
+      return {
+        model: modifyFields(model, { screen: () => screen }),
+        commands:
+          screen._tag === "Transcript" && dataOf(transcriptOf(model, screen.bot)) === undefined
+            ? [Transcript({ bot: screen.bot })]
+            : [],
+      };
+    },
+    UrlRequested: ({ pathname }) => ({
+      model: modifyFields(model, { screen: () => screenOfPath(pathname) }),
+      commands: [Navigate({ path: pathname })],
+    }),
+    ExternalUrlRequested: () => ({ model }),
+    Navigated: () => ({ model }),
+    EditedChatText: ({ bot, text }) => ({
+      model: withChannel(model, bot, (channel) => modifyFields(channel, { draft: () => text })),
+    }),
+    SubmittedChat: ({ bot }) => {
+      const channel = channelOf(model, bot);
+      const text = channel?.draft.trim() ?? "";
+      if (channel === undefined || text.length === 0 || channel.sending) return { model };
+
+      return {
+        // The text leaves the box and joins the transcript as a pending bubble,
+        // so a send is immediate while the server and its stream catch up.
+        model: modifyFields(
+          withChannel(model, bot, (current) =>
+            modifyFields(current, {
+              draft: () => "",
+              sending: () => true,
+              pending: (pending) => [...pending, text],
+            }),
+          ),
+          { toast: () => null },
+        ),
+        commands: [Chat({ bot, text })],
+      };
+    },
+    ChatSent: ({ bot }) => ({
+      model: withChannel(model, bot, (channel) =>
+        modifyFields(channel, { sending: () => false, refreshing: () => true }),
+      ),
+      // The admission opens a run, so the status names the new stream and the
+      // transcript picks up the user entry the server just recorded.
+      commands: [Status(), Transcript({ bot })],
+    }),
+    ChatFailed: ({ bot, error }) => ({
+      model: withToast(
+        withChannel(model, bot, (channel) => {
+          const failed = channel.pending[channel.pending.length - 1];
+          return modifyFields(channel, {
+            sending: () => false,
+            pending: (pending) => pending.slice(0, -1),
+            // Put the message back where the person can retry it rather than
+            // losing it to a failed request.
+            draft: (draft) => (draft.length === 0 ? (failed ?? draft) : draft),
+          });
+        }),
+        `Couldn't reach ${botName(bot)} (${error}). Your message is still here.`,
+      ),
     }),
     ClickedOpenTranscript: ({ bot }) => ({
       model: modifyFields(model, { screen: () => Screen.Transcript({ bot }) }),
-      // Opening a transcript the home could not load is the retry.
-      commands: dataOf(transcriptOf(model, bot)) === undefined ? [Transcript({ bot })] : [],
+      commands: [
+        Navigate({ path: pathOf(Screen.Transcript({ bot })) }),
+        // Opening a transcript the home could not load is the retry.
+        ...(dataOf(transcriptOf(model, bot)) === undefined ? [Transcript({ bot })] : []),
+      ],
     }),
     ClickedLoadEarlier: ({ bot }) => {
       const page = dataOf(transcriptOf(model, bot));
@@ -450,6 +575,12 @@ export const update = (model: Model, message: Message) =>
       for (const id of ids) {
         const current = lookup(channels, id) ?? emptyChannel();
         const view = lookup(bots, id);
+        const generation = view?.activeStream?.generation;
+        // A new generation is a new stream that starts at zero. Carrying the
+        // previous stream's cursor over would ask the new stream to resume past
+        // its own head, so the first frames — including the snapshot — would be
+        // silently skipped.
+        const rotated = generation !== undefined && generation !== current.stream.generation;
         channels[id] = {
           ...current,
           status:
@@ -465,10 +596,8 @@ export const update = (model: Model, message: Message) =>
               : {
                   ...current.stream,
                   generation: view.activeStream.generation,
-                  attempt:
-                    view.activeStream.generation === current.stream.generation
-                      ? current.stream.attempt
-                      : 0,
+                  lastSeq: rotated ? 0 : current.stream.lastSeq,
+                  attempt: rotated ? 0 : current.stream.attempt,
                 },
         };
       }
@@ -486,11 +615,14 @@ export const update = (model: Model, message: Message) =>
     }),
     TranscriptLoaded: ({ bot, page, before }) => {
       const previous = dataOf(transcriptOf(model, bot));
+      const merged = mergePage(previous, page, before);
       return {
-        model: withChannel(model, bot, (channel) => ({
-          ...channel,
-          transcript: AsyncData.succeed(mergePage(previous, page, before)),
-        })),
+        model: withChannel(model, bot, (channel) =>
+          prunePending(
+            { ...channel, refreshing: false, transcript: AsyncData.succeed(merged) },
+            merged.entries,
+          ),
+        ),
       };
     },
     TranscriptFailed: ({ bot, error }) =>
@@ -500,15 +632,20 @@ export const update = (model: Model, message: Message) =>
         ? {
             model: withChannel(model, bot, (channel) => ({
               ...channel,
+              refreshing: false,
               transcript: AsyncData.fail(error),
             })),
           }
-        : { model },
+        : {
+            model: withChannel(model, bot, (channel) =>
+              modifyFields(channel, { refreshing: () => false }),
+            ),
+          },
     ClickedOpenBots: () => ({
       // The roster and the catalog are asked for every time the screen opens,
       // so what it shows is the server's truth rather than a stale copy.
       model: modifyFields(model, { screen: () => Screen.Bots() }),
-      commands: [Roster(), Catalog()],
+      commands: [Navigate({ path: pathOf(Screen.Bots()) }), Roster(), Catalog()],
     }),
     RosterLoaded: ({ roster }) => ({
       // The roster's own values seed the screen: it is the working copy, so an

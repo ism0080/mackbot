@@ -5,7 +5,7 @@ import { elapsedOf } from "./format.ts";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, runTitle, toast } from "./partials.ts";
-import { entryStampOf, selectHome, selectStatusPanel } from "./select.ts";
+import { type Chat, entryStampOf, selectChats, selectHome, selectStatusPanel } from "./select.ts";
 import { failurePanel, parkedPanel, taskPanel } from "./status-panel.ts";
 import { isParked } from "./task-retry.ts";
 
@@ -141,9 +141,41 @@ const recentRow = (bot: string, text: string, stamp: string, h: HtmlBuilder<Mess
     ],
   );
 
+/**
+ * One thread in the persistent chats list. The row is the way back into any
+ * conversation after the triage sections — blocked, running, recent — have
+ * stopped mentioning it.
+ */
+const chatRow = (chat: Chat, h: HtmlBuilder<Message>): Html =>
+  h.keyed("button")(
+    chat.bot,
+    [
+      h.Class("chatitem"),
+      h.DataAttribute("bot", chat.bot),
+      h.AriaLabel(`Open chat with ${botName(chat.bot)}`),
+      h.OnClick(Message.ClickedOpenTranscript({ bot: chat.bot })),
+    ],
+    [
+      avatar(chat.bot, h),
+      h.span(
+        [h.Class("runit-main")],
+        [
+          h.span([h.Class("rt")], [botName(chat.bot)]),
+          h.span(
+            [h.Class("rmeta chat-preview")],
+            [chat.stamp.length === 0 ? chat.preview : `${chat.preview} · ${chat.stamp}`],
+          ),
+        ],
+      ),
+      chat.busy ? h.span([h.Class("tag work")], ["working"]) : h.span([h.Class("tag")], ["idle"]),
+      h.span([h.Class("chev")], ["›"]),
+    ],
+  );
+
 export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
   const triage = selectHome(model);
   const panel = selectStatusPanel(model);
+  const chats = selectChats(model);
 
   // A parked task has its own section, so the live work lists only the tasks
   // the harness will pick up on its own.
@@ -171,6 +203,14 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
           h.div(
             [h.Class("hdr-actions")],
             [
+              h.button(
+                [
+                  h.Class("btn ghost"),
+                  h.DataAttribute("open", "new-chat"),
+                  h.OnClick(Message.ClickedNewChat()),
+                ],
+                ["New chat"],
+              ),
               h.button(
                 [
                   h.Class("btn ghost"),
@@ -239,6 +279,10 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
               h.h2([], ["Running now"]),
               ...triage.running.map(({ bot, run }) => runningRow(bot, run, model.now, h)),
             ],
+          ),
+          h.section(
+            [h.Class("grp"), h.DataAttribute("group", "chats"), h.Hidden(chats.length === 0)],
+            [h.h2([], ["Chats"]), ...chats.map((chat) => chatRow(chat, h))],
           ),
           h.section(
             [h.Class("grp"), h.DataAttribute("group", "tasks"), h.Hidden(live.length === 0)],

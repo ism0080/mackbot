@@ -21,6 +21,7 @@ import * as Schema from "effect/Schema";
 export const Screen = defineTaggedUnion({
   Home: {},
   Transcript: { bot: Schema.String },
+  NewChat: {},
   Bots: {},
 });
 export type Screen = typeof Screen.Type;
@@ -91,6 +92,19 @@ export const Channel = Schema.Struct({
   transcript: AsyncData.Schema(TranscriptPageSchema, Schema.String).schema,
   stream: StreamState,
   frames: Schema.Array(FrameSchema),
+  /** What the person has typed into this bot's composer but not yet sent. */
+  draft: Schema.String,
+  /** Whether a `POST /chat/:bot` for this bot is still in flight. */
+  sending: Schema.Boolean,
+  /** Whether a transcript request for this bot is in flight, so the poll does
+   *  not stack a second one on top. */
+  refreshing: Schema.Boolean,
+  /**
+   * Messages this client sent that the transcript has not confirmed yet, so a
+   * send shows up immediately instead of after the next poll. A pending message
+   * is retired by the first transcript entry with the same text.
+   */
+  pending: Schema.Array(Schema.String),
 });
 export type Channel = typeof Channel.Type;
 

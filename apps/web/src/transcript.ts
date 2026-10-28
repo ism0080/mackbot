@@ -29,6 +29,10 @@ const pageIn = (channel: Channel | undefined): Option.Option<TranscriptPage> =>
 const entriesIn = (channel: Channel | undefined): readonly EntryView[] =>
   Option.match(pageIn(channel), { onNone: () => [], onSome: (page) => page.entries });
 
+const draftIn = (channel: Channel | undefined): string => channel?.draft ?? "";
+const sendingIn = (channel: Channel | undefined): boolean => channel?.sending ?? false;
+const pendingIn = (channel: Channel | undefined): readonly string[] => channel?.pending ?? [];
+
 const awaitingIn = (bot: string, channel: Channel | undefined): readonly ApprovalView[] =>
   Option.match(statusIn(channel), {
     onNone: () => [],
@@ -57,6 +61,44 @@ const messageRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
     ],
   );
 };
+
+/**
+ * A tool result is model context, not a chat message. It collapses to a row a
+ * person can scan — tool name and outcome — and opens on demand for the raw
+ * payload. A failed result starts open, because that is the one a person needs.
+ */
+const toolRow = (entry: EntryView, h: HtmlBuilder<Message>): Html => {
+  const failed = entry.toolFailed === true;
+
+  return h.keyed("details")(
+    `tool:${entry.id}`,
+    [
+      h.Class("tool"),
+      h.DataAttribute("entry", `${entry.id}`),
+      h.DataAttribute("tool", entry.toolName ?? ""),
+      ...(failed ? [h.Open(true)] : []),
+    ],
+    [
+      h.summary(
+        [h.Class("tool-summary")],
+        [
+          h.span([h.Class(failed ? "tag warn" : "tag")], ["tool"]),
+          h.span([h.Class("tool-name")], [entry.toolName ?? "tool result"]),
+          h.span([h.Class("tool-meta")], [failed ? "failed" : "ok"]),
+          h.span([h.Class("chev")], ["›"]),
+        ],
+      ),
+      h.pre([h.Class("tool-body")], [entry.text]),
+    ],
+  );
+};
+
+const pendingRow = (text: string, index: number, h: HtmlBuilder<Message>): Html =>
+  h.keyed("div")(
+    `pending:${index}:${text}`,
+    [h.Class("msg me pending"), h.DataAttribute("pending", "")],
+    [h.p([], [text])],
+  );
 
 const awaitingRow = (approval: ApprovalView, h: HtmlBuilder<Message>): Html =>
   h.keyed("button")(
@@ -113,6 +155,9 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
   const channel = model.channels[bot];
   const status = statusIn(channel);
   const run = Option.flatMap(status, (view) => Option.fromNullishOr(view.activeRun));
+  const draft = draftIn(channel);
+  const sending = sendingIn(channel);
+  const pending = pendingIn(channel);
 
   const body: readonly Html[] = [
     h.div([h.Class("dayline")], ["Today"]),
@@ -120,7 +165,21 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
       onNone: () => [],
       onSome: (page) => (page.nextBefore === undefined ? [] : [earlierRow(bot, h)]),
     }),
-    ...entriesIn(channel).map((entry) => messageRow(entry, h)),
+    ...entriesIn(channel).map((entry) =>
+      entry.role === "tool" ? toolRow(entry, h) : messageRow(entry, h),
+    ),
+    ...(entriesIn(channel).length === 0 && pending.length === 0
+      ? [
+          h.div(
+            [h.Class("empty")],
+            [
+              h.strong([], [`No messages with ${botName(bot)} yet`]),
+              h.p([], ["Send the first one below."]),
+            ],
+          ),
+        ]
+      : []),
+    ...pending.map((text, index) => pendingRow(text, index, h)),
     ...awaitingIn(bot, channel).map((approval) => awaitingRow(approval, h)),
     ...Option.match(run, {
       onNone: () => [],
@@ -128,6 +187,28 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
     }),
     h.div([h.Class("pad")]),
   ];
+
+  const composer = h.form(
+    [h.Class("composer"), h.OnSubmit(Message.SubmittedChat({ bot }))],
+    [
+      h.textarea([
+        h.Class("input composer-input"),
+        h.DataAttribute("field", "chat"),
+        h.Value(draft),
+        h.Placeholder(`Message ${botName(bot)}…`),
+        h.AriaLabel(`Message ${botName(bot)}`),
+        h.OnInput((text) => Message.EditedChatText({ bot, text })),
+      ]),
+      h.button(
+        [
+          h.Class("btn primary composer-send"),
+          h.Type("submit"),
+          h.Disabled(sending || draft.trim().length === 0),
+        ],
+        [sending ? "Sending…" : "Send"],
+      ),
+    ],
+  );
 
   return h.div(
     [h.Class("screen")],
@@ -162,6 +243,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
         ],
       ),
       h.main([h.Class("scroll")], body),
+      composer,
       ...toast(model.toast, h),
     ],
   );
