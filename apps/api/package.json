@@ -7,7 +7,7 @@
     "dev": "bun dev.mjs",
     "deploy": "alchemy deploy --env-file ../../.env",
     "typecheck": "tsc --noEmit",
-    "test": "bun tests/run.mjs"
+    "test": "vitest run"
   },
   "dependencies": {
     "@alchemy.run/cloudflare": "2.0.0-beta.84",
@@ -25,6 +25,8 @@
     "effect": "4.0.6"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "5.20261013.1"
+    "@cloudflare/workers-types": "5.20261013.1",
+    "@effect/vitest": "4.0.6",
+    "vitest": "^5.0.0"
   }
 }

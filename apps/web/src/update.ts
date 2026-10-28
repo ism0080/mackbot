@@ -83,11 +83,11 @@ const mergePage = (
   return { ...page, entries: [...page.entries, ...previous.entries] };
 };
 
-const decideOne = (approval: ApprovalView, action: "allow" | "deny", at: number): ApprovalView =>
-  modifyFields(approval, {
-    status: () => (action === "allow" ? "allowed" : "denied"),
-    decidedAt: () => at,
-  });
+const decideOne = (approval: ApprovalView, action: "allow" | "deny", at: number): ApprovalView => ({
+  ...approval,
+  status: action === "allow" ? "allowed" : "denied",
+  decidedAt: at,
+});
 
 const decideInStatus = (
   status: BotView,
@@ -170,12 +170,7 @@ const markApproval = (
     modifyFields(view, {
       approvals: (approvals) =>
         approvals.map((approval) =>
-          approval.approvalId === approvalId
-            ? modifyFields(approval, {
-                status: () => status,
-                decidedAt: () => decidedAt,
-              })
-            : approval,
+          approval.approvalId === approvalId ? { ...approval, status, decidedAt } : approval,
         ),
     }),
   );
@@ -191,7 +186,7 @@ const revertApproval = (channel: Channel, approvalId: string): Channel =>
       approvals: (approvals) =>
         approvals.map((approval) =>
           approval.approvalId === approvalId
-            ? modifyFields(approval, { status: () => "pending", decidedAt: () => undefined })
+            ? { ...approval, status: "pending", decidedAt: undefined }
             : approval,
         ),
     }),

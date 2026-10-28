@@ -17,10 +17,12 @@ the root package is the workspace orchestrator; every other package is a member.
   - `bots.json` — the seed roster (model, thinking level, system prompt, delegates).
   - `src/` — the front-door Worker, the `Bot` Durable Object, the Executor bridge, and the seams
     (delegation, audit).
-  - `tests/` — smoke tests plus a runner.
-- `apps/web/` — `@mackbot/web`, the Foldkit browser app.
+  - `tests/` — the HTTP integration suite, plus unit tests for the Worker's
+    request, session, operation and registry seams.
+- `apps/web/` — `@mackbot/web`, the Foldkit browser app, with its Story and
+  Scene tests in `tests/`.
 - `packages/contract/` — `@mackbot/contract`, the wire vocabulary the Worker and
-  the web app share.
+  the web app share, with its unit tests in `tests/`.
 - `tools/oxlint/` — the vendored `@ism0080/oxlint-plugin-forge` lint plugin.
 
 ## Development
@@ -51,8 +53,28 @@ motion and `overflow: clip` — with the rules core stylelint cannot express
 (anything that depends on the surrounding `@media`) in
 [`apps/web/stylelint/`](./apps/web/stylelint/).
 
-The `executor-mcp` smoke test skips cleanly when `EXECUTOR_URL` / `EXECUTOR_TOKEN`
-are not set; see [`.env.example`](./.env.example) for the required secrets.
+Tests are split by boundary:
+
+- **`packages/contract/tests/`** — Vitest unit tests of the wire vocabulary:
+  schemas reject the shapes a route must not accept, paging walks a transcript
+  without repeating or skipping an id, and the projections map pi's records to
+  the views the browser renders.
+- **`apps/web/tests/`** — Foldkit [Story and Scene](https://foldkit.dev/testing)
+  tests. Story drives `update` directly and asserts the Model and the Commands
+  it returns; Scene drives the rendered view through real interactions and
+  assertions. Neither runs a browser or executes a Command's Effect.
+- **`apps/api/tests/`** — Vitest unit tests for the pure seams, and an
+  [Alchemy](https://alchemy.run/testing) integration suite that deploys the
+  real Stack once in local-dev mode (`Test.make({ dev: true })`), drives the
+  live Worker URL over HTTP, and tears it down. It needs no Cloudflare
+  credentials; the repo-root `.env` supplies the Worker's secrets, which
+  `tests/setup.ts` loads into `process.env`.
+
+```sh
+bun run test              # every workspace member's suite
+bun run --filter '@mackbot/api' test   # the integration suite on its own
+NO_DESTROY=1 bun run --filter '@mackbot/api' test  # keep the local stack warm
+```
 
 ## HTTP surface
 

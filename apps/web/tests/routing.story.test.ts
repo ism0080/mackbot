@@ -1,0 +1,285 @@
+import { AsyncData } from "foldkit";
+import { Command, given, message, model, story } from "foldkit/story";
+import { describe, expect, test } from "vitest";
+
+import { Catalog, Roster, Transcript } from "../src/api.ts";
+import { Message } from "../src/message.ts";
+import { Screen } from "../src/model.ts";
+import { Navigate, pathOf, screenOfPath } from "../src/route.ts";
+import { update } from "../src/update.ts";
+import { CATALOG, modelWith, rosterOf, transcriptOf } from "./support/fixtures.ts";
+import { botChannel, transcriptIn } from "./support/story.ts";
+
+const at = 1_792_145_100_000;
+
+describe("screenOfPath and pathOf", () => {
+  test("pathOf names each screen's route", () => {
+    expect(pathOf(Screen.Home())).toBe("/");
+    expect(pathOf(Screen.NewChat())).toBe("/new");
+    expect(pathOf(Screen.Bots())).toBe("/bots");
+    expect(pathOf(Screen.Transcript({ bot: "hermes" }))).toBe("/chat/hermes");
+  });
+
+  test("screenOfPath reads each route", () => {
+    expect(screenOfPath("/")).toEqual(Screen.Home());
+    expect(screenOfPath("/new")).toEqual(Screen.NewChat());
+    expect(screenOfPath("/bots")).toEqual(Screen.Bots());
+    expect(screenOfPath("/chat/hermes")).toEqual(Screen.Transcript({ bot: "hermes" }));
+  });
+
+  test("a trailing slash still names the transcript", () => {
+    expect(screenOfPath("/chat/hermes/")).toEqual(Screen.Transcript({ bot: "hermes" }));
+  });
+
+  test("an encoded bot id round-trips through the URL", () => {
+    const bot = "a b/c";
+    const path = pathOf(Screen.Transcript({ bot }));
+
+    expect(path).toBe("/chat/a%20b%2Fc");
+    expect(screenOfPath(path)).toEqual(Screen.Transcript({ bot }));
+  });
+
+  test("an unknown path is the home, not a crash", () => {
+    expect(screenOfPath("/nothing/here")).toEqual(Screen.Home());
+    expect(screenOfPath("/chat/")).toEqual(Screen.Home());
+  });
+});
+
+describe("UrlChanged", () => {
+  test("a transcript that has not been loaded asks for it", () => {
+    story(
+      update,
+      given(modelWith()),
+      message(Message.UrlChanged({ pathname: "/chat/scribe" })),
+      Command.expectExact(Transcript({ bot: "scribe" })),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Transcript({ bot: "scribe" }));
+      }),
+      Command.resolve(
+        Transcript({ bot: "scribe" }),
+        Message.TranscriptLoaded({ bot: "scribe", page: transcriptOf({ session: "scribe" }) }),
+      ),
+    );
+  });
+
+  test("a transcript already in hand is not fetched again", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(transcriptOf()),
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      message(Message.UrlChanged({ pathname: "/chat/hermes" })),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Transcript({ bot: "hermes" }));
+      }),
+    );
+  });
+
+  test("a non-transcript route changes the screen without fetching", () => {
+    story(
+      update,
+      given(modelWith()),
+      message(Message.UrlChanged({ pathname: "/bots" })),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Bots());
+      }),
+    );
+  });
+});
+
+describe("opening a transcript", () => {
+  test("ClickedOpenTranscript navigates and fetches only when the page is missing", () => {
+    story(
+      update,
+      given(modelWith()),
+      message(Message.ClickedOpenTranscript({ bot: "hermes" })),
+      Command.expectExact(Navigate({ path: "/chat/hermes" }), Transcript({ bot: "hermes" })),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Transcript({ bot: "hermes" }));
+      }),
+      Command.resolve(Navigate({ path: "/chat/hermes" }), Message.Navigated()),
+      Command.resolve(
+        Transcript({ bot: "hermes" }),
+        Message.TranscriptLoaded({ bot: "hermes", page: transcriptOf() }),
+      ),
+    );
+  });
+
+  test("ClickedOpenTranscript already holding the page only navigates", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(transcriptOf()),
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      message(Message.ClickedOpenTranscript({ bot: "hermes" })),
+      Command.expectExact(Navigate({ path: "/chat/hermes" })),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Transcript({ bot: "hermes" }));
+      }),
+      Command.resolve(Navigate({ path: "/chat/hermes" }), Message.Navigated()),
+    );
+  });
+
+  test("ClickedLoadEarlier asks for the page the cursor names", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(transcriptOf({ nextBefore: 5 })),
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      message(Message.ClickedLoadEarlier({ bot: "hermes" })),
+      Command.expectExact(Transcript({ bot: "hermes", before: 5 })),
+      Command.resolve(
+        Transcript({ bot: "hermes", before: 5 }),
+        Message.TranscriptLoaded({
+          bot: "hermes",
+          before: 5,
+          page: transcriptOf({
+            entries: [{ id: 4, kind: "message", role: "user", text: "older" }],
+          }),
+        }),
+      ),
+      model((m) => {
+        expect(transcriptIn(m, "hermes").entries.map((entry) => entry.id)).toContain(4);
+      }),
+    );
+  });
+
+  test("ClickedLoadEarlier with no older page does nothing", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(transcriptOf()),
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      message(Message.ClickedLoadEarlier({ bot: "hermes" })),
+      Command.expectNone(),
+    );
+  });
+
+  test("ClickedLoadEarlier for a bot with no channel does nothing", () => {
+    story(
+      update,
+      given(modelWith()),
+      message(Message.ClickedLoadEarlier({ bot: "hermes" })),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.channels.hermes).toBeUndefined();
+      }),
+    );
+  });
+});
+
+describe("in-app navigation", () => {
+  test("ClickedBack returns home", () => {
+    story(
+      update,
+      given({ ...modelWith(), screen: Screen.Transcript({ bot: "hermes" }) }),
+      message(Message.ClickedBack()),
+      Command.expectExact(Navigate({ path: "/" })),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Home());
+      }),
+      Command.resolve(Navigate({ path: "/" }), Message.Navigated()),
+    );
+  });
+
+  test("ClickedNewChat opens the bot picker", () => {
+    story(
+      update,
+      given({ ...modelWith(), screen: Screen.Home() }),
+      message(Message.ClickedNewChat()),
+      Command.expectExact(Navigate({ path: "/new" })),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.NewChat());
+      }),
+      Command.resolve(Navigate({ path: "/new" }), Message.Navigated()),
+    );
+  });
+
+  test("ClickedOpenBots asks for the roster and the catalog every time", () => {
+    story(
+      update,
+      given(modelWith()),
+      message(Message.ClickedOpenBots()),
+      Command.expectExact(Navigate({ path: "/bots" }), Roster, Catalog),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Bots());
+      }),
+      Command.resolve(Navigate({ path: "/bots" }), Message.Navigated()),
+      Command.resolve(Roster, Message.RosterLoaded({ roster: rosterOf() })),
+      Command.resolve(Catalog, Message.CatalogLoaded({ catalog: CATALOG })),
+    );
+  });
+
+  test("UrlRequested moves the screen and pushes the path it was given", () => {
+    story(
+      update,
+      given(modelWith()),
+      message(Message.UrlRequested({ pathname: "/chat/scribe" })),
+      Command.expectExact(Navigate({ path: "/chat/scribe" })),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Transcript({ bot: "scribe" }));
+      }),
+      Command.resolve(Navigate({ path: "/chat/scribe" }), Message.Navigated()),
+    );
+  });
+
+  test("ExternalUrlRequested changes nothing and emits nothing", () => {
+    const seeded = modelWith({ toast: { text: "still here" } });
+
+    story(
+      update,
+      given(seeded),
+      message(Message.ExternalUrlRequested({ href: "https://example.com" })),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.screen).toEqual(seeded.screen);
+        expect(m.toast).toEqual(seeded.toast);
+      }),
+    );
+  });
+
+  test("Navigated acknowledges the push without changing the model", () => {
+    const seeded = modelWith({ screen: Screen.Bots(), now: at });
+
+    story(
+      update,
+      given(seeded),
+      message(Message.Navigated()),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.screen).toEqual(Screen.Bots());
+        expect(m.now).toBe(at);
+      }),
+    );
+  });
+});

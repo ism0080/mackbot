@@ -15,6 +15,7 @@
 
 import type { EntryRecord, JsonObject } from "@earendil-works/pi-durable";
 import type { ImagesInputContent, Message } from "@earendil-works/pi-ai";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -571,10 +572,18 @@ export type Frame =
 // Request shapes — decoded at the front door
 // ---------------------------------------------------------------------------
 
-const nonNegativeInt = Schema.NumberFromString.check(
-  Schema.isInt(),
-  Schema.isGreaterThanOrEqualTo(0),
-);
+const nonNegativeInt = Schema.String.check(
+  // `Number("")` is `0`, so an empty query cursor must be rejected before the
+  // decode, or `?from=` would silently mean "replay from the start".
+  Schema.makeFilter((input: string) => /^\d+$/u.test(input)),
+)
+  .pipe(
+    Schema.decodeTo(Schema.Number, {
+      decode: SchemaGetter.transform((input: string) => Number(input)),
+      encode: SchemaGetter.transform((value: number) => String(value)),
+    }),
+  )
+  .check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0), Schema.isFinite());
 
 /**
  * The page size the transcript route asks for when the client names none.

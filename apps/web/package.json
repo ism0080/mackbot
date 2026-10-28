@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "bun run build && bun tests/run.mjs",
+    "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --config .oxlintrc.json",
     "lint:css": "stylelint \"src/**/*.css\"",
@@ -24,6 +24,7 @@
     "@foldkit/vite-plugin": "0.27.1",
     "happy-dom": "21.0.3",
     "stylelint": "^17.16.0",
-    "vite": "8.0.0"
+    "vite": "8.0.0",
+    "vitest": "^5.0.0"
   }
 }

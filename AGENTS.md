@@ -62,3 +62,7 @@ which fails on paths past Windows' 260-character limit — and
 to reach it. If `bun install` fails with `failed to link package:
 @alchemy.run/cloudflare-runtime`, point the cache at the checkout's own volume:
 `bun install --cache-dir=D:\bun-cache`.
+
+## Tests
+
+Tautological tests considered harmful.

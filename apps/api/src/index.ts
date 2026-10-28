@@ -1137,6 +1137,22 @@ const handleStatus = async (env: Env): Promise<Response> => {
   return Response.json({ bots: statuses, errors });
 };
 
+/**
+ * One bot's Server-Sent Events stream.
+ *
+ * The registry is checked first so an undeclared id answers the same `404` the
+ * other bot-scoped routes do. Forwarding straight to the Durable Object let the
+ * harness's "no bot in the registry" rejection reach the top-level catch-all,
+ * which reported it as a `500` and leaked nothing useful to the client.
+ */
+const handleEvents = async (request: Request, env: Env, botId: string): Promise<Response> => {
+  const bots = await Effect.runPromise(rosterEffect(env));
+  if (!Object.hasOwn(bots, botId)) {
+    return Response.json({ error: `unknown bot "${botId}"` }, { status: 404 });
+  }
+  return await env.Bot.getByName(botId).fetch(request);
+};
+
 const handleTranscript = async (url: URL, env: Env, botId: string): Promise<Response> => {
   const bots = await Effect.runPromise(rosterEffect(env));
   if (!Object.hasOwn(bots, botId)) {
@@ -1465,7 +1481,7 @@ export default {
         // The stream's resume cursor lives in `Last-Event-ID` / `?from=`, so the
         // request reaches `sseResponse` intact through the DO's own `fetch`.
         return request.method === "GET"
-          ? await env.Bot.getByName(events[1]!).fetch(request)
+          ? await handleEvents(request, env, events[1]!)
           : methodNotAllowed();
       }
       // Everything that is not this Worker's own route is the built app. The
