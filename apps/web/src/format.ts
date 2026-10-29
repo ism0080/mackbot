@@ -33,3 +33,34 @@ export const wordsOf = (entry: EntryView): string | undefined => {
   if (entry.role === "tool") return undefined;
   return entry.text.trim().length === 0 ? undefined : entry.text;
 };
+
+/**
+ * The first thing an entry says, as plain words, for a one-line preview.
+ *
+ * A bot writes markdown, and a list row is not the place to render it: the
+ * escapes would show as `**` and `-` in the middle of the row. This strips the
+ * syntax a preview can meet — headings, emphasis, list markers, links — and
+ * keeps the words, not the markup. It is a preview, not a parser: anything it
+ * does not know how to strip survives as the text it was, which is what a
+ * reader would have seen in the raw entry anyway.
+ */
+export const plainOf = (text: string): string => {
+  const line = text
+    .split("\n")
+    .map((candidate) => candidate.trim())
+    .find((candidate) => candidate.length > 0);
+  if (line === undefined) return "";
+
+  return (
+    line
+      .replace(/^#{1,6}\s+/u, "")
+      .replace(/^[-*+]\s+/u, "")
+      .replace(/^\d+[.)]\s+/u, "")
+      .replace(/!?\[([^\]]*)\]\([^)]*\)/gu, "$1")
+      .replace(/(\*\*|__|\*|_|`)/gu, "")
+      .trim()
+      // A preview is one line, so a very long first line is the row's problem
+      // to elide rather than the layout's to break.
+      .slice(0, 240)
+  );
+};

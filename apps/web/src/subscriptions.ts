@@ -3,6 +3,7 @@ import type { BotView, Frame } from "@mackbot/contract";
 import { Duration, Effect, Equivalence, Option, Queue, Schema, Stream } from "effect";
 import { Subscription } from "foldkit";
 import { AsyncData } from "foldkit";
+import { streamFromEvent } from "foldkit/dom";
 
 import { apiUrl } from "./api.ts";
 import { Message } from "./message.ts";
@@ -189,6 +190,18 @@ const mergeSources = (sources: readonly Source[]): Stream.Stream<Message> =>
 
 type EventDependencies = { readonly sources: readonly Source[] };
 
+/**
+ * How close to the tail still counts as "at the tail". A row's height, so a
+ * paragraph that lands while the person is reading the last entry does not
+ * offer to take them to where they already are.
+ */
+const TAIL_SLACK_PX = 32;
+
+/** The scroller the transcript renders, named so the listener can find it. */
+const SCROLLER_ID = "transcript-scroll";
+
+const scrollerOf = (): HTMLElement => document.getElementById(SCROLLER_ID) ?? document.body;
+
 export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
   statusPoll: entry(
     { everyMs: Schema.Number },
@@ -232,6 +245,30 @@ export const subscriptions = Subscription.make<Model, Message>()((entry) => ({
               Stream.drop(1),
               Stream.map(() => Message.PolledTranscript({ bot })),
             )
+          : Stream.empty,
+    },
+  ),
+  transcriptScroll: entry(
+    { active: Schema.Boolean },
+    {
+      modelToDependencies: (model: Model) => ({ active: model.screen._tag === "Transcript" }),
+      // The scroller is read inside the acquire Effect, so the listener attaches
+      // to the element this screen rendered rather than to whatever held the id
+      // when the app started.
+      dependenciesToStream: ({ active }) =>
+        active
+          ? streamFromEvent({
+              target: scrollerOf,
+              type: "scroll",
+              // The measurement is taken from the element itself rather than
+              // from the event's target, which is a bare `EventTarget` and
+              // would need a cast to be read.
+              mapEvent: () => {
+                const element = scrollerOf();
+                const remaining = element.scrollHeight - element.scrollTop - element.clientHeight;
+                return Message.ScrolledTranscript({ atBottom: remaining <= TAIL_SLACK_PX });
+              },
+            })
           : Stream.empty,
     },
   ),

@@ -1,22 +1,25 @@
-import type { ActiveRunView, ApprovalView } from "@mackbot/contract";
+import type { ActiveRunView, ApprovalView, LiveToolView } from "@mackbot/contract";
 import { Dialog } from "@foldkit/ui";
 import type { ChildAttribute, Html, HtmlBuilder } from "foldkit/html";
 
-import { elapsedOf } from "./format.ts";
+import { elapsedOf, plainOf } from "./format.ts";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, runTitle, toast } from "./partials.ts";
+import type { FleetEntry } from "./select.ts";
 import {
   entryStampOf,
   selectChats,
+  selectFleet,
   selectHome,
   selectReview,
   selectStatusPanel,
 } from "./select.ts";
 import type { Chat } from "./select.ts";
 import { failurePanel, parkedPanel, taskPanel } from "./status-panel.ts";
+import { stepsOf, stepsRail, stepNow } from "./steps.ts";
 import { isParked } from "./task-retry.ts";
-import { button, runningBar } from "./ui.ts";
+import { button } from "./ui.ts";
 
 /**
  * The way into the draft. An approval that authorizes a real effect has to show
@@ -37,6 +40,7 @@ const draftOf = (bot: string, approval: ApprovalView, h: HtmlBuilder<Message>): 
       [
         h.span([h.Class("ap-draft-label")], [artifact.label]),
         h.span([h.Class("ap-draft-peek")], [artifact.body]),
+        h.span([h.Class("ap-draft-more")], ["Read the full draft ›"]),
       ],
       h,
     ),
@@ -135,6 +139,11 @@ const reviewDialog = (model: Model, h: HtmlBuilder<Message>): Html => {
   });
 };
 
+/**
+ * One approval, as the thing the screen is for. The draft is the decision's
+ * context, so it is one tappable block under the question rather than a link
+ * beside it, and the two decisions sit under the draft where they are read.
+ */
 const approvalCard = (
   bot: string,
   approval: ApprovalView,
@@ -154,14 +163,6 @@ const approvalCard = (
         [
           h.span([h.Class("tag warn")], ["approval"]),
           h.span([h.Class("ap-tool")], [approval.toolPath]),
-          button(
-            {
-              className: "ap-review",
-              onClick: Message.ClickedOpenTranscript({ bot }),
-            },
-            ["Review ›"],
-            h,
-          ),
         ],
       ),
       h.p([h.Class("ap-q")], [approval.summary]),
@@ -199,34 +200,51 @@ const approvalCard = (
     ],
   );
 
-const runningRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder<Message>): Html =>
-  h.keyed("div")(
+/**
+ * A running bot: what the run is for, which step it is on, and the steps it has
+ * already taken. The bar names the step rather than drawing a fraction of one,
+ * because the harness knows which tool is running and not how many are left.
+ */
+const runningRow = (
+  bot: string,
+  run: ActiveRunView,
+  steps: readonly LiveToolView[],
+  now: number,
+  h: HtmlBuilder<Message>,
+): Html => {
+  const current = stepNow(steps) ?? runTitle(run);
+
+  return h.keyed("div")(
     bot,
-    [h.Class("runit"), h.DataAttribute("bot", bot)],
+    [h.Class("runit run"), h.DataAttribute("bot", bot)],
     [
-      avatar(bot, h),
       h.div(
-        [h.Class("runit-main")],
+        [h.Class("runhead")],
         [
+          avatar(bot, h),
           h.span([h.Class("rt")], [runTitle(run)]),
-          h.span(
-            [h.Class("rmeta")],
-            [`running ${elapsedOf(run.startedAt, now)} · ${run.stream.state}`],
+          button(
+            {
+              className: "btn ghost",
+              data: [["stop", bot]],
+              onClick: Message.ClickedStop({ bot, session: run.session }),
+            },
+            ["Stop"],
+            h,
           ),
-          runningBar({ id: `run-${bot}`, valueText: `${runTitle(run)} is still running` }, h),
         ],
       ),
-      button(
-        {
-          className: "btn ghost",
-          data: [["stop", bot]],
-          onClick: Message.ClickedStop({ bot, session: run.session }),
-        },
-        ["Stop"],
-        h,
+      h.div(
+        [h.Class("think")],
+        [
+          h.span([h.Class("sk")], [current]),
+          h.span([h.Class("t rmeta")], [`running ${elapsedOf(run.startedAt, now)}`]),
+        ],
       ),
+      ...(steps.length === 0 ? [] : [stepsRail(steps, h)]),
     ],
   );
+};
 
 const recentRow = (bot: string, text: string, stamp: string, h: HtmlBuilder<Message>): Html =>
   h.keyed("button")(
@@ -280,10 +298,48 @@ const chatRow = (chat: Chat, h: HtmlBuilder<Message>): Html =>
     ],
   );
 
+/**
+ * The fleet, as one always-present line. Every bot is here whatever it is
+ * doing, and the dot is the state: a warm one needs a human, an accent one is
+ * working, green is quiet. It is the strip that survives every empty section
+ * below it, so the home never claims the fleet is gone.
+ */
+const fleetStrip = (fleet: readonly FleetEntry[], h: HtmlBuilder<Message>): Html => {
+  const blocked = fleet.filter((entry) => entry.state === "blocked").length;
+
+  return h.div(
+    [h.Class("fleetbar")],
+    [
+      ...fleet.map(({ bot, state, label }) =>
+        h.keyed("button")(
+          bot,
+          [
+            h.Class("chip"),
+            h.DataAttribute("fleet", bot),
+            h.AriaLabel(`${botName(bot)}, ${label}`),
+            h.OnClick(Message.ClickedOpenTranscript({ bot })),
+          ],
+          [avatar(bot, h), h.i([h.Class(`dot ${state}`), h.AriaHidden(true)])],
+        ),
+      ),
+      h.span([h.Class("grow")]),
+      h.span(
+        [h.Class("qcount")],
+        [
+          blocked === 0
+            ? `${fleet.length} ${fleet.length === 1 ? "bot" : "bots"}`
+            : `${blocked} waiting on you`,
+        ],
+      ),
+    ],
+  );
+};
+
 export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
   const triage = selectHome(model);
   const panel = selectStatusPanel(model);
   const chats = selectChats(model);
+  const fleet = selectFleet(model);
 
   // A parked task has its own section, so the live work lists only the tasks
   // the harness will pick up on its own.
@@ -299,6 +355,11 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
     const rows = parkedPanel(bot, tasks, h);
     return rows.length === 0 ? [] : [{ bot, rows }];
   });
+
+  // Everything below the separator is the archive: threads that are not asking
+  // for anything and the last answer from each bot. Work that is running or
+  // parked sits above it, because a parked task is waiting on a human.
+  const quiet = chats.length + triage.recent.length > 0;
 
   return h.div(
     [h.Class("screen")],
@@ -333,38 +394,41 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
           ),
         ],
       ),
+      ...(fleet.length === 0 ? [] : [fleetStrip(fleet, h)]),
       h.main(
         [h.Class("scroll")],
         [
           h.section(
             [h.Class("grp"), h.DataAttribute("group", "error"), h.Hidden(triage.notice === null)],
-            [h.div([h.Class("empty")], [h.p([], [triage.notice ?? ""])])],
+            [
+              h.div(
+                [h.Class("banner")],
+                [
+                  h.span([h.Class("state bad"), h.AriaHidden(true)], ["!"]),
+                  h.p([], [triage.notice ?? ""]),
+                ],
+              ),
+            ],
           ),
           h.section(
             [
               h.Class("grp"),
               h.DataAttribute("group", "failures"),
+              h.AriaLabel("Faults"),
               h.Hidden(panel.failures.length === 0),
             ],
-            [
-              h.h2([], ["Needs attention"]),
-              ...panel.failures.flatMap(({ bot, failures }) =>
-                failurePanel(bot, failures, model.now, h),
-              ),
-            ],
+            panel.failures.flatMap(({ bot, failures }) =>
+              failurePanel(bot, failures, model.now, h),
+            ),
           ),
           h.section(
             [
               h.Class("grp"),
               h.DataAttribute("group", "blocked"),
+              h.AriaLabel("Blocked on you"),
               h.Hidden(triage.blocked.length === 0),
             ],
-            [
-              h.h2([], ["Blocked on you"]),
-              ...triage.blocked.map(({ bot, approval }) =>
-                approvalCard(bot, approval, model.now, h),
-              ),
-            ],
+            triage.blocked.map(({ bot, approval }) => approvalCard(bot, approval, model.now, h)),
           ),
           h.section(
             [h.Class("grp"), h.DataAttribute("group", "empty"), h.Hidden(!triage.allClear)],
@@ -383,24 +447,25 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
             [
               h.Class("grp"),
               h.DataAttribute("group", "running"),
+              h.AriaLabel("Running"),
               h.Hidden(triage.running.length === 0),
             ],
-            [
-              h.h2([], ["Running now"]),
-              ...triage.running.map(({ bot, run }) => runningRow(bot, run, model.now, h)),
-            ],
-          ),
-          h.section(
-            [h.Class("grp"), h.DataAttribute("group", "chats"), h.Hidden(chats.length === 0)],
-            [h.h2([], ["Chats"]), ...chats.map((chat) => chatRow(chat, h))],
+            triage.running.map(({ bot, run }) =>
+              runningRow(bot, run, stepsOf(model.channels[bot]), model.now, h),
+            ),
           ),
           h.section(
             [h.Class("grp"), h.DataAttribute("group", "tasks"), h.Hidden(live.length === 0)],
-            [h.h2([], ["Live work"]), ...live.flatMap(({ rows }) => rows)],
+            live.flatMap(({ rows }) => rows),
           ),
           h.section(
             [h.Class("grp"), h.DataAttribute("group", "parked"), h.Hidden(parked.length === 0)],
-            [h.h2([], ["Parked"]), ...parked.flatMap(({ rows }) => rows)],
+            parked.flatMap(({ rows }) => rows),
+          ),
+          h.div([h.Class("sep"), h.DataAttribute("group", "quiet"), h.Hidden(!quiet)], ["quiet"]),
+          h.section(
+            [h.Class("grp"), h.DataAttribute("group", "chats"), h.Hidden(chats.length === 0)],
+            chats.map((chat) => chatRow(chat, h)),
           ),
           h.section(
             [
@@ -408,12 +473,9 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
               h.DataAttribute("group", "recent"),
               h.Hidden(triage.recent.length === 0),
             ],
-            [
-              h.h2([], ["Since you last looked"]),
-              ...triage.recent.map(({ bot, entry }) =>
-                recentRow(bot, entry.text, entryStampOf(entry), h),
-              ),
-            ],
+            triage.recent.map(({ bot, entry }) =>
+              recentRow(bot, plainOf(entry.text), entryStampOf(entry), h),
+            ),
           ),
           h.div([h.Class("pad")]),
         ],

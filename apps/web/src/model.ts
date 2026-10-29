@@ -144,6 +144,13 @@ export const Model = Schema.Struct({
    * without becoming impossible to close.
    */
   expanded: Schema.Record(Schema.String, Schema.Boolean),
+  /**
+   * Whether the open transcript is scrolled to its newest entry. A chat that
+   * has moved on while the person reads history needs one way back, and
+   * whether it has moved is DOM state: the scroll listener reports it, the
+   * Model holds it, and the view only decides whether to offer the button.
+   */
+  atBottom: Schema.Boolean,
   channels: Schema.Record(Schema.String, Channel),
   /**
    * The roster being edited: the server's bots with the edits on top.

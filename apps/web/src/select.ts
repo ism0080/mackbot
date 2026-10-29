@@ -9,7 +9,7 @@ import type {
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 
-import { clockOf, elapsedOf, wordsOf } from "./format.ts";
+import { clockOf, elapsedOf, plainOf, wordsOf } from "./format.ts";
 import { botName } from "./partials.ts";
 import type { Channel, Model } from "./model.ts";
 
@@ -101,7 +101,8 @@ const latestOf = (bot: string, channel: Channel): readonly Recent[] =>
  *  read are passed over, so a preview is never blank. */
 const previewOf = (entries: readonly EntryView[]): string | undefined => {
   const said = entries.flatMap((entry) => wordsOf(entry) ?? []);
-  return said[said.length - 1];
+  const last = said[said.length - 1];
+  return last === undefined ? undefined : plainOf(last);
 };
 
 const subOf = (bots: number, blocked: number, running: number): string =>
@@ -231,6 +232,53 @@ export const selectStatusPanel = (model: Model): StatusPanel => {
     ),
   };
 };
+
+/** How a bot stands in the fleet strip: the one thing worth colouring. */
+export type FleetState = "blocked" | "working" | "idle";
+
+const RANK: Record<FleetState, number> = { blocked: 0, working: 1, idle: 2 };
+
+export interface FleetEntry {
+  readonly bot: string;
+  readonly state: FleetState;
+  /** The words the chip's accessible name uses, so the colour is never the
+   *  only thing carrying the state. */
+  readonly label: string;
+}
+
+/**
+ * The fleet at a glance, ordered the way attention arrives: a bot blocked on a
+ * human, then one that is working, then the ones that are quiet. The strip is
+ * the home's only always-present summary, so it says the whole fleet even when
+ * every section below it is empty.
+ */
+export const selectFleet = (model: Model): readonly FleetEntry[] =>
+  Object.entries(model.channels)
+    .map(([bot, channel]): FleetEntry => {
+      const status = statusOf(channel);
+      const blocked = Option.match(status, {
+        onNone: () => 0,
+        onSome: (view) => view.approvals.filter((approval) => approval.status === "pending").length,
+      });
+      const working = Option.match(status, {
+        onNone: () => false,
+        onSome: (view) => view.activeRun !== undefined,
+      });
+
+      if (blocked > 0)
+        return {
+          bot,
+          state: "blocked",
+          label: blocked === 1 ? "needs you" : `needs you, ${blocked} waiting`,
+        };
+      if (working) return { bot, state: "working", label: "working" };
+      return { bot, state: "idle", label: "idle" };
+    })
+    .sort(
+      (left, right) =>
+        RANK[left.state] - RANK[right.state] ||
+        (left.bot < right.bot ? -1 : left.bot > right.bot ? 1 : 0),
+    );
 
 /** The title line, from the same fold as the screen. */
 export const homeTitle = (model: Model): string => {

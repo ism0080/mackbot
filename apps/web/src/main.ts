@@ -15,6 +15,9 @@ export const init = (url?: Url) => ({
     dialog: Dialog.init({ id: "approval-draft" }),
     reviewing: null,
     expanded: {},
+    // A transcript opens at its newest entry, so the button that returns there
+    // starts hidden.
+    atBottom: true,
     channels: {},
     polling: true,
     registry: AsyncData.Idle(),

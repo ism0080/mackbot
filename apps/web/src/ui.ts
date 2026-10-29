@@ -14,7 +14,6 @@
  */
 import * as Button from "@foldkit/ui/button";
 import * as Input from "@foldkit/ui/input";
-import * as Progress from "@foldkit/ui/progress";
 import * as Select from "@foldkit/ui/select";
 import * as Textarea from "@foldkit/ui/textarea";
 import type { Attribute, Html, HtmlBuilder } from "foldkit/html";
@@ -210,26 +209,6 @@ export const selectField = (
           },
           h,
         ),
-    },
-    h,
-  );
-
-/**
- * A bar that is moving but has no fraction to show. A bot on step 4 of 7 is
- * not 52% done, so the bar claims "still moving" — `role="progressbar"` and an
- * indeterminate `aria-valuetext` say exactly that, where a width would be a
- * lie. The track and the indicator keep the classes the sweep is drawn on.
- */
-export const runningBar = (
-  config: { readonly id: string; readonly valueText: string },
-  h: HtmlBuilder<Message>,
-): Html =>
-  Progress.view(
-    {
-      id: config.id,
-      valueText: config.valueText,
-      toView: ({ progress: attributes, track, indicator }) =>
-        h.span([...attributes, ...track, h.Class("bar indeterminate")], [h.i([...indicator])]),
     },
     h,
   );

@@ -250,7 +250,7 @@ button {
 /* The tap highlight is off in the reset, so every pressable element has to give
    its own press feedback. */
 .btn:active,
-.ap-review:active,
+.chip:active,
 .doneitem:active,
 .chatitem:active,
 .icon:active {
@@ -259,7 +259,7 @@ button {
 
 @media (prefers-reduced-motion: no-preference) {
   .btn,
-  .ap-review,
+  .chip,
   .doneitem,
   .chatitem,
   .icon {
@@ -452,6 +452,35 @@ button {
   font-weight: 600;
 }
 
+/* Retry is the row's one action, so it keeps its own width rather than
+   splitting the row with the task's name. */
+.sp-parked .btn.ghost {
+  flex: none;
+}
+
+/* ---------- the quiet half ---------- */
+
+/* One divider instead of a heading over every section: everything below it is
+   work that is not asking for anything, and the word is enough to say so. */
+.sep {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-block-start: 4px;
+  font-size: var(--step--4);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.sep::after {
+  content: "";
+  flex: 1;
+  block-size: 1px;
+  background: var(--line);
+}
+
 .runit,
 .doneitem,
 .chatitem {
@@ -483,54 +512,215 @@ button {
   font-variant-numeric: tabular-nums;
 }
 
-.bar {
-  display: block;
-  block-size: 3px;
-  border-radius: 2px;
-  background: var(--track);
-  overflow: clip;
+/* ---------- fleet strip ---------- */
+
+/* Every bot, always, on one line: the dot is the state and the chip is the way
+   into that thread. It is a row of buttons rather than decoration, so the
+   colour is never the only thing carrying the meaning — each one is named for
+   a screen reader. */
+.fleetbar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-block: 8px;
+  padding-inline: var(--gutter);
+  border-block-end: 1px solid var(--line);
+  background: var(--bg-deep);
 }
 
-.bar i {
-  display: block;
-  block-size: 100%;
-  background: var(--accent);
+.chip {
   position: relative;
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: transparent;
 }
 
-/* Without a real fraction, a bar with a width is a lie. A bot on step 4 of 7 is
-   not 52% done, so the bar only claims "still moving". */
-.bar.indeterminate i {
-  inline-size: 100%;
+.dot {
+  position: absolute;
+  inset-block-end: -2px;
+  inset-inline-end: -2px;
+  inline-size: 9px;
+  block-size: 9px;
+  border-radius: 50%;
+  border: 2px solid var(--bg-deep);
 }
 
-/* The sweep is decoration, so it runs only when motion is welcome. */
+.dot.blocked {
+  background: var(--warn);
+}
+
+.dot.working {
+  background: var(--accent);
+}
+
+.dot.idle {
+  background: var(--ok);
+}
+
+.grow {
+  flex: 1;
+}
+
+.qcount {
+  font-size: var(--step--3);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- state glyph ---------- */
+
+/* One mark that says worked or failed without a word beside it, so a tool row
+   and a fault row read the same way at a glance. */
+.state {
+  flex: none;
+  inline-size: 18px;
+  block-size: 18px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: var(--step--4);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.state.bad {
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+
+.state.good {
+  border: 1px solid color-mix(in oklch, var(--ok) 35%, var(--bg));
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+
+/* ---------- the step a bot is on ---------- */
+
+.think {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 5px;
+  padding-inline: 8px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background:
+    linear-gradient(
+        90deg,
+        transparent,
+        color-mix(in oklch, var(--accent) 22%, transparent),
+        transparent
+      )
+      no-repeat,
+    var(--surface2);
+  background-size: 220% 100%;
+}
+
+/* The shimmer is the difference between "this is a label" and "this is
+   happening now", and it moves behind the words rather than inside them: text
+   painted with a clipped gradient disappears the moment an animation is
+   switched off, and "the step has no name" is a worse failure than "the step
+   does not shimmer". */
+.think .sk {
+  flex: 1;
+  overflow: clip;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--step--2);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.think .t {
+  flex: none;
+  font-size: var(--step--3);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
 @media (prefers-reduced-motion: no-preference) {
-  .bar i::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(90deg, transparent, var(--sweep), transparent);
-    animation: sweep 1.6s linear infinite;
+  .think {
+    animation: shimmer 2.6s linear infinite;
   }
 }
 
-/* With the sweep gone the fill sits at full width, which reads as "finished"
-   rather than "still going", and the row's own text already says which. So a
-   bar that cannot move is not shown at all, rather than lying in a still frame. */
-@media (prefers-reduced-motion: reduce) {
-  .bar {
-    display: none;
-  }
-}
-
-@keyframes sweep {
+@keyframes shimmer {
   from {
-    transform: translateX(-100%);
+    background-position: 180% 0, 0 0;
   }
   to {
-    transform: translateX(100%);
+    background-position: -180% 0, 0 0;
   }
+}
+
+/* ---------- the steps a bot has taken ---------- */
+
+/* The rail is the harness's own vocabulary, not prose: it is the trace, and a
+   trace that paraphrased itself would be worth less than the names. */
+.steps-list {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin: 0;
+  padding-block: 2px 4px;
+  padding-inline: 22px 10px;
+  list-style: none;
+}
+
+.steps-list::before {
+  content: "";
+  position: absolute;
+  inset-block: 6px 12px;
+  inset-inline-start: 15px;
+  inline-size: 1px;
+  background: var(--line);
+}
+
+.steps-list li {
+  position: relative;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--step--2);
+  color: var(--muted);
+}
+
+.steps-list li::before {
+  content: "";
+  position: absolute;
+  inset-block-start: 5px;
+  inset-inline-start: -11px;
+  inline-size: 7px;
+  block-size: 7px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--bg);
+}
+
+.steps-list li.done::before {
+  border-color: color-mix(in oklch, var(--ok) 45%, var(--bg));
+  background: var(--ok-soft);
+}
+
+.steps-list li.now {
+  color: var(--text);
+}
+
+.steps-list li.now::before {
+  border-color: var(--accent);
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.steps-list .nm {
+  overflow: clip;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .doneitem,
@@ -629,17 +819,6 @@ button {
   color: var(--warn-ink);
 }
 
-.ap-review {
-  margin-inline-start: auto;
-  font-size: var(--step--2);
-  font-weight: 600;
-  color: var(--warn-ink);
-  padding-block: 18px;
-  padding-inline: 8px;
-  border-radius: 8px;
-  text-box: trim-both cap alphabetic;
-}
-
 .ap-q {
   margin: 0;
   font-size: var(--step-0);
@@ -647,14 +826,17 @@ button {
 }
 
 /* An approval that authorizes a real effect has to show the effect. Without the
-   draft you are approving an email you have never read, so the line opens the
-   draft at full size rather than standing in for it. */
+   draft you are approving an email you have never read, so the block opens the
+   draft at full size rather than standing in for it — and the whole block is
+   the target, so a decision is never taken next to a link that means something
+   slightly different. */
 .ap-draft {
   display: flex;
   flex-direction: column;
   gap: 4px;
   inline-size: 100%;
   border: 1px solid var(--warn-line-soft);
+  border-radius: 10px;
   background: var(--warn-quiet);
   padding-block: 9px;
   padding-inline: 10px;
@@ -671,14 +853,21 @@ button {
 
 .ap-draft-peek {
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   /* The one place `hidden` stays: the reference warns that `clip` with a line
      clamp is untested in Firefox, and the clamp needs one of the two. */
   /* stylelint-disable-next-line declaration-property-value-disallowed-list -- `clip` plus a line clamp is untested in Firefox, so `hidden` is the correct half of that pair here. */
   overflow: hidden;
   font-size: var(--step--1);
+  line-height: 1.5;
   color: var(--warn-muted);
+}
+
+.ap-draft-more {
+  font-size: var(--step--3);
+  font-weight: 600;
+  color: var(--warn-ink);
 }
 
 /* ---------- the dialog that reads a draft ---------- */
@@ -973,9 +1162,6 @@ button {
    scrolls away with the transcript is useless on a long conversation. */
 .composer {
   flex: none;
-  display: flex;
-  align-items: flex-end;
-  gap: 8px;
   padding-block: 10px calc(10px + env(safe-area-inset-bottom, 0px));
   padding-inline: var(--gutter);
   border-block-start: 1px solid var(--line);
@@ -983,24 +1169,147 @@ button {
   backdrop-filter: blur(14px);
 }
 
+/* One shell around the field and its controls, so the whole block reads as the
+   thing you type in rather than a box beside a button. */
+.pinput {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  background: var(--surface);
+}
+
+.pinput:focus-within {
+  border-color: var(--accent-line);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
 .composer .input {
-  flex: 1;
-  min-block-size: 44px;
+  min-block-size: 24px;
   max-block-size: 10rem;
+  padding-block: 4px;
+  padding-inline: 6px;
+  /* The roster's textareas are monospace because they hold prompts; the
+     composer holds what a person types, so it takes the app's own face rather
+     than inheriting the `textarea.input` rule. */
+  font-family: inherit;
   /* Grows with the text where the browser supports it; otherwise the box
      scrolls, which is still usable. */
   field-sizing: content;
   resize: none;
+  border: 0;
+  background: transparent;
 }
 
-.composer .btn.primary {
-  flex: none;
-  padding-block: 12px;
+.prow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.composer .btn:disabled {
-  opacity: 0.5;
+.pmodel {
+  padding-block: 5px;
+  padding-inline: 7px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--step--4);
+  color: var(--muted);
+}
+
+/* The one control a keyboard reaches for, so it is the most contrasted thing in
+   the composer; its accessible name carries "Send"/"Sending…" rather than the
+   arrow. */
+.send {
+  margin-inline-start: auto;
+  display: grid;
+  place-items: center;
+  inline-size: 30px;
+  block-size: 30px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: var(--bg-deep);
+  font-size: var(--step-0);
+  font-weight: 700;
+  line-height: 1;
+}
+
+.send:disabled {
+  background: var(--surface2);
+  color: var(--muted);
   cursor: default;
+}
+
+/* ---------- jump to the latest ---------- */
+
+/* Floats over the transcript, above the composer rather than beside it: it is
+   an offer to leave where you are, so it stays out of the reading column. */
+.fab {
+  position: absolute;
+  inset-block-end: calc(92px + env(safe-area-inset-bottom, 0px));
+  inset-inline-end: var(--gutter);
+  inline-size: 32px;
+  block-size: 32px;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: var(--step-0);
+  line-height: 1;
+  box-shadow: 0 6px 18px var(--shadow);
+}
+
+/* ---------- running rows ---------- */
+
+/* A run is a card rather than a row: the step it is on and the steps behind it
+   are what a person triaging needs, and both are taller than one line. */
+.runit.run {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.runhead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.runhead .rt {
+  flex: 1;
+}
+
+/* Stop is an aside, not a decision: it takes the width of its word so the
+   run's title keeps the line. */
+.runhead .btn {
+  flex: none;
+  padding-block: 6px;
+  padding-inline: 10px;
+}
+
+/* ---------- banner ---------- */
+
+/* The one place a screen-wide notice lives: a fault in the poll, not a decision
+   waiting on a person, so it is a line with the ramp the fault earns. */
+.banner {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding-block: 9px;
+  padding-inline: 11px;
+  border: 1px solid var(--warn-line-soft);
+  border-radius: var(--r);
+  background: var(--warn-quiet);
+}
+
+.banner p {
+  margin: 0;
+  font-size: var(--step--1);
+  color: var(--warn-body);
 }
 
 /* A message the server has not confirmed yet. It is dimmed rather than hidden:
@@ -1033,6 +1342,18 @@ button {
 
 .tool-summary[data-open] {
   border-block-end: 1px solid var(--line);
+}
+
+/* The chevron is the only thing that says a row opens, so it turns with the
+   disclosure rather than staying put. */
+.tool-summary[data-open] .chev {
+  transform: rotate(90deg);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .tool-summary .chev {
+    transition: transform 140ms ease-out;
+  }
 }
 
 .tool-name {
@@ -1263,17 +1584,6 @@ button {
   font-size: var(--step--4);
   color: var(--muted);
   font-variant-numeric: tabular-nums;
-}
-
-.msg-copy {
-  flex: none;
-  font-size: var(--step--3);
-  color: var(--muted);
-  padding-block: 2px;
-  padding-inline: 8px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: transparent;
 }
 
 .ap-ref {

@@ -98,14 +98,16 @@ export const Message = defineMessageUnion({
   ExternalUrlRequested: { href: Schema.String },
   /** The browser opened the link; the app's own screen is unchanged. */
   LinkOpened: { href: Schema.String },
-  /** The user asked to take one message out of the transcript. */
-  ClickedCopy: { text: Schema.String },
-  /** The browser accepted the text onto the clipboard. */
-  CopiedMessage: {},
-  /** The clipboard refused, so the person has to select the text instead. */
-  CopyFailed: { error: Schema.String },
   /** The navigation effect finished; the URL is already the screen's. */
   Navigated: {},
+  /** The open transcript's scroller moved, and says whether its tail is in
+   *  view. The scroll position is DOM state, so it arrives as a message rather
+   *  than being read in the view. */
+  ScrolledTranscript: { atBottom: Schema.Boolean },
+  /** The person asked to be taken back to the newest entry. */
+  ClickedJumpToLatest: {},
+  /** The scroller is at the tail again, whether by the button or by hand. */
+  ScrolledToLatest: {},
   /** The server ran the parked task again, and says whether it did. */
   TaskRetried: {
     bot: Schema.String,

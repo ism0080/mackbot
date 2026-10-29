@@ -3,6 +3,7 @@ import type {
   ApprovalView,
   BotView,
   EntryView,
+  LiveToolView,
   TranscriptPage,
 } from "@mackbot/contract";
 import { Option } from "effect";
@@ -16,7 +17,8 @@ import { Message } from "./message.ts";
 import type { Channel, Model } from "./model.ts";
 import { avatar, botName, modelLabel, runTitle, statusTag, toast } from "./partials.ts";
 import { isExpanded } from "./select.ts";
-import { button, runningBar } from "./ui.ts";
+import { stepsOf, stepsRail, stepNow } from "./steps.ts";
+import { button } from "./ui.ts";
 
 const statusIn = (channel: Channel | undefined): Option.Option<BotView> =>
   Option.match(Option.fromNullishOr(channel), {
@@ -121,37 +123,20 @@ const messageRow = (
       // A bot writes markdown, and rendering it is the difference between a
       // bulleted list and one long line of asterisks and hyphens.
       entry.role === "assistant" ? messageBody(entry, words, model, h) : h.p([], [words]),
-      // The origin is provenance and the copy button is an action on the words,
-      // so both sit under them the way a byline and a control do, rather than
-      // pushing the first line of the message down.
-      ...(entry.role === "assistant"
-        ? [
-            h.div(
-              [h.Class("msg-foot")],
-              [
-                ...(origin === undefined ? [] : [h.span([h.Class("origin")], [origin])]),
-                button(
-                  {
-                    className: "msg-copy",
-                    ariaLabel: "Copy message",
-                    onClick: Message.ClickedCopy({ text: words }),
-                  },
-                  ["Copy"],
-                  h,
-                ),
-              ],
-            ),
-          ]
-        : []),
+      // The origin is provenance, so it sits under the words like a byline
+      // rather than pushing the first line of the message down.
+      ...(origin === undefined
+        ? []
+        : [h.div([h.Class("msg-foot")], [h.span([h.Class("origin")], [origin])])]),
     ],
   );
 };
 
 /**
  * A tool result is model context, not a chat message. It collapses to a row a
- * person can scan — tool name and outcome — and opens on demand for the raw
- * payload. A failed result starts open, because that is the one a person needs,
- * and stays closable because the open state is the Model's.
+ * person can scan — the tool, and whether it worked — and opens on demand for
+ * the raw payload. A failed result starts open, because that is the one a
+ * person needs, and stays closable because the open state is the Model's.
  */
 const toolRow = (entry: EntryView, model: Model, h: HtmlBuilder<Message>): Html => {
   const failed = entry.toolFailed === true;
@@ -177,7 +162,10 @@ const toolRow = (entry: EntryView, model: Model, h: HtmlBuilder<Message>): Html 
                 h.button(
                   [...toggle, h.Class("tool-summary")],
                   [
-                    h.span([h.Class(failed ? "tag warn" : "tag")], ["tool"]),
+                    h.span(
+                      [h.Class(failed ? "state bad" : "state good"), h.AriaHidden(true)],
+                      [failed ? "!" : "✓"],
+                    ),
                     h.span([h.Class("tool-name")], [entry.toolName ?? "tool result"]),
                     h.span([h.Class("tool-meta")], [failed ? "failed" : "ok"]),
                     h.span([h.Class("chev")], ["›"]),
@@ -226,7 +214,19 @@ const awaitingRow = (approval: ApprovalView, h: HtmlBuilder<Message>): Html =>
     ],
   );
 
-const runRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder<Message>): Html =>
+/**
+ * The run in hand, as the step it is on and the steps it has taken. The bar
+ * names the step in the harness's own words rather than drawing a fraction of
+ * one: a bot on step 4 of 7 is not 52% done, and the harness does not know how
+ * many steps are left.
+ */
+const runRow = (
+  bot: string,
+  run: ActiveRunView,
+  steps: readonly LiveToolView[],
+  now: number,
+  h: HtmlBuilder<Message>,
+): Html =>
   h.keyed("div")(
     "run",
     [h.Class("streamline")],
@@ -235,8 +235,14 @@ const runRow = (bot: string, run: ActiveRunView, now: number, h: HtmlBuilder<Mes
       h.div(
         [h.Class("runit-main")],
         [
-          h.p([h.Class("live")], [`${runTitle(run)} — running ${elapsedOf(run.startedAt, now)}`]),
-          runningBar({ id: `run-${bot}`, valueText: `${runTitle(run)} is still running` }, h),
+          h.div(
+            [h.Class("think live")],
+            [
+              h.span([h.Class("sk")], [stepNow(steps) ?? runTitle(run)]),
+              h.span([h.Class("t rmeta")], [`running ${elapsedOf(run.startedAt, now)}`]),
+            ],
+          ),
+          ...(steps.length === 0 ? [] : [stepsRail(steps, h)]),
         ],
       ),
     ],
@@ -263,6 +269,54 @@ const earlierRow = (bot: string, h: HtmlBuilder<Message>): Html =>
     ],
   );
 
+/**
+ * The composer, as one shell rather than a field and a button side by side: the
+ * whole block is the target, the model in play is named under the text, and
+ * Enter sends. `Sending…` keeps the send button's accessible name in step with
+ * what it will do, so a screen reader hears the state change.
+ */
+const composerOf = (
+  bot: string,
+  draft: string,
+  sending: boolean,
+  modelId: string,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.form(
+    [h.Class("composer"), h.OnSubmit(Message.SubmittedChat({ bot }))],
+    [
+      h.div(
+        [h.Class("pinput")],
+        [
+          h.textarea([
+            h.Class("input composer-input"),
+            h.DataAttribute("field", "chat"),
+            h.Value(draft),
+            h.Placeholder(`Message ${botName(bot)}…`),
+            h.AriaLabel(`Message ${botName(bot)}`),
+            h.OnInput((text) => Message.EditedChatText({ bot, text })),
+          ]),
+          h.div(
+            [h.Class("prow")],
+            [
+              ...(modelId.length === 0 ? [] : [h.span([h.Class("pmodel")], [modelId])]),
+              button(
+                {
+                  className: "send",
+                  type: "submit",
+                  isDisabled: sending || draft.trim().length === 0,
+                  ariaLabel: sending ? "Sending…" : "Send",
+                },
+                ["↑"],
+                h,
+              ),
+            ],
+          ),
+        ],
+      ),
+    ],
+  );
+
 export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): Html => {
   const channel = model.channels[bot];
   const status = statusIn(channel);
@@ -270,6 +324,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
   const draft = draftIn(channel);
   const sending = sendingIn(channel);
   const pending = pendingIn(channel);
+  const steps = stepsOf(channel);
 
   const body: readonly Html[] = [
     h.div([h.Class("dayline")], ["Today"]),
@@ -293,33 +348,11 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
     ...awaitingIn(bot, channel).map((approval) => awaitingRow(approval, h)),
     ...Option.match(run, {
       onNone: () => [],
-      onSome: (active) => [runRow(bot, active, model.now, h)],
+      onSome: (active) => [runRow(bot, active, steps, model.now, h)],
     }),
-    h.div([h.Class("pad")]),
+    // The end of the thread, named so the jump command has somewhere to aim.
+    h.div([h.Class("pad"), h.Id("transcript-end")]),
   ];
-
-  const composer = h.form(
-    [h.Class("composer"), h.OnSubmit(Message.SubmittedChat({ bot }))],
-    [
-      h.textarea([
-        h.Class("input composer-input"),
-        h.DataAttribute("field", "chat"),
-        h.Value(draft),
-        h.Placeholder(`Message ${botName(bot)}…`),
-        h.AriaLabel(`Message ${botName(bot)}`),
-        h.OnInput((text) => Message.EditedChatText({ bot, text })),
-      ]),
-      button(
-        {
-          className: "btn primary composer-send",
-          type: "submit",
-          isDisabled: sending || draft.trim().length === 0,
-        },
-        [sending ? "Sending…" : "Send"],
-        h,
-      ),
-    ],
-  );
 
   return h.div(
     [h.Class("screen")],
@@ -354,8 +387,32 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
           }),
         ],
       ),
-      h.main([h.Class("scroll")], body),
-      composer,
+      h.main([h.Class("scroll"), h.Id("transcript-scroll")], body),
+      // Offered only while the thread has moved on without the person: at the
+      // tail it would be a button that does nothing.
+      ...(model.atBottom
+        ? []
+        : [
+            button(
+              {
+                className: "fab",
+                ariaLabel: "Jump to the latest message",
+                onClick: Message.ClickedJumpToLatest(),
+              },
+              ["↓"],
+              h,
+            ),
+          ]),
+      composerOf(
+        bot,
+        draft,
+        sending,
+        Option.match(status, {
+          onNone: () => "",
+          onSome: (view) => view.model.id,
+        }),
+        h,
+      ),
       ...toast(model, h),
     ],
   );

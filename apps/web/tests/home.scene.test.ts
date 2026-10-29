@@ -208,7 +208,6 @@ test("a running bot is a row with its title and a Stop that asks the server", ()
       }),
     ),
     expect(selector('[data-group="running"]')).toBeVisible(),
-    expect(role("heading", { name: "Running now" })).toExist(),
     expect(selector('[data-group="running"] [data-bot="hermes"] .rt')).toHaveText(
       "Draft the weekly update",
     ),

@@ -26,11 +26,11 @@ import {
   StopBot,
   Transcript,
 } from "./api.ts";
-import { CopyMessage } from "./clipboard.ts";
 import { Message } from "./message.ts";
 import { botName } from "./partials.ts";
 import { EMPTY_DRAFT, FRAME_WINDOW, Screen } from "./model.ts";
 import type { BotDraft, Channel, Model, ThinkingLevel } from "./model.ts";
+import { ScrollToLatest } from "./scroll.ts";
 import { Navigate, OpenLink, pathOf, screenOfPath } from "./route.ts";
 import { Toast } from "./toast.ts";
 
@@ -468,11 +468,17 @@ export const update = (model: Model, message: Message) =>
     }),
     ExternalUrlRequested: ({ href }) => ({ model, commands: [OpenLink({ href })] }),
     LinkOpened: () => ({ model }),
-    ClickedCopy: ({ text }) => ({ model, commands: [CopyMessage({ text })] }),
-    CopiedMessage: () => withToast(model, "Success", "Copied to clipboard."),
-    CopyFailed: ({ error }) =>
-      withToast(model, "Error", `Couldn't copy that (${error}). Select the text instead.`),
     Navigated: () => ({ model }),
+    ScrolledTranscript: ({ atBottom }) => ({
+      model: modifyFields(model, { atBottom: () => atBottom }),
+    }),
+    ClickedJumpToLatest: () => ({
+      // The button goes the moment it is spent: waiting for the smooth scroll
+      // to settle would leave it under the finger that pressed it.
+      model: modifyFields(model, { atBottom: () => true }),
+      commands: [ScrollToLatest()],
+    }),
+    ScrolledToLatest: () => ({ model: modifyFields(model, { atBottom: () => true }) }),
     EditedChatText: ({ bot, text }) => ({
       model: withChannel(model, bot, (channel) => modifyFields(channel, { draft: () => text })),
     }),

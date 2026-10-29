@@ -23,10 +23,10 @@ import {
 import { expect as viExpect, test } from "vitest";
 
 import { Chat, Status, Transcript } from "../src/api.ts";
-import { CopyMessage } from "../src/clipboard.ts";
 import { Message } from "../src/message.ts";
 import { Screen } from "../src/model.ts";
 import { Navigate } from "../src/route.ts";
+import { ScrollToLatest } from "../src/scroll.ts";
 import { update } from "../src/update.ts";
 import { view } from "../src/view.ts";
 import { approvalOf, entryOf, FIXTURE_NOW, statusOf, transcriptOf } from "./support/fixtures.ts";
@@ -312,30 +312,28 @@ test("a pending approval on this thread points back to Needs you", () => {
   );
 });
 
-test("copying a reply takes the words as the bot wrote them", () => {
-  const reply = "**Nothing changed.** The 09:00 meeting still stands.";
-
+test("a transcript scrolled off its tail offers the way back, and takes it", () => {
   scene(
     { update, view },
-    given(
-      hermes({
-        status: statusOf(),
-        page: transcriptOf({
-          entries: [entryOf({ id: 1, role: "assistant", text: reply, origin: "cron", at: at(5) })],
-        }),
-      }),
-    ),
-    // The chip says where it came from, and the button is named for a
-    // screen reader rather than by its visible word.
-    expect(selector('[data-entry="1"] .origin')).toContainText("cron"),
-    click(role("button", { name: "Copy message" })),
-    // Markdown is copied as written, so it pastes into an editor intact.
-    Command.expectExact(CopyMessage({ text: reply })),
-    Command.resolve(CopyMessage, Message.CopiedMessage()),
-    settleToastScene(),
-    expect(selector("[data-toast]")).toContainText("Copied to clipboard."),
-    // An answer that only informs is a status, not an interruption.
-    expect(role("status")).toExist(),
+    given({
+      ...hermes({ status: statusOf(), page: transcriptOf() }),
+      atBottom: false,
+    }),
+    expect(role("button", { name: "Jump to the latest message" })).toExist(),
+    click(role("button", { name: "Jump to the latest message" })),
+    Command.expectExact(ScrollToLatest()),
+    Command.resolve(ScrollToLatest, Message.ScrolledToLatest()),
+    // The button is spent by the press: it is gone before the scroll settles,
+    // so it never sits under the finger that pressed it.
+    expect(role("button", { name: "Jump to the latest message" })).toBeAbsent(),
+  );
+});
+
+test("a transcript at its tail has nothing to jump to", () => {
+  scene(
+    { update, view },
+    given(hermes({ status: statusOf(), page: transcriptOf() })),
+    expect(role("button", { name: "Jump to the latest message" })).toBeAbsent(),
   );
 });
 

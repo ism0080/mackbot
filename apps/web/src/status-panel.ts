@@ -27,7 +27,9 @@ const failureRow = (
     `${bot}/${failure.kind}/${failure.at}/${failure.name}`,
     [h.Class("sp-fail"), h.DataAttribute("bot", bot), h.DataAttribute("failure", failure.name)],
     [
-      avatar(bot, h),
+      // The mark, not the bot: the row already says which bot in its foot, and
+      // what a person scans for here is "this one broke".
+      h.span([h.Class("state bad"), h.AriaHidden(true)], ["!"]),
       h.div(
         [h.Class("runit-main")],
         [

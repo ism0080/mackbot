@@ -8,7 +8,7 @@ import { DecideApproval, Status } from "../src/api.ts";
 import { Message } from "../src/message.ts";
 import type { Model } from "../src/model.ts";
 import { update } from "../src/update.ts";
-import { FIXTURE_NOW, approvalOf, modelWith, statusOf } from "./support/fixtures.ts";
+import { FIXTURE_NOW, approvalOf, modelWith, rosterOf, statusOf } from "./support/fixtures.ts";
 import { botChannel, statusIn } from "./support/story.ts";
 import { drainToast, settleToast, toastEntry, toastText } from "./support/toast.ts";
 
@@ -283,7 +283,7 @@ describe("deciding an approval", () => {
     story(
       update,
       given(modelWith()),
-      message(Message.CopiedMessage()),
+      message(Message.BotSaved({ id: "hermes", bot: rosterOf().bots.hermes })),
       // The stack schedules the entry's own dismissal timer, so a toast that
       // nobody clicks or hovers leaves on its own.
       drainToast(toastEntry(0)),
@@ -297,15 +297,15 @@ describe("deciding an approval", () => {
     story(
       update,
       given(modelWith()),
-      message(Message.CopiedMessage()),
+      message(Message.BotSaved({ id: "hermes", bot: rosterOf().bots.hermes })),
       settleToast(toastEntry(0)),
-      message(Message.CopyFailed({ error: "denied" })),
+      message(Message.BotSaveFailed({ bot: "hermes", error: "offline" })),
       settleToast(toastEntry(1)),
       model((m) => {
         // Neither answer replaced the other: the stack holds both, newest last.
         expect(m.toast.entries.map((entry) => entry.payload.text)).toEqual([
-          "Copied to clipboard.",
-          "Couldn't copy that (denied). Select the text instead.",
+          "Saved Hermes.",
+          "Couldn't save Hermes (offline).",
         ]);
         // The variant is what gives the entry its role: an answer that failed
         // is an alert, one that worked is a status.
