@@ -5,7 +5,8 @@ import { describe, expect, test } from "vitest";
 
 import { Transcript } from "../src/api.ts";
 import { Message } from "../src/message.ts";
-import { FRAME_WINDOW } from "../src/model.ts";
+import { FRAME_WINDOW, Screen } from "../src/model.ts";
+import { activeSources } from "../src/subscriptions.ts";
 import { update } from "../src/update.ts";
 import {
   FIXTURE_NOW,
@@ -81,7 +82,7 @@ describe("applying a Frame", () => {
           transcript: AsyncData.succeed(
             transcriptOf({ entries: [entryOf({ id: 1, text: "one" })] }),
           ),
-          stream: { phase: "live", generation: 3, lastSeq: 0, attempt: 0 },
+          stream: { phase: "live", generation: 3, lastSeq: 0, attempt: 0, failures: 0 },
         }),
       },
     };
@@ -109,7 +110,7 @@ describe("applying a Frame", () => {
           transcript: AsyncData.succeed(
             transcriptOf({ entries: [entryOf({ id: 1, text: "one" })] }),
           ),
-          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 4 },
+          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 4, failures: 0 },
         }),
       },
     };
@@ -129,13 +130,13 @@ describe("applying a Frame", () => {
     );
   });
 
-  test("a same-generation frame keeps the retry budget", () => {
+  test("a same-generation frame keeps the connection and clears the failure run", () => {
     const seeded = {
       ...modelWith(),
       channels: {
         hermes: botChannel("hermes", {
           transcript: AsyncData.succeed(transcriptOf()),
-          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 4 },
+          stream: { phase: "retrying", generation: 3, lastSeq: 40, attempt: 4, failures: 3 },
         }),
       },
     };
@@ -143,13 +144,45 @@ describe("applying a Frame", () => {
     story(
       update,
       given(seeded),
-      message(Message.FrameReceived(frameOf(appendFrame([2]), 9))),
+      message(Message.FrameReceived(frameOf(appendFrame([2]), 41))),
       Command.expectNone(),
       model((m) => {
         const stream = channelOf(m, "hermes").stream;
         expect(stream.generation).toBe(3);
-        expect(stream.lastSeq).toBe(9);
+        expect(stream.lastSeq).toBe(41);
+        // The attempt is what the subscription restarts on, so a frame leaves
+        // it alone; the failure run is what the next delay is computed from.
         expect(stream.attempt).toBe(4);
+        expect(stream.failures).toBe(0);
+        expect(stream.phase).toBe("live");
+      }),
+    );
+  });
+
+  test("the cursor never moves back, and a frame without an id leaves it", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(transcriptOf()),
+          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 0, failures: 0 },
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      message(Message.FrameReceived(frameOf(appendFrame([2]), undefined))),
+      model((m) => {
+        expect(channelOf(m, "hermes").stream.lastSeq).toBe(40);
+        // The frame itself still lands.
+        expect(entryIds(m, "hermes")).toContain(2);
+      }),
+      message(Message.FrameReceived(frameOf(appendFrame([3]), 12))),
+      Command.expectNone(),
+      model((m) => {
+        expect(channelOf(m, "hermes").stream.lastSeq).toBe(40);
       }),
     );
   });
@@ -209,7 +242,7 @@ describe("applying a Frame", () => {
       channels: {
         hermes: botChannel("hermes", {
           transcript: AsyncData.succeed(page),
-          stream: { phase: "live", generation: 3, lastSeq: 0, attempt: 0 },
+          stream: { phase: "live", generation: 3, lastSeq: 0, attempt: 0, failures: 0 },
         }),
       },
     };
@@ -258,12 +291,12 @@ describe("applying a Frame", () => {
 });
 
 describe("stream reconnection", () => {
-  test("a drop spends one attempt and marks the stream retrying", () => {
+  test("a drop spends one attempt and counts one failure", () => {
     const seeded = {
       ...modelWith(),
       channels: {
         hermes: botChannel("hermes", {
-          stream: { phase: "live", generation: 3, lastSeq: 9, attempt: 0 },
+          stream: { phase: "live", generation: 3, lastSeq: 9, attempt: 0, failures: 0 },
         }),
       },
     };
@@ -276,18 +309,19 @@ describe("stream reconnection", () => {
       model((m) => {
         const stream = channelOf(m, "hermes").stream;
         expect(stream.attempt).toBe(1);
+        expect(stream.failures).toBe(1);
         expect(stream.phase).toBe("retrying");
         expect(stream.lastSeq).toBe(9);
       }),
     );
   });
 
-  test("the fifth attempt is still retryable", () => {
+  test("the fifth failure in a row is still retryable", () => {
     const seeded = {
       ...modelWith(),
       channels: {
         hermes: botChannel("hermes", {
-          stream: { phase: "live", generation: 3, lastSeq: 0, attempt: 4 },
+          stream: { phase: "retrying", generation: 3, lastSeq: 0, attempt: 4, failures: 4 },
         }),
       },
     };
@@ -299,18 +333,18 @@ describe("stream reconnection", () => {
       Command.expectNone(),
       model((m) => {
         const stream = channelOf(m, "hermes").stream;
-        expect(stream.attempt).toBe(5);
+        expect(stream.failures).toBe(5);
         expect(stream.phase).toBe("retrying");
       }),
     );
   });
 
-  test("a drop past the attempt budget closes the stream", () => {
+  test("a drop past the failure budget closes the stream", () => {
     const seeded = {
       ...modelWith(),
       channels: {
         hermes: botChannel("hermes", {
-          stream: { phase: "retrying", generation: 3, lastSeq: 0, attempt: 5 },
+          stream: { phase: "retrying", generation: 3, lastSeq: 0, attempt: 5, failures: 5 },
         }),
       },
     };
@@ -322,8 +356,40 @@ describe("stream reconnection", () => {
       Command.expectNone(),
       model((m) => {
         const stream = channelOf(m, "hermes").stream;
-        expect(stream.attempt).toBe(6);
+        expect(stream.failures).toBe(6);
         expect(stream.phase).toBe("closed");
+      }),
+    );
+  });
+
+  test("drops separated by frames never exhaust the budget", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(transcriptOf()),
+          stream: { phase: "live", generation: 3, lastSeq: 0, attempt: 0, failures: 0 },
+        }),
+      },
+    };
+    // A connection that works for a while and then drops, over and over, is a
+    // flaky network rather than an unreachable bot.
+    const dropThenRecover = (seq: number) => [
+      message(Message.StreamDropped({ bot: "hermes" })),
+      message(Message.FrameReceived(frameOf(liveFrame, seq))),
+    ];
+
+    story(
+      update,
+      given(seeded),
+      ...[1, 2, 3, 4, 5, 6, 7, 8].flatMap(dropThenRecover),
+      message(Message.StreamDropped({ bot: "hermes" })),
+      Command.expectNone(),
+      model((m) => {
+        const stream = channelOf(m, "hermes").stream;
+        expect(stream.phase).toBe("retrying");
+        expect(stream.failures).toBe(1);
+        expect(stream.attempt).toBe(9);
       }),
     );
   });
@@ -333,7 +399,7 @@ describe("stream reconnection", () => {
       ...modelWith(),
       channels: {
         hermes: botChannel("hermes", {
-          stream: { phase: "closed", generation: 3, lastSeq: 0, attempt: 6 },
+          stream: { phase: "closed", generation: 3, lastSeq: 0, attempt: 6, failures: 6 },
         }),
       },
     };
@@ -356,7 +422,7 @@ describe("stream reconnection", () => {
       ...modelWith(),
       channels: {
         hermes: botChannel("hermes", {
-          stream: { phase: "live", generation: 3, lastSeq: 11, attempt: 0 },
+          stream: { phase: "live", generation: 3, lastSeq: 11, attempt: 0, failures: 0 },
           transcript: AsyncData.succeed(transcriptOf()),
         }),
       },
@@ -375,6 +441,52 @@ describe("stream reconnection", () => {
         Transcript({ bot: "hermes" }),
         Message.TranscriptLoaded({ bot: "hermes", page: transcriptOf({ session: "hermes" }) }),
       ),
+    );
+  });
+
+  test("a run that starts after a closed stream streams live again", () => {
+    const busy = (generation: number) =>
+      statusOf({
+        busy: true,
+        activeRun: { ...activeRun(), stream: streamStatus(generation) },
+        activeStream: streamStatus(generation),
+      });
+    const seeded = {
+      ...modelWith({ polling: false }),
+      screen: Screen.Transcript({ bot: "hermes" }),
+      channels: {
+        hermes: botChannel("hermes", {
+          status: AsyncData.succeed(busy(3)),
+          stream: { phase: "live", generation: 3, lastSeq: 11, attempt: 2, failures: 0 },
+          transcript: AsyncData.succeed(transcriptOf()),
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      // The first run finishes: its stream says `done`.
+      message(Message.StreamClosed({ bot: "hermes" })),
+      Command.resolve(
+        Transcript({ bot: "hermes" }),
+        Message.TranscriptLoaded({ bot: "hermes", page: transcriptOf() }),
+      ),
+      model((m) => {
+        expect(activeSources(m)).toEqual([]);
+      }),
+      // The next run opens a new generation; the status names it.
+      message(Message.StatusLoaded({ bots: { hermes: busy(4) }, errors: {}, at })),
+      model((m) => {
+        expect(channelOf(m, "hermes").stream).toEqual({
+          phase: "idle",
+          generation: 4,
+          lastSeq: 0,
+          attempt: 0,
+          failures: 0,
+        });
+        expect(activeSources(m).map((source) => source.generation)).toEqual([4]);
+      }),
     );
   });
 });

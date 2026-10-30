@@ -9,15 +9,19 @@
  * leaves the app.
  */
 import * as Schema from "effect/Schema";
-import { Effect } from "effect";
+import { Effect, Option } from "effect";
 import { Command } from "foldkit";
 import { openUrl, pushUrl } from "foldkit/navigation";
 
+import { safeHref } from "./link.ts";
 import { Message } from "./message.ts";
 import { Screen } from "./model.ts";
 import type { Screen as ScreenType } from "./model.ts";
 
 const CHAT_PATH = /^\/chat\/([^/]+)\/?$/u;
+
+/** A malformed escape (`%E0%A4%A`) is a URL nobody built, not a crash. */
+const decodeSegment = Option.liftThrowable(decodeURIComponent);
 
 /** The pathname a screen is served at. */
 export const pathOf = (screen: ScreenType): string =>
@@ -32,11 +36,10 @@ export const pathOf = (screen: ScreenType): string =>
 export const screenOfPath = (pathname: string): ScreenType => {
   const chat = CHAT_PATH.exec(pathname);
   if (chat !== null) {
-    try {
-      return Screen.Transcript({ bot: decodeURIComponent(chat[1]!) });
-    } catch {
-      return Screen.Home();
-    }
+    return Option.match(decodeSegment(chat[1] ?? ""), {
+      onNone: () => Screen.Home(),
+      onSome: (bot) => Screen.Transcript({ bot }),
+    });
   }
   if (pathname === "/new") return Screen.NewChat();
   if (pathname === "/bots") return Screen.Bots();
@@ -58,9 +61,16 @@ export const Navigate = Command.define("Navigate", {
  * asks the app what it means rather than letting the browser follow the href,
  * so an external link only opens if the app opens it — and it opens in a new
  * browsing context, leaving the transcript the reader was on in place.
+ *
+ * The href came from the DOM, and the DOM's links came from a bot's words, so
+ * the scheme is checked again here: only a link `safeHref` allows is opened,
+ * whatever rendered it.
  */
 export const OpenLink = Command.define("OpenLink", {
   args: { href: Schema.String },
   messages: [Message.LinkOpened],
-  execute: ({ href }) => openUrl(href).pipe(Effect.as(Message.LinkOpened({ href }))),
+  execute: ({ href }) =>
+    safeHref(href) === undefined
+      ? Effect.succeed(Message.LinkOpened({ href }))
+      : openUrl(href).pipe(Effect.as(Message.LinkOpened({ href }))),
 });

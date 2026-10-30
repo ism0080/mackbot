@@ -1456,6 +1456,14 @@ button {
   text-underline-offset: 2px;
 }
 
+/* Where a link whose words are not its address really goes. It is the part a
+   person checks before pressing, so it reads plainly rather than as link text. */
+.md-link-host {
+  color: var(--text-soft);
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
 .md code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 0.9em;

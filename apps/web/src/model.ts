@@ -34,18 +34,37 @@ export type Screen = typeof Screen.Type;
  * `lastSeq` is the cursor the next connection resumes from, and `attempt` is
  * what makes a dropped transport a *dependency change*, so the subscription
  * record recreates the stream rather than a retry loop living inside it.
+ *
+ * `failures` counts the drops since the last frame that arrived. It sets how
+ * long the next connection waits and when the stream gives up, and a frame
+ * clears it without touching `attempt`, so a recovered connection is not torn
+ * down just to reset the count.
  */
 export const StreamState = Schema.Struct({
   phase: Schema.Literals(["idle", "live", "retrying", "closed"]),
   generation: Schema.Number,
   lastSeq: Schema.Number,
   attempt: Schema.Number,
+  failures: Schema.Number,
 });
 export type StreamState = typeof StreamState.Type;
 
 /** How many recent Frames one channel keeps. A devtools window, not history:
  *  the transcript owns history. */
 export const FRAME_WINDOW = 50;
+
+/**
+ * A message this client sent that the transcript has not shown yet. `after` is
+ * the newest entry id the client knew of when it sent it: the server records a
+ * send after everything already in the thread, so only a user entry past that
+ * id can be this message's copy, and an older entry with the same words never
+ * retires it.
+ */
+export const PendingMessage = Schema.Struct({
+  text: Schema.String,
+  after: Schema.Number,
+});
+export type PendingMessage = typeof PendingMessage.Type;
 
 /** A thinking level, as the contract names them. */
 export type ThinkingLevel = typeof ThinkingLevelSchema.Type;
@@ -92,12 +111,15 @@ export const Channel = Schema.Struct({
   /** Whether a transcript request for this bot is in flight, so the poll does
    *  not stack a second one on top. */
   refreshing: Schema.Boolean,
+  /** Whether an older page is in flight, so a second press of "Load earlier"
+   *  does not ask for the same page again. */
+  loadingEarlier: Schema.Boolean,
   /**
    * Messages this client sent that the transcript has not confirmed yet, so a
    * send shows up immediately instead of after the next poll. A pending message
-   * is retired by the first transcript entry with the same text.
+   * is retired by the first user entry past its `after` with the same text.
    */
-  pending: Schema.Array(Schema.String),
+  pending: Schema.Array(PendingMessage),
 });
 export type Channel = typeof Channel.Type;
 
@@ -109,6 +131,15 @@ export const Model = Schema.Struct({
    * Model where the poll can read it rather than in the Command.
    */
   polling: Schema.Boolean,
+  /**
+   * Whether something changed on the server while a `/status` request was
+   * already in flight. That answer may predate the change, so its arrival asks
+   * again rather than letting an older answer stand.
+   */
+  statusStale: Schema.Boolean,
+  /** Whether the page is visible. A hidden tab has nobody reading it, so the
+   *  polls pause until it is shown again. */
+  visible: Schema.Boolean,
   /**
    * The client's clock, minted by the status Command and carried on its result.
    * Relative labels ("waiting 4m") are a function of it, and a view cannot read

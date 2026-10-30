@@ -1,46 +1,28 @@
-import type {
-  ActiveRunView,
-  ApprovalView,
-  BotView,
-  EntryView,
-  LiveToolView,
-  TranscriptPage,
-} from "@mackbot/contract";
+import type { ActiveRunView, ApprovalView, EntryView, LiveToolView } from "@mackbot/contract";
 import { Option } from "effect";
-import { AsyncData } from "foldkit";
 import { Disclosure } from "@foldkit/ui";
-import type { Html, HtmlBuilder } from "foldkit/html";
+import type { Html, HtmlBuilder, KeyboardModifiers } from "foldkit/html";
 
-import { clockOf, elapsedOf, wordsOf } from "./format.ts";
+import { pageOf, statusOf } from "./channel.ts";
+import { clockOf, dayKeyOf, dayLabelOf, elapsedOf, wordsOf } from "./format.ts";
 import { parseMarkdown, renderMarkdown } from "./markdown.ts";
 import { Message } from "./message.ts";
-import type { Channel, Model } from "./model.ts";
+import type { Channel, Model, PendingMessage } from "./model.ts";
 import { avatar, botName, modelLabel, runTitle, statusTag, toast } from "./partials.ts";
 import { isExpanded } from "./select.ts";
 import { stepsOf, stepsRail, stepNow } from "./steps.ts";
 import { button } from "./ui.ts";
 
-const statusIn = (channel: Channel | undefined): Option.Option<BotView> =>
-  Option.match(Option.fromNullishOr(channel), {
-    onNone: () => Option.none(),
-    onSome: (present) => AsyncData.getData(present.status),
-  });
-
-const pageIn = (channel: Channel | undefined): Option.Option<TranscriptPage> =>
-  Option.match(Option.fromNullishOr(channel), {
-    onNone: () => Option.none(),
-    onSome: (present) => AsyncData.getData(present.transcript),
-  });
-
 const entriesIn = (channel: Channel | undefined): readonly EntryView[] =>
-  Option.match(pageIn(channel), { onNone: () => [], onSome: (page) => page.entries });
+  Option.match(pageOf(channel), { onNone: () => [], onSome: (page) => page.entries });
 
 const draftIn = (channel: Channel | undefined): string => channel?.draft ?? "";
 const sendingIn = (channel: Channel | undefined): boolean => channel?.sending ?? false;
-const pendingIn = (channel: Channel | undefined): readonly string[] => channel?.pending ?? [];
+const pendingIn = (channel: Channel | undefined): readonly PendingMessage[] =>
+  channel?.pending ?? [];
 
 const awaitingIn = (bot: string, channel: Channel | undefined): readonly ApprovalView[] =>
-  Option.match(statusIn(channel), {
+  Option.match(statusOf(channel), {
     onNone: () => [],
     onSome: (status) =>
       status.approvals.filter((approval) => approval.status === "pending" && approval.bot === bot),
@@ -168,7 +150,7 @@ const toolRow = (entry: EntryView, model: Model, h: HtmlBuilder<Message>): Html 
                     ),
                     h.span([h.Class("tool-name")], [entry.toolName ?? "tool result"]),
                     h.span([h.Class("tool-meta")], [failed ? "failed" : "ok"]),
-                    h.span([h.Class("chev")], ["›"]),
+                    h.span([h.Class("chev"), h.AriaHidden(true)], ["›"]),
                   ],
                 ),
                 h.div([...panel], [animatePanel(h.pre([h.Class("tool-body")], [entry.text]))]),
@@ -192,11 +174,39 @@ const rowOf = (entry: EntryView, model: Model, h: HtmlBuilder<Message>): readonl
   return words === undefined ? [] : [messageRow(entry, words, model, h)];
 };
 
-const pendingRow = (text: string, index: number, h: HtmlBuilder<Message>): Html =>
+const dayline = (key: string, label: string, h: HtmlBuilder<Message>): Html =>
+  h.keyed("div")(`day:${key}`, [h.Class("dayline")], [label]);
+
+/**
+ * The thread's rows with a divider wherever the local day changes, so a thread
+ * that spans a week says which day each part was said on. An entry with no
+ * time stays under the day before it. `lastDay` is the key of the last
+ * divider, which the pending bubbles read to decide whether they need a
+ * "Today" of their own.
+ */
+const threadRows = (
+  entries: readonly EntryView[],
+  model: Model,
+  h: HtmlBuilder<Message>,
+): Readonly<{ rows: readonly Html[]; lastDay: string | undefined }> => {
+  const rows: Html[] = [];
+  let lastDay: string | undefined;
+  for (const entry of entries) {
+    const entryRows = rowOf(entry, model, h);
+    if (entryRows.length > 0 && entry.at !== undefined && dayKeyOf(entry.at) !== lastDay) {
+      lastDay = dayKeyOf(entry.at);
+      rows.push(dayline(lastDay, dayLabelOf(entry.at, model.now), h));
+    }
+    rows.push(...entryRows);
+  }
+  return { rows, lastDay };
+};
+
+const pendingRow = (message: PendingMessage, index: number, h: HtmlBuilder<Message>): Html =>
   h.keyed("div")(
-    `pending:${index}:${text}`,
+    `pending:${message.after}:${index}`,
     [h.Class("msg me pending"), h.DataAttribute("pending", "")],
-    [h.p([], [text])],
+    [h.p([], [message.text])],
   );
 
 const awaitingRow = (approval: ApprovalView, h: HtmlBuilder<Message>): Html =>
@@ -210,7 +220,7 @@ const awaitingRow = (approval: ApprovalView, h: HtmlBuilder<Message>): Html =>
     [
       h.span([h.Class("tag warn")], ["approval"]),
       h.span([h.Class("ap-ref-text")], ["Waiting on you. Decide it in Needs you."]),
-      h.span([h.Class("chev")], ["›"]),
+      h.span([h.Class("chev"), h.AriaHidden(true)], ["›"]),
     ],
   );
 
@@ -253,7 +263,7 @@ const runRow = (
  * is this button. It is the `nextBefore` cursor made clickable; without it the
  * cursor would never be spent.
  */
-const earlierRow = (bot: string, h: HtmlBuilder<Message>): Html =>
+const earlierRow = (bot: string, loading: boolean, h: HtmlBuilder<Message>): Html =>
   h.div(
     [],
     [
@@ -261,6 +271,7 @@ const earlierRow = (bot: string, h: HtmlBuilder<Message>): Html =>
         {
           className: "btn ghost",
           data: [["load", "earlier"]],
+          isDisabled: loading,
           onClick: Message.ClickedLoadEarlier({ bot }),
         },
         ["Load earlier"],
@@ -268,6 +279,23 @@ const earlierRow = (bot: string, h: HtmlBuilder<Message>): Html =>
       ),
     ],
   );
+
+/**
+ * Enter sends and Shift+Enter starts a new line, the way a chat box reads. A
+ * key held with another modifier is left to the browser. While an input method
+ * is composing, the browser reports the key as `Process` rather than `Enter`,
+ * so the Enter that commits a composition never sends a half-written message.
+ */
+const sendOnEnter =
+  (bot: string) =>
+  (key: string, modifiers: KeyboardModifiers): Option.Option<Message> =>
+    key === "Enter" &&
+    !modifiers.shiftKey &&
+    !modifiers.altKey &&
+    !modifiers.ctrlKey &&
+    !modifiers.metaKey
+      ? Option.some(Message.SubmittedChat({ bot }))
+      : Option.none();
 
 /**
  * The composer, as one shell rather than a field and a button side by side: the
@@ -294,7 +322,9 @@ const composerOf = (
             h.Value(draft),
             h.Placeholder(`Message ${botName(bot)}…`),
             h.AriaLabel(`Message ${botName(bot)}`),
+            h.EnterKeyHint("send"),
             h.OnInput((text) => Message.EditedChatText({ bot, text })),
+            h.OnKeyDownPreventDefault(sendOnEnter(bot)),
           ]),
           h.div(
             [h.Class("prow")],
@@ -319,21 +349,31 @@ const composerOf = (
 
 export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): Html => {
   const channel = model.channels[bot];
-  const status = statusIn(channel);
+  const status = statusOf(channel);
   const run = Option.flatMap(status, (view) => Option.fromNullishOr(view.activeRun));
   const draft = draftIn(channel);
   const sending = sendingIn(channel);
   const pending = pendingIn(channel);
   const steps = stepsOf(channel);
+  const entries = entriesIn(channel);
+  const thread = threadRows(entries, model, h);
+  // A message being sent now is said today, so it gets a "Today" of its own
+  // when the thread's last word was said on another day. Before the first
+  // status there is no clock to say which day today is.
+  const today = model.now === 0 ? undefined : dayKeyOf(model.now);
+  const pendingDay =
+    pending.length > 0 && today !== undefined && thread.lastDay !== today
+      ? [dayline(today, "Today", h)]
+      : [];
 
   const body: readonly Html[] = [
-    h.div([h.Class("dayline")], ["Today"]),
-    ...Option.match(pageIn(channel), {
+    ...Option.match(pageOf(channel), {
       onNone: () => [],
-      onSome: (page) => (page.nextBefore === undefined ? [] : [earlierRow(bot, h)]),
+      onSome: (page) =>
+        page.nextBefore === undefined ? [] : [earlierRow(bot, channel?.loadingEarlier ?? false, h)],
     }),
-    ...entriesIn(channel).flatMap((entry) => rowOf(entry, model, h)),
-    ...(entriesIn(channel).length === 0 && pending.length === 0
+    ...thread.rows,
+    ...(entries.length === 0 && pending.length === 0
       ? [
           h.div(
             [h.Class("empty")],
@@ -344,7 +384,8 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
           ),
         ]
       : []),
-    ...pending.map((text, index) => pendingRow(text, index, h)),
+    ...pendingDay,
+    ...pending.map((message, index) => pendingRow(message, index, h)),
     ...awaitingIn(bot, channel).map((approval) => awaitingRow(approval, h)),
     ...Option.match(run, {
       onNone: () => [],
@@ -387,7 +428,18 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
           }),
         ],
       ),
-      h.main([h.Class("scroll"), h.Id("transcript-scroll")], body),
+      // The thread is a log: a screen reader hears what arrives without the
+      // person having to move back through the conversation to find it.
+      h.main(
+        [
+          h.Class("scroll"),
+          h.Id("transcript-scroll"),
+          h.Role("log"),
+          h.AriaLive("polite"),
+          h.AriaLabel(`Conversation with ${botName(bot)}`),
+        ],
+        body,
+      ),
       // Offered only while the thread has moved on without the person: at the
       // tail it would be a button that does nothing.
       ...(model.atBottom

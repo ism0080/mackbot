@@ -9,6 +9,7 @@ import type {
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 
+import { pageOf, statusOf } from "./channel.ts";
 import { clockOf, elapsedOf, plainOf, wordsOf } from "./format.ts";
 import { botName } from "./partials.ts";
 import type { Channel, Model } from "./model.ts";
@@ -69,8 +70,6 @@ export interface Home {
   readonly recent: readonly Recent[];
 }
 
-const statusOf = (channel: Channel): Option.Option<BotView> => AsyncData.getData(channel.status);
-
 /** Bots whose `/status` row never arrived, so the home can name them. */
 const failedBotsOf = (channels: readonly (readonly [string, Channel])[]): readonly string[] =>
   channels.flatMap(([bot, channel]) => (AsyncData.hasError(channel.status) ? [bot] : []));
@@ -85,7 +84,7 @@ const blockedOf = (bot: string, status: BotView): readonly Blocked[] =>
  *  only called tools is not an answer, so it is skipped rather than listed with
  *  nothing under it. */
 const latestOf = (bot: string, channel: Channel): readonly Recent[] =>
-  Option.match(AsyncData.getData(channel.transcript), {
+  Option.match(pageOf(channel), {
     onNone: () => [],
     onSome: (page) => {
       const settled = page.entries.filter(
@@ -175,7 +174,7 @@ export const selectHome = (model: Model): Home => {
 export const selectChats = (model: Model): readonly Chat[] =>
   Object.entries(model.channels)
     .map(([bot, channel]): Chat => {
-      const entries = Option.match(AsyncData.getData(channel.transcript), {
+      const entries = Option.match(pageOf(channel), {
         onNone: () => [],
         onSome: (page) => page.entries,
       });

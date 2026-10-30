@@ -1,16 +1,22 @@
+import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import { Command, given, message, model, story } from "foldkit/story";
+import { fromString } from "foldkit/url";
 import { describe, expect, test } from "vitest";
 
 import { Catalog, Roster, Transcript } from "../src/api.ts";
+import { init } from "../src/main.ts";
 import { Message } from "../src/message.ts";
 import { Screen } from "../src/model.ts";
 import { Navigate, OpenLink, pathOf, screenOfPath } from "../src/route.ts";
 import { update } from "../src/update.ts";
 import { CATALOG, modelWith, rosterOf, transcriptOf } from "./support/fixtures.ts";
-import { botChannel, transcriptIn } from "./support/story.ts";
+import { botChannel, channelOf, dataOf, foldMessages, transcriptIn } from "./support/story.ts";
 
 const at = 1_792_145_100_000;
+
+const urlOf = (pathname: string) =>
+  Option.getOrThrow(fromString(`https://mackbot.test${pathname}`));
 
 describe("screenOfPath and pathOf", () => {
   test("pathOf names each screen's route", () => {
@@ -83,16 +89,55 @@ describe("UrlChanged", () => {
     );
   });
 
-  test("a non-transcript route changes the screen without fetching", () => {
+  test("arriving at the roster by URL reads the roster and the catalog", () => {
+    // A reload or a shared link to /bots lands here without the click that
+    // would otherwise have asked for them.
     story(
       update,
       given(modelWith()),
       message(Message.UrlChanged({ pathname: "/bots" })),
-      Command.expectNone(),
+      Command.expectExact(Roster, Catalog),
       model((m) => {
         expect(m.screen).toEqual(Screen.Bots());
       }),
+      Command.resolve(Roster, Message.RosterLoaded({ roster: rosterOf() })),
+      Command.resolve(Catalog, Message.CatalogLoaded({ catalog: CATALOG })),
+      model((m) => {
+        expect(Object.keys(dataOf(m.registry).bots)).toEqual(["hermes", "scribe"]);
+      }),
     );
+  });
+
+  test("a deep link to the roster loads it from the first render", () => {
+    const { model: initial, commands } = init(urlOf("/bots"));
+
+    expect(initial.screen).toEqual(Screen.Bots());
+    expect((commands ?? []).map((command) => command.name).sort()).toEqual([
+      "Catalog",
+      "Roster",
+      "Status",
+    ]);
+  });
+
+  test("the URL change a click causes does not fetch the transcript a second time", () => {
+    const { model: after, issued } = foldMessages(modelWith(), [
+      Message.ClickedOpenTranscript({ bot: "hermes" }),
+      // The push is echoed back as a URL change while the page is in flight.
+      Message.UrlChanged({ pathname: "/chat/hermes" }),
+    ]);
+
+    expect(issued).toEqual(['Navigate {"path":"/chat/hermes"}', 'Transcript {"bot":"hermes"}']);
+    expect(after.screen).toEqual(Screen.Transcript({ bot: "hermes" }));
+  });
+
+  test("going back to a transcript whose first page is still loading asks once", () => {
+    const { issued } = foldMessages(modelWith(), [
+      Message.UrlChanged({ pathname: "/chat/hermes" }),
+      Message.UrlChanged({ pathname: "/" }),
+      Message.UrlChanged({ pathname: "/chat/hermes" }),
+    ]);
+
+    expect(issued).toEqual(['Transcript {"bot":"hermes"}']);
   });
 });
 
@@ -165,6 +210,41 @@ describe("opening a transcript", () => {
         expect(transcriptIn(m, "hermes").entries.map((entry) => entry.id)).toContain(4);
       }),
     );
+  });
+
+  test("a second Load earlier while the first is in flight asks for nothing", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(
+            transcriptOf({
+              entries: [{ id: 5, kind: "message", role: "user", text: "five" }],
+              nextBefore: 5,
+            }),
+          ),
+        }),
+      },
+    };
+    const older = Message.TranscriptLoaded({
+      bot: "hermes",
+      before: 5,
+      page: transcriptOf({
+        entries: [{ id: 4, kind: "message", role: "user", text: "older" }],
+      }),
+    });
+
+    const { model: after, issued } = foldMessages(seeded, [
+      Message.ClickedLoadEarlier({ bot: "hermes" }),
+      Message.ClickedLoadEarlier({ bot: "hermes" }),
+      older,
+      // Even a page that does arrive twice lands once.
+      older,
+    ]);
+
+    expect(issued).toEqual(['Transcript {"bot":"hermes","before":5}']);
+    expect(transcriptIn(after, "hermes").entries.map((entry) => entry.id)).toEqual([4, 5]);
+    expect(channelOf(after, "hermes").loadingEarlier).toBe(false);
   });
 
   test("ClickedLoadEarlier with no older page does nothing", () => {
@@ -240,17 +320,32 @@ describe("in-app navigation", () => {
     );
   });
 
-  test("UrlRequested moves the screen and pushes the path it was given", () => {
+  test("UrlRequested moves the screen, pushes the path and asks for what it shows", () => {
     story(
       update,
       given(modelWith()),
       message(Message.UrlRequested({ pathname: "/chat/scribe" })),
-      Command.expectExact(Navigate({ path: "/chat/scribe" })),
+      Command.expectExact(Navigate({ path: "/chat/scribe" }), Transcript({ bot: "scribe" })),
       model((m) => {
         expect(m.screen).toEqual(Screen.Transcript({ bot: "scribe" }));
       }),
       Command.resolve(Navigate({ path: "/chat/scribe" }), Message.Navigated()),
+      Command.resolve(
+        Transcript({ bot: "scribe" }),
+        Message.TranscriptLoaded({ bot: "scribe", page: transcriptOf({ session: "scribe" }) }),
+      ),
     );
+  });
+
+  test("a link a bot could not have been allowed to write is never opened", () => {
+    for (const href of ["javascript:alert(1)", "data:text/html,<script>", "vbscript:msgbox"]) {
+      story(
+        update,
+        given(modelWith()),
+        message(Message.ExternalUrlRequested({ href })),
+        Command.expectNone(),
+      );
+    }
   });
 
   test("ExternalUrlRequested opens the link without changing the screen", () => {

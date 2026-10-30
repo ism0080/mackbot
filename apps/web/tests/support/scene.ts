@@ -17,11 +17,12 @@ import { FIXTURE_NOW, modelWith } from "./fixtures.ts";
 export const idleChannel = (overrides: Partial<Channel> = {}): Channel => ({
   status: AsyncData.Idle(),
   transcript: AsyncData.Idle(),
-  stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0 },
+  stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0, failures: 0 },
   frames: [],
   draft: "",
   sending: false,
   refreshing: false,
+  loadingEarlier: false,
   pending: [],
   ...overrides,
 });
@@ -43,9 +44,10 @@ export const botChannel = (
 };
 
 /**
- * The Model a scene starts from. The roster is in hand and the clock is pinned
- * by default, because both are true of a screen that is being looked at and a
- * test that leaves them out would be asserting the loading notice instead.
+ * The Model a scene starts from. The roster is in hand, no status read is in
+ * flight and the clock is pinned by default, because all three are true of a
+ * screen that is being looked at and a test that leaves them out would be
+ * asserting the loading notice instead.
  */
 export const appModel = (
   screen: Model["screen"],
@@ -55,6 +57,7 @@ export const appModel = (
   ...modelWith(),
   screen,
   roster: AsyncData.succeed(null),
+  polling: false,
   now: FIXTURE_NOW,
   channels,
   ...overrides,

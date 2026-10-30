@@ -14,7 +14,6 @@
     "test:css": "bun stylelint/fixtures.test.mjs"
   },
   "dependencies": {
-    "@effect/platform-browser": "4.0.6",
     "@foldkit/ui": "0.168.0",
     "@mackbot/contract": "workspace:*",
     "effect": "4.0.6",

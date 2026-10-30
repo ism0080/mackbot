@@ -1,5 +1,6 @@
 import type { Html, HtmlBuilder } from "foldkit/html";
 
+import { destinationOf, safeHref, webHostOf } from "./link.ts";
 import type { Message } from "./message.ts";
 
 export type Inline =
@@ -297,33 +298,22 @@ const TRAILING = /[.,;:!?\])*_]+$/u;
  */
 const textNodes = (text: string): readonly Inline[] => {
   const nodes: Inline[] = [];
-  let rest = text;
+  let from = 0;
 
-  while (rest !== "") {
-    // The pattern is global, so its cursor has to be rewound: every pass runs
-    // against a different slice of the text.
-    AUTOLINK.lastIndex = 0;
-    const match = AUTOLINK.exec(rest);
-    if (match === null) {
-      nodes.push({ kind: "text", text: rest });
-      break;
-    }
-
+  // `matchAll` walks a copy of the pattern, so the shared one never carries a
+  // cursor from one call into the next.
+  for (const match of text.matchAll(AUTOLINK)) {
     const raw = match[0];
-    const href = raw.replace(TRAILING, "");
-    if (match.index > 0) nodes.push({ kind: "text", text: rest.slice(0, match.index) });
+    const href = safeHref(raw.replace(TRAILING, ""));
+    if (href === undefined) continue;
 
-    if (href === "") {
-      nodes.push({ kind: "text", text: raw });
-    } else {
-      nodes.push({ kind: "link", href, text: href });
-      // Whatever the URL did not own rides along, so nothing is dropped.
-      if (raw.length > href.length) nodes.push({ kind: "text", text: raw.slice(href.length) });
-    }
-
-    rest = rest.slice(match.index + raw.length);
+    if (match.index > from) nodes.push({ kind: "text", text: text.slice(from, match.index) });
+    nodes.push({ kind: "link", href, text: href });
+    from = match.index + href.length;
   }
 
+  // Whatever no URL owned rides along, so nothing is dropped.
+  if (from < text.length) nodes.push({ kind: "text", text: text.slice(from) });
   return nodes;
 };
 
@@ -414,7 +404,11 @@ const parseInline = (input: string): readonly Inline[] => {
     if (char === "[") {
       const match = /^\[([^[\]]*)\]\(([^()\s]*)\)/.exec(input.slice(at));
       if (match !== null) {
-        push({ kind: "link", href: match[2] ?? "", text: match[1] ?? "" });
+        const text = match[1] ?? "";
+        const href = safeHref(match[2] ?? "");
+        // A link to somewhere a bot may not send a person keeps its words and
+        // loses the link.
+        push(href === undefined ? { kind: "text", text } : { kind: "link", href, text });
         at += match[0].length;
         continue;
       }
@@ -450,22 +444,45 @@ const inlineNode = <M>(node: Inline, h: HtmlBuilder<M>): InlineHtml => {
     case "code":
       return h.code([], [node.text]);
     case "link":
-      // The app routes link clicks itself, so no target: a new browsing context
-      // is opened by update, not by the DOM.
-      return h.a([h.Href(node.href), h.Rel("noreferrer noopener")], [node.text]);
+      return linkNode(node, h);
     case "break":
       return h.br([]);
   }
 };
 
+/**
+ * A link, and where it goes. Link text is the bot's to choose, so when the
+ * words are not the address itself the real destination is printed beside
+ * them: `[Approve](https://elsewhere)` cannot pass itself off as the approval.
+ */
+const linkNode = <M>(node: Extract<Inline, { kind: "link" }>, h: HtmlBuilder<M>): Html => {
+  const destination = node.text === node.href ? undefined : destinationOf(node.href);
+  // The app routes link clicks itself, so no target: a new browsing context is
+  // opened by update, not by the DOM.
+  return h.a(
+    [h.Href(node.href), h.Rel("noreferrer noopener")],
+    destination === undefined
+      ? [node.text]
+      : [node.text, h.span([h.Class("md-link-host")], [` (${destination})`])],
+  );
+};
+
 const TRIVIAL_TAIL = /^[\s\p{P}]*$/u;
 
-/** A paragraph that is nothing but one link becomes a full-width chip, but a
- *  sentence that happens to end in a link stays prose. Trailing punctuation
- *  rides along so nothing is dropped. */
+/**
+ * A paragraph that is nothing but one bare web address becomes a full-width
+ * chip — the shape an approval link arrives in — but a sentence that happens
+ * to end in a link stays prose. Trailing punctuation rides along so nothing is
+ * dropped.
+ *
+ * The chip is the loudest thing in a transcript, so only a link that shows its
+ * own address gets it: one whose words differ from where it goes stays an
+ * ordinary link with its destination printed beside it.
+ */
 const linkRowOf = (inline: readonly Inline[]): readonly Inline[] | undefined => {
   const [head, ...tail] = inline;
   if (head === undefined || head.kind !== "link") return undefined;
+  if (head.text !== head.href || webHostOf(head.href) === undefined) return undefined;
   if (!tail.every((node) => node.kind === "text" && TRIVIAL_TAIL.test(node.text))) return undefined;
 
   return inline;

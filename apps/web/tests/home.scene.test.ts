@@ -29,6 +29,7 @@ import {
   DecideApproval,
   RetryTask,
   Roster,
+  SignOut,
   Status,
   StopBot,
   Transcript,
@@ -106,10 +107,16 @@ test("a pending approval is a card with its tool, question, draft and foot", () 
       "waiting 4m",
     ),
     expect(
-      within(selector('[data-approval="apr_send"]'), role("button", { name: "Allow" })),
+      within(
+        selector('[data-approval="apr_send"]'),
+        role("button", { name: "Allow botmail.send for Hermes" }),
+      ),
     ).toBeEnabled(),
     expect(
-      within(selector('[data-approval="apr_send"]'), role("button", { name: "Deny" })),
+      within(
+        selector('[data-approval="apr_send"]'),
+        role("button", { name: "Deny botmail.send for Hermes" }),
+      ),
     ).toBeEnabled(),
   );
 });
@@ -141,8 +148,12 @@ test("the draft button opens the whole draft in a dialog, with the decision in i
       "Send the drafted reply to arena@northwind.co?",
     ),
     // The decision sits with the draft rather than behind it.
-    expect(within(selector(".dlg-panel"), role("button", { name: "Allow" }))).toExist(),
-    expect(within(selector(".dlg-panel"), role("button", { name: "Deny" }))).toExist(),
+    expect(
+      within(selector(".dlg-panel"), role("button", { name: "Allow botmail.send for Hermes" })),
+    ).toExist(),
+    expect(
+      within(selector(".dlg-panel"), role("button", { name: "Deny botmail.send for Hermes" })),
+    ).toExist(),
   );
 });
 
@@ -155,7 +166,7 @@ test("Allow sends the decision and the card leaves once the server agrees", () =
       }),
     ),
     expect(selector(".hdr-sub")).toContainText("1 blocked"),
-    click(role("button", { name: "Allow" })),
+    click(role("button", { name: "Allow botmail.send for Hermes" })),
     Command.expectExact(DecideApproval({ bot: "hermes", approvalId: "apr_send", action: "allow" })),
     Command.resolve(
       DecideApproval,
@@ -181,7 +192,7 @@ test("Deny sends the other decision", () => {
         hermes: botChannel({ status: statusOf({ approvals: [approvalOf()] }) }),
       }),
     ),
-    click(role("button", { name: "Deny" })),
+    click(role("button", { name: "Deny botmail.send for Hermes" })),
     Command.expectExact(DecideApproval({ bot: "hermes", approvalId: "apr_send", action: "deny" })),
     Command.resolve(
       DecideApproval,
@@ -458,5 +469,17 @@ test("Bots pushes its route and asks for the roster and catalog", () => {
     Command.resolve(Catalog, Message.CatalogLoaded({ catalog: CATALOG })),
     Command.resolve(Navigate, Message.Navigated()),
     expect(role("heading", { name: "Bots", level: 1 })).toExist(),
+  );
+});
+
+test("Sign out asks the server to end the session, and says so when it cannot", () => {
+  scene(
+    { update, view },
+    given(appModel(homeScreen())),
+    click(role("button", { name: "Sign out" })),
+    Command.expectExact(SignOut()),
+    Command.resolve(SignOut, Message.SignOutFailed({ error: "offline" })),
+    settleToastScene(),
+    expect(selector("[data-toast]")).toHaveText("Couldn't sign out (offline)."),
   );
 });

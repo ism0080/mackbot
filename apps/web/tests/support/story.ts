@@ -8,7 +8,9 @@
  */
 import { AsyncData } from "foldkit";
 
+import type { Message } from "../../src/message.ts";
 import type { Channel, Model } from "../../src/model.ts";
+import { update } from "../../src/update.ts";
 import { transcriptModel } from "./fixtures.ts";
 
 /** One bot's channel, failing the test when the update never created it. */
@@ -61,3 +63,31 @@ export const transcriptIn = (model: Model, bot: string) => dataOf(channelOf(mode
 /** The ids of a transcript's entries, oldest first. */
 export const entryIds = (model: Model, bot: string): readonly number[] =>
   transcriptIn(model, bot).entries.map((entry) => entry.id);
+
+/**
+ * Messages applied straight through `update`, with every Command they asked
+ * for. A Story will not send a Message while a Command is unresolved, so the
+ * races that matter here — a click and the URL change it causes, a double
+ * press while the first request is in flight — are driven this way instead.
+ */
+export const foldMessages = (
+  start: Model,
+  messages: readonly Message[],
+): Readonly<{ model: Model; issued: readonly string[] }> =>
+  messages.reduce<{ model: Model; issued: readonly string[] }>(
+    (state, next) => {
+      const result = update(state.model, next);
+      return {
+        model: result.model,
+        issued: [
+          ...state.issued,
+          ...(result.commands ?? []).map((command) =>
+            command.args === undefined
+              ? command.name
+              : `${command.name} ${JSON.stringify(command.args)}`,
+          ),
+        ],
+      };
+    },
+    { model: start, issued: [] },
+  );

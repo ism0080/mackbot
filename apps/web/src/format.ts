@@ -1,13 +1,37 @@
 import type { EntryView } from "@mackbot/contract";
 
-/** Clock labels are UTC so a fixture renders the same wherever it is opened. */
+/** Clock labels are the reader's own local time: a person reads "09:14" as
+ *  the hour on their wall, not the hour in Greenwich. */
 const CLOCK = new Intl.DateTimeFormat("en-GB", {
   hour: "2-digit",
   minute: "2-digit",
-  timeZone: "UTC",
 });
 
 export const clockOf = (at: number): string => CLOCK.format(new Date(at));
+
+const DAY = new Intl.DateTimeFormat("en-GB", {
+  weekday: "short",
+  day: "numeric",
+  month: "short",
+});
+
+/** The local calendar day an instant falls on, as a key two instants share
+ *  exactly when they fall on the same day. */
+export const dayKeyOf = (at: number): string => {
+  const date = new Date(at);
+  return `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+};
+
+/** A transcript's day divider: "Today" and "Yesterday" relative to `now`, and
+ *  the date itself for anything older. */
+export const dayLabelOf = (at: number, now: number): string => {
+  const key = dayKeyOf(at);
+  if (key === dayKeyOf(now)) return "Today";
+  const today = new Date(now);
+  const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1);
+  if (key === dayKeyOf(yesterday.getTime())) return "Yesterday";
+  return DAY.format(new Date(at));
+};
 
 /** "4m", the way the sketch's "waiting 4m" and "running 6m" read. */
 export const elapsedOf = (at: number, now: number): string => {

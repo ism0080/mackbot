@@ -18,12 +18,12 @@ export const Message = defineMessageUnion({
    *  already outstanding. */
   PolledStatus: {},
   /** One decoded SSE frame, with the sequence number of its `id:` line as the
-   *  resume cursor. */
+   *  resume cursor. A frame that came without a usable id carries none, and
+   *  leaves the cursor where it was. */
   FrameReceived: {
     bot: Schema.String,
     frame: FrameSchema,
-    seq: Schema.Number,
-    at: Schema.Number,
+    seq: Schema.optional(Schema.Number),
   },
   /** The stream reached its durable tail. */
   StreamUpToDate: { bot: Schema.String },
@@ -142,7 +142,19 @@ export const Message = defineMessageUnion({
     page: TranscriptPageSchema,
     before: Schema.optional(Schema.Number),
   },
-  TranscriptFailed: { bot: Schema.String, error: Schema.String },
+  TranscriptFailed: {
+    bot: Schema.String,
+    error: Schema.String,
+    before: Schema.optional(Schema.Number),
+  },
+  /** The page was shown or hidden. */
+  ChangedVisibility: { visible: Schema.Boolean },
+  /** The user asked to end this browser's session. */
+  ClickedSignOut: {},
+  /** The server cleared the session; the page is on its way to the login. */
+  SignedOut: {},
+  /** The sign-out did not reach the server, so the session is still open. */
+  SignOutFailed: { error: Schema.String },
   /** The user asked for the roster, where the bots are edited. */
   ClickedOpenBots: {},
   /** The roster arrived, and its own values seed the screen's drafts. */

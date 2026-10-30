@@ -40,8 +40,39 @@ const draftOf = (bot: string, approval: ApprovalView, h: HtmlBuilder<Message>): 
       [
         h.span([h.Class("ap-draft-label")], [artifact.label]),
         h.span([h.Class("ap-draft-peek")], [artifact.body]),
-        h.span([h.Class("ap-draft-more")], ["Read the full draft ›"]),
+        h.span(
+          [h.Class("ap-draft-more")],
+          ["Read the full draft ", h.span([h.AriaHidden(true)], ["›"])],
+        ),
       ],
+      h,
+    ),
+  ];
+};
+
+/**
+ * The two decisions on an approval, wherever it is shown. A screen can list
+ * several approvals at once, so each button's accessible name says which
+ * approval it decides, beginning with the word it shows.
+ */
+const decisionButtons = (
+  bot: string,
+  approval: ApprovalView,
+  h: HtmlBuilder<Message>,
+): readonly Html[] => {
+  const subject = `${approval.toolPath} for ${botName(bot)}`;
+  const decide = (action: "allow" | "deny") =>
+    Message.DecidedApproval({ bot, approvalId: approval.approvalId, action });
+
+  return [
+    button(
+      { className: "btn ghost", ariaLabel: `Deny ${subject}`, onClick: decide("deny") },
+      ["Deny"],
+      h,
+    ),
+    button(
+      { className: "btn primary", ariaLabel: `Allow ${subject}`, onClick: decide("allow") },
+      ["Allow"],
       h,
     ),
   ];
@@ -66,30 +97,7 @@ const reviewPanel = (
     h.div(
       [h.Class("dlg-actions")],
       [
-        button(
-          {
-            className: "btn ghost",
-            onClick: Message.DecidedApproval({
-              bot,
-              approvalId: approval.approvalId,
-              action: "deny",
-            }),
-          },
-          ["Deny"],
-          h,
-        ),
-        button(
-          {
-            className: "btn primary",
-            onClick: Message.DecidedApproval({
-              bot,
-              approvalId: approval.approvalId,
-              action: "allow",
-            }),
-          },
-          ["Allow"],
-          h,
-        ),
+        ...decisionButtons(bot, approval, h),
         // The escape hatch needs no Message of its own: the bundle closes the
         // dialog, and the fold clears what was under review.
         h.button([...closeButton, h.Class("dlg-close")], ["Close"]),
@@ -167,35 +175,7 @@ const approvalCard = (
       ),
       h.p([h.Class("ap-q")], [approval.summary]),
       ...draftOf(bot, approval, h),
-      h.div(
-        [h.Class("ap-actions")],
-        [
-          button(
-            {
-              className: "btn ghost",
-              onClick: Message.DecidedApproval({
-                bot,
-                approvalId: approval.approvalId,
-                action: "deny",
-              }),
-            },
-            ["Deny"],
-            h,
-          ),
-          button(
-            {
-              className: "btn primary",
-              onClick: Message.DecidedApproval({
-                bot,
-                approvalId: approval.approvalId,
-                action: "allow",
-              }),
-            },
-            ["Allow"],
-            h,
-          ),
-        ],
-      ),
+      h.div([h.Class("ap-actions")], decisionButtons(bot, approval, h)),
       h.div([h.Class("ap-foot")], [`waiting ${elapsedOf(approval.requestedAt, now)} · ${bot}`]),
     ],
   );
@@ -263,7 +243,7 @@ const recentRow = (bot: string, text: string, stamp: string, h: HtmlBuilder<Mess
           h.span([h.Class("rmeta")], [`${botName(bot)} · ${stamp}`]),
         ],
       ),
-      h.span([h.Class("chev")], ["›"]),
+      h.span([h.Class("chev"), h.AriaHidden(true)], ["›"]),
     ],
   );
 
@@ -294,7 +274,7 @@ const chatRow = (chat: Chat, h: HtmlBuilder<Message>): Html =>
         ],
       ),
       chat.busy ? h.span([h.Class("tag work")], ["working"]) : h.span([h.Class("tag")], ["idle"]),
-      h.span([h.Class("chev")], ["›"]),
+      h.span([h.Class("chev"), h.AriaHidden(true)], ["›"]),
     ],
   );
 
@@ -388,6 +368,15 @@ export const home = (model: Model, h: HtmlBuilder<Message>): Html => {
                   onClick: Message.ClickedOpenBots(),
                 },
                 ["Bots"],
+                h,
+              ),
+              button(
+                {
+                  className: "btn ghost",
+                  data: [["sign-out", ""]],
+                  onClick: Message.ClickedSignOut(),
+                },
+                ["Sign out"],
                 h,
               ),
             ],

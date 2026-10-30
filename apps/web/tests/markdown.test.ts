@@ -244,3 +244,62 @@ describe("renderMarkdown", () => {
     expect(findAll(html("1. one"), "ol[start]")).toEqual([]);
   });
 });
+
+describe("hostile links", () => {
+  // A bot's words are model output, and model output can be steered. A link
+  // that would run script or leave through an odd door keeps its words only.
+  const hostile = [
+    "javascript:alert%281%29",
+    "JaVaScRiPt:alert%281%29",
+    "vbscript:msgbox",
+    "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+    "javascript&#58;alert%281%29",
+    "&#106;avascript:alert%281%29",
+    "//evil.example/approve",
+    "/\\evil.example/approve",
+    "\u0001javascript:alert%281%29",
+  ];
+
+  test.each(hostile)("[click](%s) renders the words without a link", (href) => {
+    const rendered = html(`[click](${href})`);
+
+    expect(findAll(rendered, "a")).toEqual([]);
+    expect(textContent(rendered)).toBe("click");
+  });
+
+  test("web, mail and in-app links survive", () => {
+    const rendered = html(
+      "[a](https://example.com/x) [b](http://example.com) [c](mailto:me@example.com) [d](/chat/hermes)",
+    );
+
+    expect(findAll(rendered, "a").map((link) => Option.getOrThrow(attr(link, "href")))).toEqual([
+      "https://example.com/x",
+      "http://example.com",
+      "mailto:me@example.com",
+      "/chat/hermes",
+    ]);
+  });
+
+  test("a link dressed as an approval is no chip, and names where it goes", () => {
+    const rendered = html("[Approve](https://evil.example/steal)");
+
+    expect(findAll(rendered, "p.md-link-row")).toEqual([]);
+    expect(findAll(rendered, "a").map(textContent)).toEqual(["Approve (evil.example)"]);
+  });
+
+  test("the host named is the one the browser goes to, not the one in front of an @", () => {
+    expect(
+      findAll(html("[Approve](https://botmail.pro@evil.example/x)"), "a").map(textContent),
+    ).toEqual(["Approve (evil.example)"]);
+    // Without the `//` there is no host to print, so there is no link either.
+    expect(findAll(html("[Approve](https:evil.example)"), "a")).toEqual([]);
+  });
+
+  test("a bare approval URL is still the chip, showing its own address", () => {
+    const rendered = html("https://botmail.pro/approve/abc123");
+
+    expect(findAll(rendered, "p.md-link-row a").map(textContent)).toEqual([
+      "https://botmail.pro/approve/abc123",
+    ]);
+  });
+});

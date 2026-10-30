@@ -113,11 +113,10 @@ export const CATALOG: ModelCatalog = {
   },
 };
 
-export const frameOf = (frame: Frame, seq: number, bot = "hermes") => ({
+export const frameOf = (frame: Frame, seq: number | undefined, bot = "hermes") => ({
   bot,
   frame,
   seq,
-  at: FIXTURE_NOW,
 });
 
 /** The Model every story starts from: the app's real `init`, with the URL's screen. */
@@ -139,11 +138,12 @@ export const transcriptModel = (
       [bot]: {
         status: AsyncData.Idle(),
         transcript: AsyncData.Idle(),
-        stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0 },
+        stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0, failures: 0 },
         frames: [],
         draft: "",
         sending: false,
         refreshing: false,
+        loadingEarlier: false,
         pending: [],
         ...channel,
       },

@@ -14,6 +14,7 @@ import type { ApprovalDecision } from "@mackbot/contract";
 import { Clock, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Command, Http } from "foldkit";
+import { load } from "foldkit/navigation";
 
 import { Message } from "./message.ts";
 import { retryRequest, retryRoute } from "./task-retry.ts";
@@ -38,16 +39,13 @@ const StatusResponseSchema = Schema.Struct({
 });
 
 /**
- * The Worker origin. Same-origin by default because the Worker serves this app;
- * a deployment that splits them sets `VITE_API_BASE`. No token is bundled — the
- * browser surface authenticates with a cookie, because `EventSource` cannot set
- * an `Authorization` header. The bearer never leaves the machine.
+ * The Worker origin. The Worker serves this app, so every route is same-origin:
+ * the browser surface authenticates with a session cookie — `EventSource`
+ * cannot set an `Authorization` header — and the write routes check `Origin`,
+ * so a split deployment would need neither to hold. No token is bundled; the
+ * bearer never leaves the machine.
  */
-export const apiUrl = (path: string): string => {
-  const configured = import.meta.env.VITE_API_BASE;
-  if (configured === undefined || configured === "") return `${globalThis.location.origin}${path}`;
-  return `${configured.replace(/\/+$/u, "")}${path}`;
-};
+export const apiUrl = (path: string): string => `${globalThis.location.origin}${path}`;
 
 const describe = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
@@ -85,7 +83,7 @@ export const Transcript = Command.define("Transcript", {
       return Message.TranscriptLoaded({ bot, page, before });
     }).pipe(
       Effect.catch((cause) =>
-        Effect.succeed(Message.TranscriptFailed({ bot, error: describe(cause) })),
+        Effect.succeed(Message.TranscriptFailed({ bot, error: describe(cause), before })),
       ),
       Effect.provide(Http.layer),
     ),
@@ -375,4 +373,30 @@ export const RetryTask = Command.define("RetryTask", {
       ),
       Effect.provide(Http.layer),
     ),
+});
+
+/**
+ * `POST /logout`, then a full load of the login page. The session cookie is
+ * `HttpOnly`, so only the server can clear it; once it has, nothing this app
+ * holds is worth keeping, so the page is replaced rather than re-rendered.
+ */
+export const SignOut = Command.define("SignOut", {
+  messages: [Message.SignedOut, Message.SignOutFailed],
+  execute: Effect.gen(function* () {
+    const client = yield* HttpClient.HttpClient;
+    const request = HttpClientRequest.post(apiUrl("/logout")).pipe(
+      // Cookie authentication is in play here; the server requires this
+      // header's presence as proof the request came from a same-origin fetch.
+      HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+    );
+    const response = yield* client.execute(request);
+    if (response.status < 200 || response.status >= 300) {
+      return yield* Effect.fail(`the sign-out route answered ${response.status}`);
+    }
+    yield* load("/login");
+    return Message.SignedOut();
+  }).pipe(
+    Effect.catch((cause) => Effect.succeed(Message.SignOutFailed({ error: describe(cause) }))),
+    Effect.provide(Http.layer),
+  ),
 });

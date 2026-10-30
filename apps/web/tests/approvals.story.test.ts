@@ -70,8 +70,9 @@ describe("deciding an approval", () => {
         expect(other.status).toBe("pending");
         expect(other.decidedAt).toBeUndefined();
 
-        // The optimistic flip stamps the client's clock on the decided card.
-        expect(decided.decidedAt).toBe(at);
+        // The decision time is the server's to stamp, so the optimistic flip
+        // leaves it unset rather than guessing.
+        expect(decided.decidedAt).toBeUndefined();
       }),
       Command.resolve(
         DecideApproval({ bot: "hermes", approvalId: "apr_send", action: "allow" }),
@@ -176,6 +177,7 @@ describe("deciding an approval", () => {
     // does not name a winning state, so the refusal only asks for fresh status.
     const seededRefused = {
       ...seeded(),
+      polling: false,
       channels: {
         hermes: botChannel("hermes", {
           status: AsyncData.succeed(

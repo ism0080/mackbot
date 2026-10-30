@@ -10,11 +10,10 @@
  */
 import type { BotConfig, ModelCatalog } from "@mackbot/contract";
 import { ThinkingLevelSchema } from "@mackbot/contract";
-import { Option } from "effect";
 import * as Schema from "effect/Schema";
-import { AsyncData } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
+import { dataOf, errorOf } from "./data.ts";
 import { Message } from "./message.ts";
 import type { Model, ThinkingLevel } from "./model.ts";
 import { botName, toast } from "./partials.ts";
@@ -22,18 +21,6 @@ import { button, selectField, textareaField, textField } from "./ui.ts";
 
 /** The value the level select carries when the bot declares no level. */
 const NO_LEVEL = "";
-
-const dataOf = <A, E>(data: AsyncData.AsyncData<A, E>): A | undefined =>
-  Option.match(AsyncData.getData(data), {
-    onNone: () => undefined,
-    onSome: (value) => value,
-  });
-
-const errorOf = <A, E>(data: AsyncData.AsyncData<A, E>): E | undefined =>
-  Option.match(AsyncData.getError(data), {
-    onNone: () => undefined,
-    onSome: (error) => error,
-  });
 
 /**
  * The models the picker offers: the catalog's, plus the bot's own model when

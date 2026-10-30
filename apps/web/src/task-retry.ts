@@ -11,6 +11,7 @@
  * app's other Commands.
  */
 import type { RetryRequest, TaskView } from "@mackbot/contract";
+import * as Schema from "effect/Schema";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
 import { Message } from "./message.ts";
@@ -20,9 +21,14 @@ import { button } from "./ui.ts";
 /** The harness's own reason for a task it parked instead of running again. */
 export const PARKED_REASON = "restart_limit";
 
+/** The part of a task that says the harness parked it. */
+const ParkedTaskSchema = Schema.Struct({
+  status: Schema.Literal("blocked"),
+  reason: Schema.Literal(PARKED_REASON),
+});
+
 /** A task the harness parked, and that only a human can run again. */
-export const isParked = (task: TaskView): boolean =>
-  task.status === "blocked" && task.reason === PARKED_REASON;
+export const isParked: (task: TaskView) => boolean = Schema.is(ParkedTaskSchema);
 
 /** The route that runs a parked task again. */
 export const retryRoute = (bot: string): string => `/retry/${encodeURIComponent(bot)}`;

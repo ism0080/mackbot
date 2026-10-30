@@ -5,24 +5,17 @@
  * no way into a conversation. This screen lists every bot the fleet reports,
  * and each row opens its transcript, where the composer can start new work.
  */
-import type { BotView } from "@mackbot/contract";
 import { Option } from "effect";
-import { AsyncData } from "foldkit";
 import type { Html, HtmlBuilder } from "foldkit/html";
 
+import { statusOf } from "./channel.ts";
 import { Message } from "./message.ts";
 import type { Model } from "./model.ts";
 import { avatar, botName, modelLabel, toast } from "./partials.ts";
 import { button } from "./ui.ts";
 
-const statusIn = (model: Model, bot: string): Option.Option<BotView> =>
-  Option.match(Option.fromNullishOr(model.channels[bot]), {
-    onNone: () => Option.none(),
-    onSome: (channel) => AsyncData.getData(channel.status),
-  });
-
 const botRow = (model: Model, bot: string, h: HtmlBuilder<Message>): Html => {
-  const status = statusIn(model, bot);
+  const status = statusOf(model.channels[bot]);
   const label = Option.match(status, {
     onNone: () => "no status yet",
     onSome: (view) => modelLabel(view),
@@ -42,7 +35,7 @@ const botRow = (model: Model, bot: string, h: HtmlBuilder<Message>): Html => {
         [h.Class("runit-main")],
         [h.span([h.Class("rt")], [botName(bot)]), h.span([h.Class("rmeta")], [label])],
       ),
-      h.span([h.Class("chev")], ["›"]),
+      h.span([h.Class("chev"), h.AriaHidden(true)], ["›"]),
     ],
   );
 };

@@ -5,7 +5,7 @@ import { describe, expect, test } from "vitest";
 import { Chat, Status, Transcript } from "../src/api.ts";
 import { Message } from "../src/message.ts";
 import { update } from "../src/update.ts";
-import { FIXTURE_NOW, modelWith, statusOf, transcriptOf } from "./support/fixtures.ts";
+import { FIXTURE_NOW, frameOf, modelWith, statusOf, transcriptOf } from "./support/fixtures.ts";
 import { settleToast, toastText } from "./support/toast.ts";
 import {
   botChannel,
@@ -53,6 +53,25 @@ describe("polling gate", () => {
       Command.expectNone(),
       model((m) => {
         expect(m.polling).toBe(true);
+      }),
+    );
+  });
+
+  test("a tab coming back reads the fleet at once; one going away asks for nothing", () => {
+    story(
+      update,
+      given(modelWith({ polling: false })),
+      message(Message.ChangedVisibility({ visible: false })),
+      Command.expectNone(),
+      model((m) => {
+        expect(m.visible).toBe(false);
+      }),
+      message(Message.ChangedVisibility({ visible: true })),
+      Command.expectExact(Status),
+      Command.resolve(Status, Message.StatusLoaded({ bots: {}, errors: {}, at })),
+      model((m) => {
+        expect(m.visible).toBe(true);
+        expect(m.polling).toBe(false);
       }),
     );
   });
@@ -109,7 +128,7 @@ describe("StatusLoaded", () => {
       channels: {
         hermes: botChannel("hermes", {
           transcript: AsyncData.succeed(transcriptOf()),
-          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 2 },
+          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 2, failures: 0 },
         }),
       },
     };
@@ -140,7 +159,7 @@ describe("StatusLoaded", () => {
       channels: {
         hermes: botChannel("hermes", {
           transcript: AsyncData.succeed(transcriptOf()),
-          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 2 },
+          stream: { phase: "live", generation: 3, lastSeq: 40, attempt: 2, failures: 0 },
         }),
       },
     };
@@ -168,7 +187,7 @@ describe("StatusLoaded", () => {
 describe("sending a chat message", () => {
   test("SubmittedChat trims the draft, clears it and emits Chat with the trimmed text", () => {
     const seeded = {
-      ...modelWith(),
+      ...modelWith({ polling: false }),
       channels: {
         hermes: botChannel("hermes", {
           draft: "   hello there   ",
@@ -186,7 +205,7 @@ describe("sending a chat message", () => {
         const channel = channelOf(m, "hermes");
         expect(channel.draft).toBe("");
         expect(channel.sending).toBe(true);
-        expect(channel.pending).toEqual(["hello there"]);
+        expect(channel.pending).toEqual([{ text: "hello there", after: 1 }]);
         expect(m.toast.entries).toHaveLength(0);
       }),
       Command.resolve(
@@ -244,7 +263,7 @@ describe("sending a chat message", () => {
 
   test("ChatSent clears sending, marks the transcript refreshing and asks for both routes", () => {
     const seeded = {
-      ...modelWith(),
+      ...modelWith({ polling: false }),
       channels: {
         hermes: botChannel("hermes", {
           sending: true,
@@ -263,6 +282,7 @@ describe("sending a chat message", () => {
         const channel = channelOf(m, "hermes");
         expect(channel.sending).toBe(false);
         expect(channel.refreshing).toBe(true);
+        expect(m.polling).toBe(true);
       }),
       Command.resolve(Status, Message.StatusLoaded({ bots: {}, errors: {}, at })),
       Command.resolve(
@@ -275,6 +295,141 @@ describe("sending a chat message", () => {
     );
   });
 
+  test("ChatSent while a status read is in flight asks again once it lands", () => {
+    // The read in flight left before the server admitted the message, so its
+    // answer cannot name the run the send opened.
+    const seeded = {
+      ...modelWith({ polling: true }),
+      channels: {
+        hermes: botChannel("hermes", {
+          sending: true,
+          transcript: AsyncData.succeed(transcriptOf()),
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      message(Message.ChatSent({ bot: "hermes", operationId: "http:1" })),
+      Command.expectExact(Transcript({ bot: "hermes" })),
+      Command.resolve(
+        Transcript({ bot: "hermes" }),
+        Message.TranscriptLoaded({ bot: "hermes", page: transcriptOf() }),
+      ),
+      // The older read lands; the newer one goes out in its place.
+      message(Message.StatusLoaded({ bots: { hermes: statusOf() }, errors: {}, at })),
+      Command.expectExact(Status),
+      model((m) => {
+        expect(m.polling).toBe(true);
+        expect(m.statusStale).toBe(false);
+      }),
+      Command.resolve(
+        Status,
+        Message.StatusLoaded({ bots: { hermes: statusOf() }, errors: {}, at }),
+      ),
+      model((m) => {
+        expect(m.polling).toBe(false);
+      }),
+    );
+  });
+
+  test("a second identical message stays pending until its own copy is recorded", () => {
+    const seeded = {
+      ...modelWith({ polling: false }),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(
+            transcriptOf({
+              // An older "yes" in the history must not retire either send.
+              entries: [{ id: 1, kind: "message", role: "user", text: "yes" }],
+            }),
+          ),
+        }),
+      },
+    };
+    const recorded = (ids: readonly number[]) =>
+      Message.TranscriptLoaded({
+        bot: "hermes",
+        page: transcriptOf({
+          entries: ids.map((id) => ({ id, kind: "message", role: "user", text: "yes" })),
+        }),
+      });
+
+    story(
+      update,
+      given(seeded),
+      message(Message.EditedChatText({ bot: "hermes", text: "yes" })),
+      message(Message.SubmittedChat({ bot: "hermes" })),
+      Command.resolve(Chat, Message.ChatSent({ bot: "hermes", operationId: "http:1" })),
+      Command.resolve(Status, Message.StatusLoaded({ bots: {}, errors: {}, at })),
+      Command.resolve(Transcript({ bot: "hermes" }), recorded([1, 2])),
+      model((m) => {
+        expect(channelOf(m, "hermes").pending).toEqual([]);
+      }),
+      message(Message.EditedChatText({ bot: "hermes", text: "yes" })),
+      message(Message.SubmittedChat({ bot: "hermes" })),
+      Command.resolve(Chat, Message.ChatSent({ bot: "hermes", operationId: "http:2" })),
+      Command.resolve(Status, Message.StatusLoaded({ bots: {}, errors: {}, at })),
+      // The server has not recorded the second one yet: the newest page still
+      // ends at the first "yes".
+      Command.resolve(Transcript({ bot: "hermes" }), recorded([1, 2])),
+      model((m) => {
+        expect(channelOf(m, "hermes").pending.map((sent) => sent.text)).toEqual(["yes"]);
+      }),
+      message(recorded([1, 2, 3])),
+      model((m) => {
+        expect(channelOf(m, "hermes").pending).toEqual([]);
+      }),
+    );
+  });
+
+  test("two sends of the same words before either is recorded retire one at a time", () => {
+    const seeded = {
+      ...modelWith(),
+      channels: {
+        hermes: botChannel("hermes", {
+          transcript: AsyncData.succeed(transcriptOf({ entries: [] })),
+          pending: [
+            { text: "yes", after: -1 },
+            { text: "yes", after: -1 },
+          ],
+        }),
+      },
+    };
+
+    story(
+      update,
+      given(seeded),
+      message(
+        Message.FrameReceived(
+          frameOf(
+            {
+              kind: "append",
+              at,
+              entries: [{ id: 5, kind: "message", role: "user", text: "yes" }],
+            },
+            1,
+          ),
+        ),
+      ),
+      model((m) => {
+        expect(channelOf(m, "hermes").pending).toEqual([{ text: "yes", after: 5 }]);
+      }),
+      // The same entry arriving again — the poll catching up — is still only
+      // the first send's copy.
+      message(
+        Message.TranscriptLoaded({
+          bot: "hermes",
+          page: transcriptOf({ entries: [{ id: 5, kind: "message", role: "user", text: "yes" }] }),
+        }),
+      ),
+      model((m) => {
+        expect(channelOf(m, "hermes").pending).toHaveLength(1);
+      }),
+    );
+  });
+
   test("ChatFailed restores the text and explains what happened", () => {
     const seeded = {
       ...modelWith(),
@@ -282,7 +437,7 @@ describe("sending a chat message", () => {
         hermes: botChannel("hermes", {
           draft: "",
           sending: true,
-          pending: ["hello"],
+          pending: [{ text: "hello", after: -1 }],
         }),
       },
     };
@@ -311,7 +466,7 @@ describe("sending a chat message", () => {
         hermes: botChannel("hermes", {
           draft: "a newer thought",
           sending: true,
-          pending: ["the failed one"],
+          pending: [{ text: "the failed one", after: -1 }],
         }),
       },
     };
@@ -443,7 +598,12 @@ describe("transcript merging", () => {
     const seeded = {
       ...modelWith(),
       channels: {
-        hermes: botChannel("hermes", { pending: ["hello", "still waiting"] }),
+        hermes: botChannel("hermes", {
+          pending: [
+            { text: "hello", after: -1 },
+            { text: "still waiting", after: -1 },
+          ],
+        }),
       },
     };
 
@@ -462,7 +622,7 @@ describe("transcript merging", () => {
         }),
       ),
       model((m) => {
-        expect(channelOf(m, "hermes").pending).toEqual(["still waiting"]);
+        expect(channelOf(m, "hermes").pending.map((sent) => sent.text)).toEqual(["still waiting"]);
       }),
     );
   });

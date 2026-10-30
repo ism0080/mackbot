@@ -1,14 +1,18 @@
 import { Dialog } from "@foldkit/ui";
-import { AsyncData } from "foldkit";
+import { AsyncData, Update } from "foldkit";
 import type { Url } from "foldkit/url";
 
 import { Status } from "./api.ts";
 import { EMPTY_DRAFT, Screen } from "./model.ts";
+import type { Model } from "./model.ts";
+import { enterScreen } from "./request-fold.ts";
 import { screenOfPath } from "./route.ts";
 import { TOAST_ID, Toast } from "./toast.ts";
-export const init = (url?: Url) => ({
-  model: {
-    screen: url === undefined ? Screen.Home() : screenOfPath(url.pathname),
+
+export const init = (url?: Url) => {
+  const screen = url === undefined ? Screen.Home() : screenOfPath(url.pathname);
+  const model: Model = {
+    screen,
     now: 0,
     roster: AsyncData.Idle(),
     toast: Toast.init({ id: TOAST_ID }),
@@ -20,13 +24,21 @@ export const init = (url?: Url) => ({
     atBottom: true,
     channels: {},
     polling: true,
+    statusStale: false,
+    visible: true,
     registry: AsyncData.Idle(),
     catalog: AsyncData.Idle(),
     draft: EMPTY_DRAFT,
     newBotId: "",
-  },
-  commands: [Status()],
-});
+  };
+
+  // A deep link asks for what its screen shows, the same as arriving by a
+  // click would: `/bots` reads the roster, `/chat/:bot` its transcript.
+  return Update.combine(model, [
+    (current) => ({ model: current, commands: [Status()] }),
+    enterScreen(screen),
+  ]);
+};
 
 export { Model } from "./model.ts";
 export { Message } from "./message.ts";

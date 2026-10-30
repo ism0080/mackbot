@@ -12,7 +12,10 @@ import {
   click,
   expect,
   expectAll,
+  expectHandled,
+  expectIgnored,
   given,
+  keydown,
   role,
   scene,
   selector,
@@ -234,6 +237,58 @@ test("a send that fails puts the text back and says so", () => {
     expect(selector("[data-pending]")).toBeAbsent(),
     expect(selector("[data-toast]")).toContainText("Couldn't reach Hermes (offline)."),
     expect(selector("[data-toast]")).toContainText("Your message is still here."),
+  );
+});
+
+test("Enter sends the draft, and Shift+Enter leaves it for a new line", () => {
+  const said = "Check the inbox.";
+
+  scene(
+    { update, view },
+    given(hermes({ status: statusOf(), page: transcriptOf({ entries: [] }) })),
+    type(role("textbox", { name: "Message Hermes" }), said),
+    keydown(role("textbox", { name: "Message Hermes" }), "Enter", { shiftKey: true }),
+    expectIgnored(),
+    Command.expectNone(),
+    // An input method reports the key that commits a composition as `Process`.
+    keydown(role("textbox", { name: "Message Hermes" }), "Process"),
+    expectIgnored(),
+    Command.expectNone(),
+    keydown(role("textbox", { name: "Message Hermes" }), "Enter"),
+    expectHandled(),
+    Command.expectExact(Chat({ bot: "hermes", text: said })),
+    Command.resolve(Chat, Message.ChatFailed({ bot: "hermes", error: "offline" })),
+    settleToastScene(),
+  );
+});
+
+test("the thread is a polite live log, divided by the day each part was said", () => {
+  const twoDaysAgo = FIXTURE_NOW - 2 * 24 * 60 * 60_000;
+
+  scene(
+    { update, view },
+    given(
+      hermes({
+        status: statusOf(),
+        page: transcriptOf({
+          entries: [
+            entryOf({ id: 1, role: "user", text: "Earlier this week.", at: twoDaysAgo }),
+            entryOf({ id: 2, role: "assistant", text: "Same day.", at: twoDaysAgo + 60_000 }),
+            entryOf({ id: 3, role: "user", text: "Now.", at: FIXTURE_NOW }),
+          ],
+        }),
+      }),
+    ),
+    expect(role("log", { name: "Conversation with Hermes" })).toHaveAttr("aria-live", "polite"),
+    expectAll(all.selector(".dayline")).toHaveCount(2),
+    (simulation) => {
+      const body = textContent(simulation.html);
+      // The older day's divider precedes its entries; "Today" sits between
+      // them and the newest one.
+      viExpect(body.indexOf("Earlier this week.")).toBeLessThan(body.indexOf("Today"));
+      viExpect(body.indexOf("Today")).toBeLessThan(body.indexOf("Now."));
+      return simulation;
+    },
   );
 });
 
