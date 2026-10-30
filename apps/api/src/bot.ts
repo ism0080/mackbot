@@ -209,7 +209,8 @@ export class Bot extends DurableObject<Env> {
           onRefused: (refusal) => {
             this.#record({
               kind: "approval.refused",
-              operationId: pausedCallAuditId(refusal.requestId ?? "(missing)"),
+              // The model chose this id, so it is capped before it is stored.
+              operationId: pausedCallAuditId((refusal.requestId ?? "(missing)").slice(0, 200)),
               detail: { reason: refusal.reason },
             });
           },
