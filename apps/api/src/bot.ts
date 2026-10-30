@@ -39,7 +39,7 @@ import { parkedTasks } from "./task-retry.ts";
 import { settingsFor } from "./runtime-policy.ts";
 import { createFeed } from "./feed.ts";
 import type { Feed } from "./feed.ts";
-import { abortOperationId } from "./operation.ts";
+import { abortOperationId, pausedCallAuditId } from "./operation.ts";
 import { resolveModelRef } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
 import type { ThinkingLevel } from "@mackbot/contract/catalog";
@@ -69,7 +69,7 @@ import * as Schema from "effect/Schema";
 
 import { BotRegistryService } from "./services/bot-registry.ts";
 import { createAuditLog } from "./audit-log.ts";
-import type { AuditEvent, AuditLog } from "./audit-log.ts";
+import type { AuditEvent, AuditLog, AuditRecord } from "./audit-log.ts";
 import type { Env, WaitResult } from "./env.ts";
 import { describeCause } from "./errors.ts";
 import { conversationIdOf, taskIdOf } from "./ids.ts";
@@ -201,6 +201,15 @@ export class Bot extends DurableObject<Env> {
               kind: "executor.call",
               operationId: `executor:${call.name}`,
               detail: { tool: call.name, durationMs: call.durationMs },
+            });
+          },
+          // A resume nobody vouched for is the harness overruling the model,
+          // which is exactly what the trail is for.
+          onRefused: (refusal) => {
+            this.#record({
+              kind: "approval.refused",
+              operationId: pausedCallAuditId(refusal.requestId ?? "(missing)"),
+              detail: { reason: refusal.reason },
             });
           },
         }),
@@ -610,6 +619,7 @@ export class Bot extends DurableObject<Env> {
       startWait: (wait) => this.#startWait(wait),
       submit: (input, operationId, whenBusy, session) =>
         this.submit(input, operationId, whenBusy, undefined, session),
+      audit: (record) => this.#record(record),
     });
     return this.#approvalStore;
   }
@@ -809,6 +819,15 @@ export class Bot extends DurableObject<Env> {
         ),
       ),
     );
+  }
+
+  /**
+   * The audit sink the seams outside this class report through: the row is
+   * stamped here, and written behind the caller so a slow or failed write never
+   * holds up the approval or the delegation it describes.
+   */
+  #record(record: AuditRecord): void {
+    void this.#appendAudit({ timestamp: Date.now(), botId: this.lifecycle.name, ...record });
   }
 
   /**

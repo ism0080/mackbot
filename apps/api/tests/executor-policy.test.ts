@@ -198,4 +198,25 @@ describe("executor_resume gate", () => {
       expect(await check({ requestId: "req", response: accept({ a: "1" }) })).toBeUndefined();
     });
   });
+  describe("refusals reach the host", () => {
+    test("each refused resume is reported with its requestId and reason, the block text aside", async () => {
+      const refusals: unknown[] = [];
+      const check = policy({ req: "pending" }, { onRefused: (refusal) => refusals.push(refusal) });
+      const blocked = await check({ requestId: "req", response: accept() });
+      await check({ response: accept() });
+      expect(refusals).toEqual([
+        { requestId: "req", reason: "a human has not decided on it yet." },
+        { requestId: undefined, reason: "no requestId names an approval." },
+      ]);
+      expect(blocked).toEqual({ block: expect.stringContaining("not decided") });
+    });
+
+    test("an admitted resume and other tools report nothing", async () => {
+      const refusals: unknown[] = [];
+      const check = policy({ req: "approved" }, { onRefused: (refusal) => refusals.push(refusal) });
+      await check({ requestId: "req", response: accept() });
+      await check({ requestId: "anything" }, fakeTask(), "executor_call");
+      expect(refusals).toEqual([]);
+    });
+  });
 });

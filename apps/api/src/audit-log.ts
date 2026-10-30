@@ -15,7 +15,49 @@ import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlStorage } from "./sql.ts";
 import { currentTimeMillis } from "./clock.ts";
 
-export const AuditEventSchema = Schema.Struct({
+/**
+ * Every kind this revision writes. A row is one of these, so a typo in a new
+ * audit call is rejected rather than stored under a kind nothing looks for.
+ */
+export const AUDIT_KINDS = [
+  "submission.accepted",
+  "submission.replayed",
+  "settlement.done",
+  "settlement.unanswered",
+  "session.aborted",
+  "task.retried",
+  "compaction.requested",
+  "executor.call",
+  // The approval lifecycle, from the pause to the resume that carries the
+  // decision out, and every way it ends otherwise.
+  "approval.requested",
+  "approval.limited",
+  "approval.decided",
+  "approval.redelivered",
+  "approval.delivered",
+  "approval.resumed",
+  "approval.expired",
+  "approval.refused",
+  // One delegation, as the delegating bot saw it.
+  "delegation.requested",
+  "delegation.refused",
+  "delegation.delivered",
+  "delegation.reattached",
+  "delegation.backgrounded",
+  "delegation.settled",
+  "delegation.failed",
+] as const;
+
+export const AuditKindSchema = Schema.Literals(AUDIT_KINDS);
+
+export type AuditKind = typeof AuditKindSchema.Type;
+
+/**
+ * A row as the table holds it. The kind is any string here, because earlier
+ * revisions wrote kinds this one no longer does (`settlement`, `tool.call`), and
+ * a row they left behind must still read back.
+ */
+export const StoredAuditEventSchema = Schema.Struct({
   timestamp: Schema.Number,
   botId: Schema.String,
   kind: Schema.String,
@@ -23,7 +65,22 @@ export const AuditEventSchema = Schema.Struct({
   detail: Schema.Json,
 });
 
+/** A row this revision writes: a stored row whose kind is one of {@link AUDIT_KINDS}. */
+export const AuditEventSchema = Schema.Struct({
+  ...StoredAuditEventSchema.fields,
+  kind: AuditKindSchema,
+});
+
 export type AuditEvent = Schema.Schema.Type<typeof AuditEventSchema>;
+
+/** One audit row as a seam reports it; the host stamps the time and the bot. */
+export type AuditRecord = Omit<AuditEvent, "timestamp" | "botId">;
+
+/**
+ * Where a seam outside the Durable Object reports what it did. It never fails
+ * its caller: an unwritable audit trail must not take down the work it describes.
+ */
+export type AuditSink = (record: AuditRecord) => void;
 
 /** How long an audit row is kept: thirty days. */
 export const AUDIT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -42,6 +99,15 @@ const CREATE_SETTLEMENT_INDEX_SQL =
 
 const CREATE_TIMESTAMP_INDEX_SQL =
   "CREATE INDEX IF NOT EXISTS mackbot_audit_timestamp ON mackbot_audit (timestamp)";
+
+/**
+ * One settled delegation per operation. The call that waited and the reporter
+ * that took over can both see the target settle, and either may rerun after an
+ * eviction, but the delegation settled once. An index of its own rather than a
+ * wider `settlement.%` one, because an existing index is never redefined.
+ */
+const CREATE_DELEGATION_SETTLED_INDEX_SQL =
+  "CREATE UNIQUE INDEX IF NOT EXISTS mackbot_audit_delegation_settled ON mackbot_audit (operation_id, kind) WHERE kind = 'delegation.settled'";
 
 const INSERT_SQL =
   "INSERT INTO mackbot_audit (timestamp, bot_id, kind, operation_id, detail) VALUES (?, ?, ?, ?, ?) ON CONFLICT DO NOTHING";
@@ -69,6 +135,7 @@ export const createAuditLog = (storage: SqlStorage): AuditLog => {
     write(executor, CREATE_TABLE_SQL);
     write(executor, CREATE_SETTLEMENT_INDEX_SQL);
     write(executor, CREATE_TIMESTAMP_INDEX_SQL);
+    write(executor, CREATE_DELEGATION_SETTLED_INDEX_SQL);
     migrated = true;
   };
 

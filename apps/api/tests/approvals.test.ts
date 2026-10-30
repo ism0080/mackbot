@@ -9,6 +9,8 @@ import {
   WAIT_DEADLINE_MS,
 } from "../src/approvals.ts";
 import type { ApprovalStoreOptions, ApprovalWaitInput } from "../src/approvals.ts";
+import type { AuditRecord } from "../src/audit-log.ts";
+import { approvalOperationId, pausedCallAuditId } from "../src/operation.ts";
 import type { SqlRow, SqlStorage, SqlValue } from "../src/sql.ts";
 
 const T0 = Date.UTC(2026, 9, 1, 9, 0, 0);
@@ -314,5 +316,125 @@ describe("prune", () => {
     expect(store.stateOf("fresh").state).toBe("pending");
     // The row is gone, not merely hidden: the requestId can be recorded again.
     expect(store.recordPaused(pause("old"))).toBe("recorded");
+  });
+});
+
+describe("audit", () => {
+  /** A store whose audit rows are collected, kinds first. */
+  const audited = (options: Omit<ApprovalStoreOptions, "now" | "audit"> = {}) => {
+    const records: AuditRecord[] = [];
+    const rig = setup({ ...options, audit: (record) => records.push(record) });
+    return { ...rig, records, kinds: () => records.map((record) => record.kind) };
+  };
+
+  test("a recorded pause is requested once, under the steer's operation, without its draft", () => {
+    const { store, records } = audited();
+    store.recordPaused(pause("req-1", "42"));
+    store.recordPaused(pause("req-1", "42"));
+    const approvalId = approvalIdOf(store);
+    expect(records).toEqual([
+      {
+        kind: "approval.requested",
+        operationId: approvalOperationId(approvalId),
+        detail: { approvalId, toolPath: "tools.mail.send", session: "42" },
+      },
+    ]);
+    expect(JSON.stringify(records)).not.toContain("ada@example.com");
+  });
+
+  test("a pause past the cap is audited as limited, by its request id", () => {
+    const { store, records } = audited();
+    for (let index = 0; index < MAX_PENDING_APPROVALS; index += 1) {
+      store.recordPaused(pause(`req-${index}`));
+    }
+    store.recordPaused(pause("one-too-many"));
+    expect(records.at(-1)).toEqual({
+      kind: "approval.limited",
+      operationId: pausedCallAuditId("one-too-many"),
+      detail: { session: "7", pending: MAX_PENDING_APPROVALS },
+    });
+  });
+
+  test("a decision records its action and channel, never its form content", async () => {
+    const { store, records } = audited();
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    await store.decide(
+      approvalId,
+      { action: "allow", content: { to: "ada@example.com" } },
+      recorder().submit,
+    );
+    expect(records.at(-1)).toEqual({
+      kind: "approval.decided",
+      operationId: approvalOperationId(approvalId),
+      detail: { approvalId, action: "allow", withContent: true, channel: "http" },
+    });
+    expect(JSON.stringify(records)).not.toContain("ada@example.com");
+  });
+
+  test("a repeated decision is a redelivery, and one a resume carried out is nothing", async () => {
+    const { store, kinds } = audited();
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    const { submit } = recorder();
+    await store.decide(approvalId, { action: "deny" }, submit);
+    await store.decide(approvalId, { action: "deny" }, submit);
+    store.claimResume("req-1");
+    await store.decide(approvalId, { action: "deny" }, submit);
+    expect(kinds()).toEqual([
+      "approval.requested",
+      "approval.decided",
+      "approval.redelivered",
+      "approval.resumed",
+    ]);
+  });
+
+  test("the resume is audited once, with the decision it spent", async () => {
+    const { store, records } = audited();
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    await store.decide(approvalId, { action: "allow" }, recorder().submit);
+    store.claimResume("req-1");
+    store.claimResume("req-1");
+    expect(records.filter((record) => record.kind === "approval.resumed")).toEqual([
+      {
+        kind: "approval.resumed",
+        operationId: approvalOperationId(approvalId),
+        detail: { approvalId, status: "allowed" },
+      },
+    ]);
+  });
+
+  test("the wait's delivery is audited", async () => {
+    const { store, kinds } = audited({ submit: recorder().submit });
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    await store.decide(approvalId, { action: "allow" }, recorder().submit);
+    await store.deliver(approvalId);
+    expect(kinds().at(-1)).toBe("approval.delivered");
+  });
+
+  test("each expiry is audited once, whichever path expired it", () => {
+    const { store, records, advance } = audited();
+    store.recordPaused(pause("by-wait"));
+    store.recordPaused(pause("by-deadline"));
+    const [byWait, byDeadline] = store.pending();
+    store.expire(byWait!.approvalId);
+    store.expire(byWait!.approvalId);
+    advance(WAIT_DEADLINE_MS);
+    store.pending();
+    store.pending();
+    expect(records.filter((record) => record.kind === "approval.expired")).toEqual([
+      {
+        kind: "approval.expired",
+        operationId: approvalOperationId(byWait!.approvalId),
+        detail: { approvalId: byWait!.approvalId, by: "wait" },
+      },
+      {
+        kind: "approval.expired",
+        operationId: approvalOperationId(byDeadline!.approvalId),
+        detail: { approvalId: byDeadline!.approvalId, by: "deadline" },
+      },
+    ]);
   });
 });

@@ -51,6 +51,13 @@ export const cronOperationId = (botId: string, scheduledTime: number): string =>
 export const abortOperationId = (session: string): string => `abort:${session}`;
 
 /**
+ * The audit id of a paused call that has no approval: one the bot was not
+ * allowed to record, or a resume nobody vouched for. It names Executor's
+ * request id, the only thing such a call has.
+ */
+export const pausedCallAuditId = (requestId: string): string => `paused:${requestId}`;
+
+/**
  * The bots a delegation passed through before its source, as the `via:`
  * segment of its id. Absent for a delegation that started with a person or a
  * schedule, so the id of a first hand-off is what it always was.

@@ -96,10 +96,21 @@ export type ExecutorPolicyOptions = {
   readonly claimResume?: (requestId: string) => boolean;
   /** Called after every Executor call the policy wraps. */
   readonly onCall: (call: { readonly name: string; readonly durationMs: number }) => void;
+  /**
+   * Called for every `executor_resume` the policy refuses, with the requestId
+   * when the model sent a usable one and why it was refused.
+   */
+  readonly onRefused?: (refusal: {
+    readonly requestId: string | undefined;
+    readonly reason: string;
+  }) => void;
 };
 
 /** The refusal that stops a call before it runs. */
 type Refusal = { readonly block: string };
+
+/** A refusal with the reason on its own, for the host's record. */
+type Verdict = Refusal & { readonly why: string };
 
 const ContentSchema = Schema.Record(
   Schema.String,
@@ -185,10 +196,11 @@ const requestIdText = (requestId: JsonValue | undefined): string =>
  * The refusal itself. It names the requestId, so the model can tell which
  * approval it invented from the one a human decided on.
  */
-const refuse = (requestId: JsonValue | undefined, why: string): Refusal => ({
+const refuse = (requestId: JsonValue | undefined, why: string): Verdict => ({
   block:
     `executor_resume refused for requestId ${requestIdText(requestId)}: ${why} ` +
     "Resume only a requestId a human has decided on, and carry that decision through.",
+  why,
 });
 
 /**
@@ -238,11 +250,11 @@ export const createExecutorPolicy = (options: ExecutorPolicyOptions): Extension 
    * would run the effect before the answer. The resume must carry the decision
    * as the human gave it, and only once.
    */
-  const beforeTool = async (
+  const verdict = async (
     call: ToolHookCall,
     api: HookApi,
     context: Context,
-  ): Promise<Refusal | undefined> => {
+  ): Promise<Verdict | undefined> => {
     if (call.name !== RESUME_TOOL) return undefined;
     const requestId = requestIdOf(call.arguments.requestId);
     if (requestId === undefined) {
@@ -279,6 +291,18 @@ export const createExecutorPolicy = (options: ExecutorPolicyOptions): Extension 
     }
     await api.memo(CLAIM_MEMO, requestId, context);
     return undefined;
+  };
+
+  /** The gate as pi runs it: the verdict, with every refusal reported to the host. */
+  const beforeTool = async (
+    call: ToolHookCall,
+    api: HookApi,
+    context: Context,
+  ): Promise<Refusal | undefined> => {
+    const refused = await verdict(call, api, context);
+    if (refused === undefined) return undefined;
+    options.onRefused?.({ requestId: requestIdOf(call.arguments.requestId), reason: refused.why });
+    return { block: refused.block };
   };
 
   /**

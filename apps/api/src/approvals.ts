@@ -38,6 +38,9 @@
  * marks it when it gives up, and every read marks the ones whose deadline has
  * passed, so a lost wait cannot leave a row pending forever.
  *
+ * Each step of that life (requested, limited, decided, redelivered, delivered,
+ * resumed, expired) is reported to the host's audit sink as it happens.
+ *
  * `request_id` and `session_id` are Executor's and pi's, and stay here. The
  * `ApprovalView` the browser sees is this module's projection of the row, and
  * it carries neither.
@@ -50,12 +53,13 @@ import type { Extension, NextTaskState, Task } from "@earendil-works/pi-durable"
 
 import { sameApprovalContent } from "./executor-policy.ts";
 import type { ApprovalStatus } from "./executor-policy.ts";
-import { approvalOperationId } from "./operation.ts";
+import { approvalOperationId, pausedCallAuditId } from "./operation.ts";
+import type { AuditSink } from "./audit-log.ts";
 import { describeCause } from "./errors.ts";
 import { toJson, toPrettyJson } from "./json.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage, SqlValue } from "./sql.ts";
-import { ApprovalDecisionSchema, ApprovalViewSchema } from "@mackbot/contract";
+import { ApprovalDecisionSchema, ApprovalViewSchema, originOf } from "@mackbot/contract";
 import type { ApprovalDecision, ApprovalView, DecisionAccepted } from "@mackbot/contract";
 import { currentTimeMillis } from "./clock.ts";
 
@@ -139,11 +143,12 @@ const DELIVERY_SQL =
 const CLAIM_SQL =
   "UPDATE mackbot_approvals SET resumed_at = ? WHERE request_id = ? AND resumed_at IS NULL AND status IN ('allowed', 'denied')";
 
+// Both expiries return the rows they changed, so each expiry is audited once.
 const EXPIRE_SQL =
-  "UPDATE mackbot_approvals SET status = 'expired', decided_at = ? WHERE approval_id = ? AND status = 'pending'";
+  "UPDATE mackbot_approvals SET status = 'expired', decided_at = ? WHERE approval_id = ? AND status = 'pending' RETURNING approval_id";
 
 const EXPIRE_STALE_SQL =
-  "UPDATE mackbot_approvals SET status = 'expired', decided_at = ? WHERE status = 'pending' AND requested_at <= ?";
+  "UPDATE mackbot_approvals SET status = 'expired', decided_at = ? WHERE status = 'pending' AND requested_at <= ? RETURNING approval_id";
 
 // Only finished rows: a pending approval is still someone's open question.
 const PRUNE_SQL =
@@ -158,6 +163,8 @@ const RequestStateSchema = Schema.Struct({
 });
 
 const PendingCountSchema = Schema.Struct({ count: Schema.Number });
+
+const ApprovalIdRowSchema = Schema.Struct({ approval_id: Schema.String });
 
 const ApprovalRecordSchema = Schema.Struct({
   approval_id: Schema.String,
@@ -295,6 +302,12 @@ export interface ApprovalStoreOptions {
   readonly submit?: ApprovalSubmitter;
   /** The clock the store stamps and expires rows by; the wall clock by default. */
   readonly now?: () => number;
+  /**
+   * Where the store reports each step of an approval's life. Absent, nothing is
+   * audited. The rows carry ids, the tool path and the decision's action, never
+   * the draft input or the form content.
+   */
+  readonly audit?: AuditSink;
 }
 
 /** What one delivery attempt found. */
@@ -438,6 +451,7 @@ export function createApprovalStore(
 ): ApprovalStore {
   const executor: SqlExecutor = storage.sql;
   const now = options?.now ?? currentTimeMillis;
+  const audit: AuditSink = options?.audit ?? (() => undefined);
   let migrated = false;
 
   // The table is created lazily, so a bot that already ran an earlier revision
@@ -461,13 +475,26 @@ export function createApprovalStore(
     migrated = true;
   };
 
+  /** The approval ids a statement returned, each audited as expired. */
+  const auditExpired = (rows: readonly SqlRow[], by: "deadline" | "wait"): void => {
+    for (const row of rows) {
+      for (const expired of Option.toArray(Schema.decodeUnknownOption(ApprovalIdRowSchema)(row))) {
+        audit({
+          kind: "approval.expired",
+          operationId: approvalOperationId(expired.approval_id),
+          detail: { approvalId: expired.approval_id, by },
+        });
+      }
+    }
+  };
+
   /**
    * Expire every pending approval whose wait has given up. A wait that never
    * started, or died with its Durable Object, would otherwise leave its row
    * pending forever.
    */
   const expireStale = (at: number): void => {
-    write(executor, EXPIRE_STALE_SQL, at, at - WAIT_DEADLINE_MS);
+    auditExpired(read(executor, EXPIRE_STALE_SQL, at, at - WAIT_DEADLINE_MS), "deadline");
   };
 
   /** Migrate, expire what is past its deadline, and say what time it is. */
@@ -513,6 +540,11 @@ export function createApprovalStore(
       console.error(
         `mackbot: bot "${paused.bot}" already has ${MAX_PENDING_APPROVALS} pending approvals; a further paused call was not recorded and cannot be resumed.`,
       );
+      audit({
+        kind: "approval.limited",
+        operationId: pausedCallAuditId(paused.requestId),
+        detail: { session: paused.session, pending: MAX_PENDING_APPROVALS },
+      });
       return "limited";
     }
     const envelope = envelopeOf(paused.envelope);
@@ -535,6 +567,11 @@ export function createApprovalStore(
       paused.requestId,
       paused.session,
     );
+    audit({
+      kind: "approval.requested",
+      operationId: approvalOperationId(approvalId),
+      detail: { approvalId, toolPath: tool ?? "executor", session: paused.session },
+    });
     const wait: ApprovalWaitInput = {
       approvalId,
       requestId: paused.requestId,
@@ -596,6 +633,17 @@ export function createApprovalStore(
     // Durable Object SQL runs synchronously on one thread, so nothing can claim
     // between the read above and this write.
     write(executor, CLAIM_SQL, now(), requestId);
+    for (const claimed of Option.toArray(
+      Schema.decodeUnknownOption(ApprovalIdRowSchema)(
+        read(executor, REQUEST_APPROVAL_SQL, requestId)[0],
+      ),
+    )) {
+      audit({
+        kind: "approval.resumed",
+        operationId: approvalOperationId(claimed.approval_id),
+        detail: { approvalId: claimed.approval_id, status: before.status },
+      });
+    }
     return true;
   };
 
@@ -644,6 +692,11 @@ export function createApprovalStore(
       if (!sameDecision(row.decision, decision)) return undefined;
       const decided = { approvalId, bot: row.bot, status: row.status, decidedAt: row.decidedAt };
       if (row.resumed) return decided;
+      audit({
+        kind: "approval.redelivered",
+        operationId: approvalOperationId(approvalId),
+        detail: { approvalId, action: row.decision.action },
+      });
       await submit(
         resumeText(row.requestId, row.decision),
         approvalOperationId(approvalId),
@@ -655,6 +708,19 @@ export function createApprovalStore(
     // Durable before the steer: a crash after this leaves the decision recorded
     // and the row out of `pending`, a crash before it leaves the approval alone.
     write(executor, DECIDE_SQL, status, at, toJson(decision), approvalId);
+    // The decision's only way in is its HTTP route, and the steer it admits is
+    // named for that route, so the steer's origin is the channel it came by.
+    // No person is named: the Worker has one operator and no user identity.
+    audit({
+      kind: "approval.decided",
+      operationId: approvalOperationId(approvalId),
+      detail: {
+        approvalId,
+        action: decision.action,
+        withContent: decision.content !== undefined,
+        channel: originOf(approvalOperationId(approvalId)),
+      },
+    });
     await submit(
       resumeText(row.requestId, decision),
       approvalOperationId(approvalId),
@@ -700,6 +766,11 @@ export function createApprovalStore(
     // Without a submitter the decision stands and the steer waits for one:
     // the wait keeps looking rather than giving up on a decided approval.
     if (submit === undefined) return "pending";
+    audit({
+      kind: "approval.delivered",
+      operationId: approvalOperationId(approvalId),
+      detail: { approvalId, action: row.decision.action },
+    });
     await submit(
       resumeText(row.requestId, row.decision),
       approvalOperationId(approvalId),
@@ -711,7 +782,7 @@ export function createApprovalStore(
 
   const expire = (approvalId: string): void => {
     ensureMigrated();
-    write(executor, EXPIRE_SQL, now(), approvalId);
+    auditExpired(read(executor, EXPIRE_SQL, now(), approvalId), "wait");
   };
 
   const prune = (olderThanMs: number = APPROVAL_RETENTION_MS): void => {
