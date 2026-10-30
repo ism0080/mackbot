@@ -16,6 +16,10 @@ import {
   EventsQuerySchema,
   FrameSchema,
   MAX_LIMIT,
+  THREAD_TITLE_MAX,
+  ThreadListSchema,
+  ThreadsQuerySchema,
+  ThreadUpdateSchema,
   TranscriptQuerySchema,
   trimmedNonEmpty,
 } from "../src/index.ts";
@@ -26,6 +30,8 @@ import type {
   CompactRequest,
   EventsQuery,
   Frame,
+  ThreadList,
+  ThreadUpdate,
   TranscriptQuery,
 } from "../src/index.ts";
 
@@ -518,5 +524,69 @@ describe("FrameSchema", () => {
 
   test("rejects an append frame whose entries are not a list", () => {
     reject(FrameSchema, { kind: "append", at: TIMESTAMP, entries: "entry" });
+  });
+});
+
+describe("ThreadsQuerySchema", () => {
+  test("no query lists the live threads, and include=archived asks for the rest", () => {
+    expect(accept(ThreadsQuerySchema, {})).toEqual({});
+    expect(accept(ThreadsQuerySchema, { include: "archived" })).toEqual({ include: "archived" });
+  });
+
+  test.each(["all", "", "ARCHIVED"])("rejects include=%j", (include) => {
+    reject(ThreadsQuerySchema, { include });
+  });
+});
+
+describe("ThreadUpdateSchema", () => {
+  test("accepts an archive, a restore and a rename", () => {
+    expect(accept<ThreadUpdate>(ThreadUpdateSchema, { archived: true })).toEqual({
+      archived: true,
+    });
+    expect(accept<ThreadUpdate>(ThreadUpdateSchema, { archived: false, title: "Plan" })).toEqual({
+      archived: false,
+      title: "Plan",
+    });
+  });
+
+  test("a title may be as long as the ceiling and no longer", () => {
+    accept(ThreadUpdateSchema, { title: "x".repeat(THREAD_TITLE_MAX) });
+    reject(ThreadUpdateSchema, { title: "x".repeat(THREAD_TITLE_MAX + 1) });
+  });
+
+  test.each<Schema.Json>([{ title: "   " }, { title: "" }, { archived: "true" }])(
+    "rejects %j",
+    (input) => {
+      reject(ThreadUpdateSchema, input);
+    },
+  );
+});
+
+describe("ThreadListSchema", () => {
+  test("the root conversation is the one entry without a thread id", () => {
+    const list = accept<ThreadList>(ThreadListSchema, {
+      bot: "hermes",
+      threads: [
+        { session: "1", archived: false, busy: false, pendingApprovals: 1 },
+        {
+          thread: "plan",
+          session: "3",
+          title: "Plan the week",
+          createdAt: TIMESTAMP,
+          lastActivityAt: TIMESTAMP,
+          archived: false,
+          busy: true,
+          pendingApprovals: 0,
+        },
+      ],
+    });
+    expect(list.threads.map((view) => view.thread)).toEqual([undefined, "plan"]);
+  });
+
+  test("rejects a thread that does not say whether it is busy", () => {
+    reject(ThreadListSchema, {
+      bot: "hermes",
+      threads: [{ session: "1", archived: false, pendingApprovals: 0 }],
+    });
   });
 });

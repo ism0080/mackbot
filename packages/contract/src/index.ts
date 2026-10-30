@@ -203,6 +203,12 @@ export const ApprovalViewSchema = Schema.Struct({
   approvalId: Schema.String,
   bot: Schema.String,
   thread: Schema.optional(Schema.String),
+  /**
+   * The conversation the call paused in, so a client shows the card in that
+   * conversation and no other. Absent on an approval recorded before the
+   * field existed.
+   */
+  session: Schema.optional(Schema.String),
   toolPath: Schema.String,
   summary: Schema.String,
   artifact: Schema.optional(Schema.Struct({ label: Schema.String, body: Schema.String })),
@@ -418,6 +424,38 @@ export const TranscriptPageSchema = Schema.Struct({
   stream: StreamStatusViewSchema,
 });
 export type TranscriptPage = typeof TranscriptPageSchema.Type;
+
+/**
+ * One conversation of a bot, as its conversation list shows it.
+ *
+ * `thread` is the name a client gave the conversation when it started it; it
+ * is absent for the bot's main conversation, which the cron briefs and every
+ * thread-less chat land in. `session` is pi's id for the conversation, which
+ * is what `/abort` and `/compact` take. `title` is the first words the
+ * conversation was started with unless someone renamed it, and the two times
+ * are absent when the conversation predates mackbot recording them.
+ */
+export const ThreadViewSchema = Schema.Struct({
+  thread: Schema.optional(Schema.String),
+  session: Schema.String,
+  title: Schema.optional(Schema.String),
+  createdAt: Schema.optional(Schema.Number),
+  lastActivityAt: Schema.optional(Schema.Number),
+  archived: Schema.Boolean,
+  busy: Schema.Boolean,
+  pendingApprovals: Schema.Number,
+});
+export type ThreadView = typeof ThreadViewSchema.Type;
+
+/**
+ * `GET /threads/:bot`'s answer: the main conversation first, then every
+ * thread, the most recently active first.
+ */
+export const ThreadListSchema = Schema.Struct({
+  bot: Schema.String,
+  threads: Schema.Array(ThreadViewSchema),
+});
+export type ThreadList = typeof ThreadListSchema.Type;
 
 // ---------------------------------------------------------------------------
 // Frames — one committed conversation value, projected for rendering
@@ -647,6 +685,31 @@ export const EventsQuerySchema = Schema.Struct({
   from: Schema.optional(nonNegativeInt),
 });
 export type EventsQuery = typeof EventsQuerySchema.Type;
+
+/**
+ * `GET /threads/:bot`'s query. An archived thread is left out of the list
+ * unless `include=archived` asks for it.
+ */
+export const ThreadsQuerySchema = Schema.Struct({
+  include: Schema.optional(Schema.Literals(["archived"])),
+});
+export type ThreadsQuery = typeof ThreadsQuerySchema.Type;
+
+/** The longest title a thread carries, whether derived or chosen. */
+export const THREAD_TITLE_MAX = 80;
+
+/**
+ * The body of `POST /threads/:bot/:thread`: archive or restore a thread, or
+ * rename it. A conversation cannot be deleted, so archiving is how a thread
+ * leaves the list; its history stays reachable by its thread id.
+ */
+export const ThreadUpdateSchema = Schema.Struct({
+  archived: Schema.optional(Schema.Boolean),
+  title: Schema.optional(
+    trimmedNonEmpty.check(Schema.makeFilter((input: string) => input.length <= THREAD_TITLE_MAX)),
+  ),
+});
+export type ThreadUpdate = typeof ThreadUpdateSchema.Type;
 
 // ---------------------------------------------------------------------------
 // Paging

@@ -115,7 +115,7 @@ const INSERT_SQL =
   "INSERT OR IGNORE INTO mackbot_approvals (approval_id, bot_id, thread, tool_path, summary, artifact, status, requested_at, decided_at, request_id, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
 
 const COLUMNS =
-  "approval_id, bot_id, thread, tool_path, summary, artifact, status, requested_at, decided_at";
+  "approval_id, bot_id, thread, tool_path, summary, artifact, status, requested_at, decided_at, session_id";
 
 // Oldest first: the home screen shows what has been waiting longest. Bounded
 // by the cap on pending approvals, so a read can never return an unbounded list.
@@ -183,6 +183,7 @@ const ApprovalRecordSchema = Schema.Struct({
   status: StatusSchema,
   requested_at: Schema.Number,
   decided_at: Schema.NullOr(Schema.Number),
+  session_id: Schema.NullOr(Schema.String),
 });
 
 const DecidableRecordSchema = Schema.Struct({
@@ -229,6 +230,7 @@ const rowToApproval = (row: SqlRow): Option.Option<ApprovalView> =>
       approvalId: record.approval_id,
       bot: record.bot_id,
       thread: record.thread ?? undefined,
+      session: record.session_id ?? undefined,
       toolPath: record.tool_path,
       summary: record.summary,
       artifact:

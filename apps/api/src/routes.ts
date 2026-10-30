@@ -10,6 +10,7 @@
 
 import * as Effect from "effect/Effect";
 import * as ManagedRuntime from "effect/ManagedRuntime";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import {
@@ -19,6 +20,8 @@ import {
   BotWriteSchema,
   CompactRequestSchema,
   RetryRequestSchema,
+  ThreadsQuerySchema,
+  ThreadUpdateSchema,
   TranscriptQuerySchema,
 } from "@mackbot/contract";
 import type {
@@ -30,6 +33,8 @@ import type {
   ModelCatalog,
   Roster,
   StatusResponse,
+  ThreadList,
+  ThreadView,
 } from "@mackbot/contract";
 import { MODEL_VARIANTS } from "@mackbot/contract/catalog";
 
@@ -160,6 +165,35 @@ export const handleTranscript = async ({ url, bot }: BotScoped): Promise<Respons
   if (query === undefined) return jsonError(400, "invalid query");
   const page = await bot.transcript(query);
   return Response.json(page);
+};
+
+/** A bot's conversations: the root, then every thread it has not archived. */
+export const handleThreads = async ({ url, bot }: BotScoped): Promise<Response> => {
+  const query = await Effect.runPromise(
+    Schema.decodeUnknownEffect(ThreadsQuerySchema)(Object.fromEntries(url.searchParams)).pipe(
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+  if (query === undefined) return jsonError(400, "invalid query");
+  const list = await bot.threads(query.include === "archived");
+  return Response.json(list satisfies ThreadList);
+};
+
+/** A path segment as the client meant it; a malformed escape names nothing. */
+const decodeSegment = Option.liftThrowable(decodeURIComponent);
+
+/**
+ * Archive, restore or rename one thread. A thread that was never started is a
+ * 404: a write here never creates a conversation.
+ */
+export const handleThreadUpdate = async ({ request, bot, path }: BotScoped): Promise<Response> => {
+  const thread = Option.getOrUndefined(decodeSegment(path[2]!));
+  if (thread === undefined || thread.trim().length === 0) return jsonError(400, "invalid thread");
+  const update = await readJsonBody(request, ThreadUpdateSchema);
+  if (update === undefined) return invalidBody();
+  const updated = await bot.updateThread(thread, update);
+  if (updated === undefined) return jsonError(404, "unknown thread");
+  return Response.json(updated satisfies ThreadView);
 };
 
 /**

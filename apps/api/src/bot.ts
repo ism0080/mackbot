@@ -31,7 +31,17 @@ import { createBotDelegation } from "./bot-delegation.ts";
 import { commitmentsExtension } from "./commitments.ts";
 import { voiceExtension } from "./voice.ts";
 import { syncExtensions } from "./registry-sync.ts";
-import { legacyThreadSession, recordThread, ThreadsDoc } from "./threads.ts";
+import {
+  legacyThreadSession,
+  legacyThreadSessions,
+  listThreads,
+  recordActivity,
+  recordThread,
+  recordThreadUpdate,
+  threadViewOf,
+  ThreadsDoc,
+} from "./threads.ts";
+import type { ConversationLiveness } from "./threads.ts";
 import { classifyFailure, createFailureStore } from "./failures.ts";
 import type { FailureStore } from "./failures.ts";
 import { projectTasks } from "./liveness.ts";
@@ -67,6 +77,9 @@ import type {
   PendingOperationView,
   RetryResult,
   StreamStatusView,
+  ThreadList,
+  ThreadUpdate,
+  ThreadView,
   TranscriptPage,
   TranscriptQuery,
 } from "@mackbot/contract";
@@ -287,12 +300,13 @@ export class Bot extends DurableObject<Env> {
   ): Promise<PiReceipt> {
     await this.lifecycle.start();
     const sessionId =
-      session ?? (thread === undefined ? ROOT_SESSION : await this.#sessionForThread(thread));
+      session ?? (thread === undefined ? ROOT_SESSION : await this.#sessionForThread(thread, text));
     await this.#applyConfiguration(sessionId);
     // Attach before the submission is durable, so no harness event of the run
     // it admits can be produced before the watcher is listening.
     await this.#feed().attach(sessionId);
     const receipt = await this.harness.submit(text, { operationId, whenBusy, session: sessionId });
+    if (receipt.accepted) await this.#recordActivity(sessionId);
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -822,8 +836,10 @@ export class Bot extends DurableObject<Env> {
    * creation that follows a miss cannot interleave with another submit's for
    * the same thread.
    */
-  #sessionForThread(thread: string): Promise<string> {
-    const created = this.#sessionCreations.then(() => this.#createSessionForThread(thread));
+  #sessionForThread(thread: string, firstText: string): Promise<string> {
+    const created = this.#sessionCreations.then(() =>
+      this.#createSessionForThread(thread, firstText),
+    );
     // A failed creation must not poison the chain for the next one.
     this.#sessionCreations = created.then(
       () => undefined,
@@ -832,10 +848,11 @@ export class Bot extends DurableObject<Env> {
     return created;
   }
 
-  async #createSessionForThread(thread: string): Promise<string> {
+  async #createSessionForThread(thread: string, firstText: string): Promise<string> {
     const existing = await this.#sessionIdForThread(thread);
     if (existing !== undefined) return existing;
     const pi = await this.harness.pi();
+    const at = Date.now();
     // The mapping is written by `init`, inside the commit that creates this
     // very conversation: a crash between the two cannot orphan it, and a
     // conversation something else creates meanwhile (the root, a delegated
@@ -843,11 +860,98 @@ export class Bot extends DurableObject<Env> {
     const conversation = await pi.createConversation(
       {
         ownership: { kind: "ownerless" },
-        init: (tx, id) => recordThread(tx, thread, String(id)),
+        init: (tx, id) => recordThread(tx, thread, String(id), firstText, at),
       },
       BACKGROUND_CONTEXT,
     );
     return String(conversation.id);
+  }
+
+  /**
+   * Date a conversation's latest input, so the conversation list can put the
+   * one in use first. A failed write costs the list its order, never the
+   * submission it follows, so it is logged rather than thrown.
+   */
+  #recordActivity(session: string): Promise<void> {
+    const at = Date.now();
+    return Effect.runPromise(
+      Effect.tryPromise({
+        try: async () => {
+          const conversation = await this.#rootOrConversation(session);
+          await conversation.commit((tx) => recordActivity(tx, session, at), BACKGROUND_CONTEXT);
+        },
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            console.error(
+              `mackbot: recording activity for "${this.lifecycle.name}" session ${session} failed: ${describeCause(cause)}`,
+            );
+          }),
+        ),
+      ),
+    );
+  }
+
+  /**
+   * This bot's conversations: the root, then every thread, with what only the
+   * running harness knows - which ones are mid-run and which wait on a human.
+   * An archived thread is left out unless asked for.
+   */
+  async threads(includeArchived = false): Promise<ThreadList> {
+    await this.lifecycle.start();
+    const pi = await this.harness.pi();
+    const doc = await pi.snapshot(ThreadsDoc, BACKGROUND_CONTEXT);
+    return {
+      bot: this.lifecycle.name,
+      threads: listThreads({
+        doc,
+        legacy: this.#legacyThreads(),
+        root: ROOT_SESSION,
+        live: await this.#liveness(),
+        includeArchived,
+      }),
+    };
+  }
+
+  /**
+   * Archive, restore or rename one thread. `undefined` means no thread by that
+   * name exists, which the front door answers as a 404 rather than creating
+   * one on a write that was never a message.
+   */
+  async updateThread(thread: string, update: ThreadUpdate): Promise<ThreadView | undefined> {
+    await this.lifecycle.start();
+    const session = await this.#sessionIdForThread(thread);
+    if (session === undefined) return undefined;
+    const conversation = await this.#conversationOf(session);
+    await conversation.commit((tx) => recordThreadUpdate(tx, session, update), BACKGROUND_CONTEXT);
+    const pi = await this.harness.pi();
+    return threadViewOf(thread, {
+      doc: await pi.snapshot(ThreadsDoc, BACKGROUND_CONTEXT),
+      legacy: this.#legacyThreads(),
+      root: ROOT_SESSION,
+      live: await this.#liveness(),
+    });
+  }
+
+  #legacyThreads(): Record<string, string> {
+    this.#ensureThreadsTable();
+    return legacyThreadSessions(this.ctx.storage);
+  }
+
+  /** Which conversations are mid-run, and how many approvals each waits on. */
+  async #liveness(): Promise<ConversationLiveness> {
+    const sessions = await this.harness.sessions.list();
+    const approvals = new Map<string, number>();
+    for (const approval of this.#approvals().pending()) {
+      // An approval recorded before its session was reported paused the root.
+      const session = approval.session ?? ROOT_SESSION;
+      approvals.set(session, (approvals.get(session) ?? 0) + 1);
+    }
+    return {
+      busy: new Set(sessions.filter((session) => session.busy).map((session) => session.id)),
+      approvals,
+    };
   }
 
   /**

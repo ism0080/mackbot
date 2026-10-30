@@ -87,6 +87,13 @@ describe("recordPaused", () => {
     expect(store.pending()[0]?.toolPath).toBe("tools.mail.send");
   });
 
+  test("a pending approval names the conversation it paused in", () => {
+    const { store } = setup();
+    store.recordPaused(pause("req-root", "1"));
+    store.recordPaused(pause("req-thread", "4"));
+    expect(store.pending().map((approval) => approval.session)).toEqual(["1", "4"]);
+  });
+
   test("a bot cannot hold more than the cap of pending approvals", () => {
     const { store, waits } = setup();
     for (let index = 0; index < MAX_PENDING_APPROVALS; index += 1) {

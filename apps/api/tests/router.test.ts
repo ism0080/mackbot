@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 
+import type { ThreadUpdate } from "@mackbot/contract";
+
 import type { BotConfig } from "../src/bots.ts";
 import type { Env } from "../src/env.ts";
 import { API_CONTENT_SECURITY_POLICY } from "../src/http.ts";
@@ -12,6 +14,9 @@ const ROSTER = { hermes: { model: "deepseek-v4-pro", systemPrompt: "You are a te
 interface Recorded {
   readonly compacts: unknown[][];
   readonly retries: string[];
+  /** The `includeArchived` flag of each thread listing. */
+  readonly listings: boolean[];
+  readonly threadUpdates: unknown[][];
   /** The configuration each bot's status was handed, by bot id. */
   readonly statuses: Record<string, BotConfig | undefined>;
   rosterReads: number;
@@ -44,6 +49,16 @@ const fakeEnv = (recorded: Recorded, registry: "up" | "down" = "up"): Env => {
           recorded.retries.push(taskId);
           return { bot: name, taskId, retried: false };
         },
+        threads: async (includeArchived: boolean) => {
+          recorded.listings.push(includeArchived);
+          return { bot: name, threads: [] };
+        },
+        updateThread: async (thread: string, update: ThreadUpdate) => {
+          recorded.threadUpdates.push([thread, update]);
+          return thread === "plan"
+            ? { thread, session: "3", archived: true, busy: false, pendingApprovals: 0 }
+            : undefined;
+        },
       }),
     },
     ASSETS: { fetch: async () => new Response("<!doctype html>", { status: 200 }) },
@@ -53,7 +68,14 @@ const fakeEnv = (recorded: Recorded, registry: "up" | "down" = "up"): Env => {
   return env as unknown as Env;
 };
 
-const record = (): Recorded => ({ compacts: [], retries: [], statuses: {}, rosterReads: 0 });
+const record = (): Recorded => ({
+  compacts: [],
+  retries: [],
+  listings: [],
+  threadUpdates: [],
+  statuses: {},
+  rosterReads: 0,
+});
 
 const post = (path: string, body: string): Request =>
   new Request(`${ORIGIN}${path}`, {
@@ -165,4 +187,68 @@ describe("the registry", () => {
     expect(recorded.rosterReads).toBe(1);
     expect(recorded.statuses).toEqual({ hermes: ROSTER.hermes });
   });
+});
+
+describe("a bot's conversations", () => {
+  const get = (path: string): Request =>
+    new Request(`${ORIGIN}${path}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+
+  test("the list leaves archived threads out unless asked for them", async () => {
+    const recorded = record();
+    expect((await handleFetch(get("/threads/hermes"), fakeEnv(recorded))).status).toBe(200);
+    expect(
+      (await handleFetch(get("/threads/hermes?include=archived"), fakeEnv(recorded))).status,
+    ).toBe(200);
+    expect(recorded.listings).toEqual([false, true]);
+  });
+
+  test("a query that does not decode is a 400 that never reaches the bot", async () => {
+    const recorded = record();
+    const response = await handleFetch(
+      get("/threads/hermes?include=everything"),
+      fakeEnv(recorded),
+    );
+    expect(response.status).toBe(400);
+    expect(recorded.listings).toEqual([]);
+  });
+
+  test("an unauthenticated listing is refused as JSON, not sent to the login page", async () => {
+    const response = await handleFetch(new Request(`${ORIGIN}/threads/hermes`), fakeEnv(record()));
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({ error: "unauthorized" });
+  });
+
+  test("an update reaches the bot with the thread the path names, decoded", async () => {
+    const recorded = record();
+    const response = await handleFetch(
+      post("/threads/hermes/plan", '{"archived":true}'),
+      fakeEnv(recorded),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ thread: "plan", archived: true });
+    await handleFetch(post("/threads/hermes/a%20b", '{"title":"Renamed"}'), fakeEnv(recorded));
+    expect(recorded.threadUpdates).toEqual([
+      ["plan", { archived: true }],
+      ["a b", { title: "Renamed" }],
+    ]);
+  });
+
+  test("a thread that was never started is a 404", async () => {
+    const response = await handleFetch(
+      post("/threads/hermes/nothing", '{"archived":true}'),
+      fakeEnv(record()),
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "unknown thread" });
+  });
+
+  test.each([['{"archived":"yes"}'], ['{"title":"   "}'], [`{"title":"${"x".repeat(81)}"}`]])(
+    "an update body %s is a 400 that never reaches the bot",
+    async (body) => {
+      const recorded = record();
+      const response = await handleFetch(post("/threads/hermes/plan", body), fakeEnv(recorded));
+      expect(response.status).toBe(400);
+      expect(recorded.threadUpdates).toEqual([]);
+    },
+  );
 });

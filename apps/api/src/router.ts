@@ -26,6 +26,8 @@ import {
   handleRetry,
   handleRoster,
   handleStatus,
+  handleThreads,
+  handleThreadUpdate,
   handleTranscript,
   readRoster,
 } from "./routes.ts";
@@ -48,6 +50,8 @@ const BOT_ROUTES: readonly BotRoute[] = [
   { path: /^\/abort\/([^/]+)$/u, method: "POST", handle: handleAbort },
   { path: /^\/retry\/([^/]+)$/u, method: "POST", handle: handleRetry },
   { path: /^\/compact\/([^/]+)$/u, method: "POST", handle: handleCompact },
+  { path: /^\/threads\/([^/]+)$/u, method: "GET", handle: handleThreads },
+  { path: /^\/threads\/([^/]+)\/([^/]+)$/u, method: "POST", handle: handleThreadUpdate },
 ];
 
 const BOT_CONFIG_ROUTE = /^\/bots\/([^/]+)$/u;
