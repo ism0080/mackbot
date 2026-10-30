@@ -1,7 +1,8 @@
+import * as Effect from "effect/Effect";
 import { describe, expect, test } from "vitest";
 
 import {
-  isAuthorized,
+  bearerMatches,
   MAX_BODY_BYTES,
   MAX_TEXT_LENGTH,
   readChatRequest,
@@ -10,6 +11,12 @@ import {
 
 const CHAT_URL = "https://mackbot.test/chat/hermes";
 const TOKEN = "correct-horse-battery-staple";
+
+const matches = (presented: string, expected: string): Promise<boolean> =>
+  Effect.runPromise(tokensMatch(presented, expected));
+
+const authorized = (request: Request, expected: string): Promise<boolean> =>
+  Effect.runPromise(bearerMatches(request, expected));
 
 const withAuth = (header: string | undefined): Request =>
   new Request(CHAT_URL, {
@@ -44,62 +51,63 @@ const streamedRequest = (text: string, chunkSize = 1024): Request => {
 const paddedJson = (padding: number): string => `{"text":"hello"${" ".repeat(padding)}}`;
 
 describe("tokensMatch", () => {
-  test("is true for equal strings", () => {
-    expect(tokensMatch(TOKEN, TOKEN)).toBe(true);
-    expect(tokensMatch("", "")).toBe(true);
+  test("is true for equal strings", async () => {
+    expect(await matches(TOKEN, TOKEN)).toBe(true);
+    expect(await matches("", "")).toBe(true);
   });
 
-  test("is false for strings of different lengths", () => {
-    expect(tokensMatch("short", "longer")).toBe(false);
-    expect(tokensMatch(`${TOKEN}x`, TOKEN)).toBe(false);
+  test("is false for strings of different lengths", async () => {
+    expect(await matches("short", "longer")).toBe(false);
+    expect(await matches(`${TOKEN}x`, TOKEN)).toBe(false);
+    expect(await matches("", TOKEN)).toBe(false);
   });
 
-  test("is false when a single character differs", () => {
+  test("is false when a single character differs", async () => {
     const flipped = `${TOKEN.slice(0, 10)}X${TOKEN.slice(11)}`;
     expect(flipped).not.toBe(TOKEN);
-    expect(tokensMatch(flipped, TOKEN)).toBe(false);
+    expect(await matches(flipped, TOKEN)).toBe(false);
   });
 });
 
-describe("isAuthorized", () => {
+describe("bearerMatches", () => {
   test.each([
     ["Bearer", `Bearer ${TOKEN}`],
     ["lowercase scheme", `bearer ${TOKEN}`],
     ["mixed-case scheme", `BeArEr ${TOKEN}`],
     ["extra spaces after the scheme", `Bearer    ${TOKEN}`],
-  ])("accepts %s", (_label, header) => {
-    expect(isAuthorized(withAuth(header), TOKEN)).toBe(true);
+  ])("accepts %s", async (_label, header) => {
+    expect(await authorized(withAuth(header), TOKEN)).toBe(true);
   });
 
-  test("rejects a wrong token of the same length", () => {
+  test("rejects a wrong token of the same length", async () => {
     const sameLength = `${TOKEN.slice(0, -1)}!`;
     expect(sameLength).toHaveLength(TOKEN.length);
-    expect(isAuthorized(withAuth(`Bearer ${sameLength}`), TOKEN)).toBe(false);
+    expect(await authorized(withAuth(`Bearer ${sameLength}`), TOKEN)).toBe(false);
   });
 
-  test("rejects a token that is a prefix of the expected token", () => {
-    expect(isAuthorized(withAuth(`Bearer ${TOKEN.slice(0, -1)}`), TOKEN)).toBe(false);
+  test("rejects a token that is a prefix of the expected token", async () => {
+    expect(await authorized(withAuth(`Bearer ${TOKEN.slice(0, -1)}`), TOKEN)).toBe(false);
   });
 
-  test("rejects a token that is a suffix of the expected token", () => {
-    expect(isAuthorized(withAuth(`Bearer ${TOKEN.slice(1)}`), TOKEN)).toBe(false);
+  test("rejects a token that is a suffix of the expected token", async () => {
+    expect(await authorized(withAuth(`Bearer ${TOKEN.slice(1)}`), TOKEN)).toBe(false);
   });
 
-  test("rejects a token with a trailing character appended", () => {
-    expect(isAuthorized(withAuth(`Bearer ${TOKEN}x`), TOKEN)).toBe(false);
+  test("rejects a token with a trailing character appended", async () => {
+    expect(await authorized(withAuth(`Bearer ${TOKEN}x`), TOKEN)).toBe(false);
   });
 
-  test("rejects a missing Authorization header", () => {
-    expect(isAuthorized(withAuth(undefined), TOKEN)).toBe(false);
+  test("rejects a missing Authorization header", async () => {
+    expect(await authorized(withAuth(undefined), TOKEN)).toBe(false);
   });
 
-  test("rejects a non-Bearer scheme", () => {
-    expect(isAuthorized(withAuth(`Basic ${TOKEN}`), TOKEN)).toBe(false);
-    expect(isAuthorized(withAuth(`Token ${TOKEN}`), TOKEN)).toBe(false);
+  test("rejects a non-Bearer scheme", async () => {
+    expect(await authorized(withAuth(`Basic ${TOKEN}`), TOKEN)).toBe(false);
+    expect(await authorized(withAuth(`Token ${TOKEN}`), TOKEN)).toBe(false);
   });
 
-  test("rejects a bare token without the scheme", () => {
-    expect(isAuthorized(withAuth(TOKEN), TOKEN)).toBe(false);
+  test("rejects a bare token without the scheme", async () => {
+    expect(await authorized(withAuth(TOKEN), TOKEN)).toBe(false);
   });
 });
 

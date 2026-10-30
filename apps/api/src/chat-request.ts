@@ -2,28 +2,25 @@
  * chat-request — the HTTP front door's request contract.
  *
  * This module owns bearer authorization and body decoding for `POST /chat/:bot`:
- * `isAuthorized` checks the `Authorization: Bearer <token>` header against the
+ * `bearerMatches` checks the `Authorization: Bearer <token>` header against the
  * configured token, and `readChatRequest` turns the request body into a
- * validated {@link ChatRequest}. Extracted from `src/index.ts` so both are pure
- * logic testable against a real `Request` without a live Durable Object or the
- * Workers runtime, mirroring `src/bot-delegation.ts`'s shape (header doc,
- * exported guards, Schema-based validation).
+ * validated {@link ChatRequest}. Both are pure logic testable against a real
+ * `Request` without a live Durable Object or the Workers runtime.
  *
- * Public API (what `src/index.ts` imports):
- *
- *   import { isAuthorized, readChatRequest } from "./chat-request.ts";
- *   if (!isAuthorized(request, env.CHAT_BEARER_TOKEN)) { ... 401 ... }
- *   const body = await readChatRequest(request);
- *
- * `tokensMatch` is exported for the session cookie's signature check, so both
- * credentials compare in constant time.
+ * `tokensMatch` is exported for the login form, so every comparison against
+ * the bearer is constant-time and leaks neither content nor length.
  */
 
 import type { PiWhenBusy } from "agents/harness/pi";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { trimmedNonEmpty } from "@mackbot/contract";
+
+import { readJsonBody } from "./http.ts";
+
+export { MAX_BODY_BYTES } from "./http.ts";
 
 export interface ChatRequest {
   readonly text: string;
@@ -34,7 +31,6 @@ export interface ChatRequest {
 }
 
 export const MAX_TEXT_LENGTH = 16_384;
-export const MAX_BODY_BYTES = 256 * 1024;
 
 const boundedText = Schema.String.check(
   Schema.makeFilter((input: string) => input.trim().length > 0 && input.length <= MAX_TEXT_LENGTH),
@@ -49,59 +45,44 @@ const ChatRequestBodySchema = Schema.Struct({
 });
 
 const BEARER_PATTERN = /^Bearer\s+(.+)$/iu;
+const encoder = new TextEncoder();
 
-export const tokensMatch = (a: string, b: string): boolean => {
-  if (a.length !== b.length) return false;
+const digest = (value: string): Effect.Effect<ArrayBuffer> =>
+  Effect.promise(() => crypto.subtle.digest("SHA-256", encoder.encode(value)));
+
+/**
+ * Compare two equal-length digests in constant time. Workers provide
+ * `timingSafeEqual`; the loop is the same comparison where it is missing (the
+ * unit tests run on Node), and it is constant-time because both inputs are
+ * always 32 bytes.
+ */
+const digestsEqual = (a: ArrayBuffer, b: ArrayBuffer): boolean => {
+  if (Predicate.isFunction(crypto.subtle.timingSafeEqual)) {
+    return crypto.subtle.timingSafeEqual(a, b);
+  }
+  const left = new Uint8Array(a);
+  const right = new Uint8Array(b);
   let diff = 0;
-  for (let index = 0; index < a.length; index += 1) {
-    diff |= a.charCodeAt(index) ^ b.charCodeAt(index);
+  for (let index = 0; index < left.length; index += 1) {
+    diff |= left[index]! ^ right[index]!;
   }
   return diff === 0;
 };
 
-export const isAuthorized = (request: Request, expected: string): boolean => {
-  const header = request.headers.get("Authorization");
-  if (header === null) return false;
-  const token = BEARER_PATTERN.exec(header)?.[1];
-  return token !== undefined && tokensMatch(token, expected);
-};
-
 /**
- * Read at most `maxBytes` of the request body. The cap is enforced against the
- * stream, not only `content-length`, so a chunked request cannot bypass it.
+ * Whether `presented` is `expected`. Both are hashed first, so the comparison
+ * always runs over 32 bytes and takes the same time whatever either length is.
  */
-const readBoundedBody = async (request: Request, maxBytes: number): Promise<string | undefined> => {
-  const declaredLength = request.headers.get("content-length");
-  if (declaredLength !== null && Number(declaredLength) > maxBytes) return undefined;
-  const body = request.body;
-  if (body === null) return "";
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const result = await reader.read();
-    if (result.done) break;
-    total += result.value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel();
-      return undefined;
-    }
-    chunks.push(result.value);
-  }
-  const merged = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return new TextDecoder().decode(merged);
+export const tokensMatch = (presented: string, expected: string): Effect.Effect<boolean> =>
+  Effect.all([digest(presented), digest(expected)]).pipe(
+    Effect.map(([a, b]) => digestsEqual(a, b)),
+  );
+
+export const bearerMatches = (request: Request, expected: string): Effect.Effect<boolean> => {
+  const header = request.headers.get("Authorization");
+  const token = header === null ? undefined : BEARER_PATTERN.exec(header)?.[1];
+  return token === undefined ? Effect.succeed(false) : tokensMatch(token, expected);
 };
 
-export const readChatRequest = async (request: Request): Promise<ChatRequest | undefined> => {
-  const rawText = await readBoundedBody(request, MAX_BODY_BYTES);
-  if (rawText === undefined) return undefined;
-  const effect = Schema.decodeUnknownEffect(Schema.fromJsonString(ChatRequestBodySchema))(
-    rawText,
-  ).pipe(Effect.mapError(() => "bad body" as const));
-  return Effect.runPromise(effect.pipe(Effect.orElseSucceed(() => undefined)));
-};
+export const readChatRequest = (request: Request): Promise<ChatRequest | undefined> =>
+  readJsonBody(request, ChatRequestBodySchema);

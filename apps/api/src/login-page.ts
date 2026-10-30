@@ -11,7 +11,23 @@
  * with no styling.
  */
 
-export const loginDocument = (failed: boolean): string => `<!doctype html>
+/**
+ * The page's own policy: its one inline stylesheet, a form that posts back to
+ * this origin, and nothing else. It is never framed.
+ */
+export const LOGIN_CONTENT_SECURITY_POLICY =
+  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+
+/** What the page says above the form: nothing, a refused token, or a refused client. */
+export type LoginNotice = "none" | "rejected" | "throttled";
+
+const NOTICES: Record<LoginNotice, string> = {
+  none: "",
+  rejected: '<p class="error" role="alert">That token was not accepted.</p>',
+  throttled: '<p class="error" role="alert">Too many attempts. Try again later.</p>',
+};
+
+export const loginDocument = (notice: LoginNotice): string => `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -96,7 +112,7 @@ export const loginDocument = (failed: boolean): string => `<!doctype html>
     <main>
       <h1>mackbot</h1>
       <p>Enter the fleet token. It is kept on the server and exchanged for a sign-in cookie; it never enters the app bundle.</p>
-      ${failed ? '<p class="error" role="alert">That token was not accepted.</p>' : ""}
+      ${NOTICES[notice]}
       <form method="post" action="/login">
         <label for="token">Fleet token</label>
         <input id="token" name="token" type="password" autocomplete="current-password" autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus />

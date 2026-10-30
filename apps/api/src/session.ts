@@ -4,22 +4,31 @@
  * The bearer token cannot be shipped to a browser (any served asset is
  * readable) and `EventSource` cannot set an `Authorization` header, so a
  * browser proves the token once at `/login` and carries a signed session
- * cookie after that. The cookie is derived from the bearer, not a copy of it:
- * rotating `CHAT_BEARER_TOKEN` invalidates every issued session.
+ * cookie after that. The cookie is signed with a key derived from the bearer,
+ * never the bearer itself, so the bearer is used as a key for one purpose only:
+ * rotating `CHAT_BEARER_TOKEN` invalidates every issued session, and so does
+ * bumping {@link SESSION_VERSION}, which is the cheap way to revoke every
+ * session without rotating the token.
  */
 
 import * as Effect from "effect/Effect";
 
-import { isAuthorized, tokensMatch } from "./chat-request.ts";
+import { bearerMatches } from "./chat-request.ts";
 
 export const SESSION_COOKIE = "mackbot_session";
-export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
 
 export type AuthMethod = "bearer" | "cookie";
 
-const SESSION_VERSION = "v1";
-const SESSION_SUBJECT = "mackbot-session:v1";
-const SESSION_VALUE = /^v1\.(\d{1,12})\.([\w-]{43})$/u;
+/**
+ * The session epoch. It is part of both the cookie and the derived key, so a
+ * new value rejects every cookie the old one signed.
+ */
+const SESSION_VERSION = "v2";
+const SESSION_KEY_INFO = `mackbot-session-key:${SESSION_VERSION}`;
+const SESSION_KEY_SALT = "mackbot-session";
+const SESSION_SUBJECT = `mackbot-session:${SESSION_VERSION}`;
+const SESSION_VALUE = new RegExp(`^${SESSION_VERSION}\\.(\\d{1,12})\\.([\\w-]{43})$`, "u");
 const encoder = new TextEncoder();
 
 const toBase64Url = (bytes: Uint8Array): string =>
@@ -28,29 +37,44 @@ const toBase64Url = (bytes: Uint8Array): string =>
     .replaceAll("/", "_")
     .replace(/=+$/u, "");
 
-const sign = (token: string, message: string): Effect.Effect<string> =>
+const fromBase64Url = (value: string): Uint8Array =>
+  Uint8Array.from(atob(value.replaceAll("-", "+").replaceAll("_", "/")), (char) =>
+    char.charCodeAt(0),
+  );
+
+/** The session-signing key, derived from the bearer with HKDF. */
+const sessionKey = (token: string): Effect.Effect<CryptoKey> =>
   Effect.promise(async () => {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      encoder.encode(token),
-      { name: "HMAC", hash: "SHA-256" },
+    const material = await crypto.subtle.importKey("raw", encoder.encode(token), "HKDF", false, [
+      "deriveKey",
+    ]);
+    return await crypto.subtle.deriveKey(
+      {
+        name: "HKDF",
+        hash: "SHA-256",
+        salt: encoder.encode(SESSION_KEY_SALT),
+        info: encoder.encode(SESSION_KEY_INFO),
+      },
+      material,
+      { name: "HMAC", hash: "SHA-256", length: 256 },
       false,
-      ["sign"],
+      ["sign", "verify"],
     );
-    const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(message));
-    return toBase64Url(new Uint8Array(signature));
   });
 
-const messageFor = (expires: number): string => `${SESSION_SUBJECT}:${expires}`;
+const messageFor = (expires: number): Uint8Array => encoder.encode(`${SESSION_SUBJECT}:${expires}`);
 
 /** A fresh signed session value for `now`, valid for {@link SESSION_MAX_AGE_SECONDS}. */
-export const issueSession = (token: string, now: number): Effect.Effect<string> =>
-  Effect.gen(function* () {
-    const expires = Math.floor(now / 1000) + SESSION_MAX_AGE_SECONDS;
-    const signature = yield* sign(token, messageFor(expires));
-    return `${SESSION_VERSION}.${expires}.${signature}`;
-  });
+export const issueSession = Effect.fnUntraced(function* (token: string, now: number) {
+  const expires = Math.floor(now / 1000) + SESSION_MAX_AGE_SECONDS;
+  const key = yield* sessionKey(token);
+  const signature = yield* Effect.promise(() =>
+    crypto.subtle.sign("HMAC", key, messageFor(expires)),
+  );
+  return `${SESSION_VERSION}.${expires}.${toBase64Url(new Uint8Array(signature))}`;
+});
 
+/** Whether `value` is an unexpired session this token signed. `verify` compares in constant time. */
 export const verifySession = (
   token: string,
   value: string,
@@ -59,12 +83,12 @@ export const verifySession = (
   const match = SESSION_VALUE.exec(value);
   if (match === null) return Effect.succeed(false);
   const expires = Number(match[1]);
-  if (!Number.isSafeInteger(expires) || expires <= Math.floor(now / 1000)) {
-    return Effect.succeed(false);
-  }
-  const presented = match[2]!;
-  return sign(token, messageFor(expires)).pipe(
-    Effect.map((expected) => tokensMatch(presented, expected)),
+  if (expires <= Math.floor(now / 1000)) return Effect.succeed(false);
+  const signature = fromBase64Url(match[2]!);
+  return sessionKey(token).pipe(
+    Effect.flatMap((key) =>
+      Effect.promise(() => crypto.subtle.verify("HMAC", key, signature, messageFor(expires))),
+    ),
   );
 };
 
@@ -80,35 +104,36 @@ export const readCookie = (request: Request, name: string): string | undefined =
   return undefined;
 };
 
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
 /**
  * `Secure` everywhere except loopback http, where a `Secure` cookie is silently
  * dropped and the local Worker could never be logged into. A production host
  * over http still gets `Secure`: the login then fails closed rather than
  * downgrading the credential.
  */
-const isLoopback = (hostname: string): boolean =>
-  hostname === "localhost" ||
-  hostname === "127.0.0.1" ||
-  hostname === "[::1]" ||
-  hostname === "::1";
-
 const secureAttribute = (url: URL): string =>
-  url.protocol === "https:" || !isLoopback(url.hostname) ? "; Secure" : "";
+  url.protocol === "https:" || !LOOPBACK_HOSTS.has(url.hostname) ? "; Secure" : "";
+
+const cookieWith = (request: Request, value: string, maxAge: number): string =>
+  `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secureAttribute(new URL(request.url))}`;
 
 export const sessionCookie = (request: Request, value: string): string =>
-  `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${secureAttribute(new URL(request.url))}`;
+  cookieWith(request, value, SESSION_MAX_AGE_SECONDS);
+
+/** The `Set-Cookie` value that removes the session cookie: same name, path and attributes. */
+export const clearedSessionCookie = (request: Request): string => cookieWith(request, "", 0);
 
 export const authenticate = (
   request: Request,
   token: string,
-): Effect.Effect<AuthMethod | undefined> => {
-  if (isAuthorized(request, token)) return Effect.succeed("bearer");
-  const cookie = readCookie(request, SESSION_COOKIE);
-  if (cookie === undefined) return Effect.succeed(undefined);
-  return verifySession(token, cookie, Date.now()).pipe(
-    Effect.map((valid): AuthMethod | undefined => (valid ? "cookie" : undefined)),
-  );
-};
+): Effect.Effect<AuthMethod | undefined> =>
+  Effect.gen(function* () {
+    if (yield* bearerMatches(request, token)) return "bearer";
+    const cookie = readCookie(request, SESSION_COOKIE);
+    if (cookie === undefined) return undefined;
+    return (yield* verifySession(token, cookie, Date.now())) ? "cookie" : undefined;
+  });
 
 /**
  * A cookie-authenticated mutation must also prove it came from this origin:

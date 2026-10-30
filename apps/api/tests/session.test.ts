@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 
 import {
   authenticate,
+  clearedSessionCookie,
   csrfAllows,
   issueSession,
   readCookie,
@@ -31,7 +32,7 @@ const cookieHeader = (value: string) => ({
 describe("issueSession + verifySession", () => {
   test("a freshly issued value verifies", async () => {
     const value = await issue();
-    expect(value).toMatch(/^v1\.\d+\.[\w-]{43}$/u);
+    expect(value).toMatch(/^v2\.\d+\.[\w-]{43}$/u);
     expect(await verify(value)).toBe(true);
   });
 
@@ -61,12 +62,49 @@ describe("issueSession + verifySession", () => {
 
   test.each([
     ["an empty string", ""],
-    ["an unknown version", "v2.1700000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
-    ["a wrong segment count", "v1.1700000000"],
-    ["a non-numeric expiry", "v1.not-a-number.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
-    ["a signature of the wrong length", "v1.1700000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+    ["an unknown version", "v9.1700000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+    ["a wrong segment count", "v2.1700000000"],
+    ["a non-numeric expiry", "v2.not-a-number.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
+    ["a signature of the wrong length", "v2.1700000000.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"],
   ])("fails for a malformed value: %s", async (_label, value) => {
     expect(await verify(value, TOKEN, 0)).toBe(false);
+  });
+});
+
+/**
+ * A cookie signed the way sessions used to be: HMAC keyed by the bearer
+ * itself. A leaked one must not survive the switch to a derived key.
+ */
+const rawKeySession = async (version: string, expires: number): Promise<string> => {
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(TOKEN),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const signature = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, encoder.encode(`mackbot-session:${version}:${expires}`)),
+  );
+  const encoded = btoa(String.fromCharCode(...signature))
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+  return `${version}.${expires}.${encoded}`;
+};
+
+describe("the session key is derived from the bearer", () => {
+  const expires = Math.floor(NOW / 1000) + 60;
+
+  test("a cookie from the raw-key scheme is rejected", async () => {
+    expect(await verify(await rawKeySession("v1", expires))).toBe(false);
+  });
+
+  test("a raw-key signature in the current format is rejected", async () => {
+    const forged = await rawKeySession("v2", expires);
+    expect(forged).toMatch(/^v2\.\d+\.[\w-]{43}$/u);
+    expect(await verify(forged)).toBe(false);
   });
 });
 
@@ -123,6 +161,22 @@ describe("sessionCookie", () => {
       expect(cookieFor(url)).not.toContain("Secure");
     },
   );
+});
+
+describe("clearedSessionCookie", () => {
+  test("expires the same cookie the login set", () => {
+    const request = new Request("https://mackbot.test/logout");
+    const cleared = clearedSessionCookie(request);
+    expect(cleared.startsWith(`${SESSION_COOKIE}=;`)).toBe(true);
+    expect(cleared).toContain("Max-Age=0");
+    // A cookie is only replaced by one with the same path and attributes.
+    const attributes = (cookie: string): string[] =>
+      cookie
+        .split("; ")
+        .slice(1)
+        .filter((attribute) => !attribute.startsWith("Max-Age="));
+    expect(attributes(cleared)).toEqual(attributes(sessionCookie(request, "value")));
+  });
 });
 
 describe("authenticate", () => {

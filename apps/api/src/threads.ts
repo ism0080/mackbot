@@ -4,10 +4,11 @@
  * A thread id is the browser's name for one conversation; pi knows only
  * conversation ids. The mapping lives in a Session-scoped pi document, so the
  * browser's name and the conversation it names are committed together: the
- * write happens inside the commit that creates the conversation (see
- * `conversationCreated` in `#makeHarnessFactory`), never after it. A crash
- * between the two is impossible, and a conversation cannot be left without the
- * thread that named it.
+ * write happens inside the commit that creates the conversation (the `init`
+ * of `createConversation` in `Bot`'s thread-session creation), never after
+ * it. A crash between the two is impossible, a conversation cannot be left
+ * without the thread that named it, and only the conversation created for the
+ * thread can be recorded as it.
  *
  * A Session document is latest-only by construction: only conversation
  * documents declare history and fork behaviour, because only they are forked.
@@ -39,7 +40,7 @@ export const ThreadsDoc = defineDoc<ThreadSessions>({
 /**
  * Record `thread` as `session` in the transaction that creates `session`.
  *
- * Called from a conversation-creation hook, so the value is staged in the
+ * Called from the conversation's `init`, so the value is staged in the
  * creating commit: either both the conversation and this mapping exist, or
  * neither does.
  */
