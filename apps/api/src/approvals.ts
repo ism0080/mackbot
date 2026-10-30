@@ -635,6 +635,7 @@ export function createApprovalStore(
     const approval = Schema.decodeUnknownSync(ApprovalViewSchema)({
       approvalId,
       bot: paused.bot,
+      session: paused.session,
       toolPath: tool ?? "executor",
       summary: summaryOf(tool, artifact),
       artifact,

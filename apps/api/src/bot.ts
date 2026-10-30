@@ -38,6 +38,7 @@ import {
   recordActivity,
   recordThread,
   recordThreadUpdate,
+  threadOfSession,
   threadViewOf,
   ThreadsDoc,
 } from "./threads.ts";
@@ -663,20 +664,24 @@ export class Bot extends DurableObject<Env> {
         this.submit(input, operationId, whenBusy, undefined, session),
       audit: (record) => this.#record(record),
       // The phone hears about a pause, can answer it, and loses the question
-      // once it is answered anywhere else.
+      // once it is answered anywhere else. Its link opens the conversation
+      // the call paused in.
       onRecorded: (approval, deadline) => {
         void this.#behind(
-          this.#hark().ask(
-            approvalPrompt({
-              bot: approval.bot,
-              approvalId: approval.approvalId,
-              toolPath: approval.toolPath,
-              summary: approval.summary,
-              draft: approval.artifact?.body,
-              deadline,
-              now: Date.now(),
-              publicUrl: this.env.MACKBOT_PUBLIC_URL,
-            }),
+          this.#threadOfSession(approval.session).then((thread) =>
+            this.#hark().ask(
+              approvalPrompt({
+                bot: approval.bot,
+                approvalId: approval.approvalId,
+                toolPath: approval.toolPath,
+                summary: approval.summary,
+                draft: approval.artifact?.body,
+                deadline,
+                now: Date.now(),
+                publicUrl: this.env.MACKBOT_PUBLIC_URL,
+                thread,
+              }),
+            ),
           ),
         );
       },
@@ -937,6 +942,14 @@ export class Bot extends DurableObject<Env> {
   #legacyThreads(): Record<string, string> {
     this.#ensureThreadsTable();
     return legacyThreadSessions(this.ctx.storage);
+  }
+
+  /** The thread a session is, for a link that opens that conversation. */
+  async #threadOfSession(session: string | undefined): Promise<string | undefined> {
+    if (session === undefined || session === ROOT_SESSION) return undefined;
+    const pi = await this.harness.pi();
+    const doc = await pi.snapshot(ThreadsDoc, BACKGROUND_CONTEXT);
+    return threadOfSession(doc, this.#legacyThreads(), session);
   }
 
   /** Which conversations are mid-run, and how many approvals each waits on. */

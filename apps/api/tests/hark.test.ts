@@ -191,6 +191,12 @@ describe("botDeepLink", () => {
     );
   });
 
+  test("links a thread's own conversation when the call paused in one", () => {
+    expect(botDeepLink("https://mackbot.example.com", "hermes", "plan/q3")).toBe(
+      "https://mackbot.example.com/chat/hermes/plan%2Fq3",
+    );
+  });
+
   test("offers no link Hark would refuse", () => {
     expect(botDeepLink(undefined, "hermes")).toBeUndefined();
     expect(botDeepLink("http://localhost:5173", "hermes")).toBeUndefined();

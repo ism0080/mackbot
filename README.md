@@ -264,7 +264,8 @@ prompt. A task parked by the crash-loop guard sends a push.
 
 Two optional variables: `HARK_TOOLS` names another Executor namespace for
 Hark, or `off` to turn the channel off; `MACKBOT_PUBLIC_URL`, the app's https
-origin, adds a tap link to the bot's screen.
+origin, adds a tap link to the bot's screen (for an approval, the conversation
+the call paused in).
 
 Cloudflare credentials live in Alchemy profiles (`~/.alchemy/profiles.json`); do
 not export `CLOUDFLARE_API_TOKEN`.

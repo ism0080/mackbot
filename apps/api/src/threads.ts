@@ -238,6 +238,21 @@ const viewOf = (
 const byActivity = (left: ThreadView, right: ThreadView): number =>
   (right.lastActivityAt ?? right.createdAt ?? 0) - (left.lastActivityAt ?? left.createdAt ?? 0);
 
+/**
+ * The thread a session is, or `undefined` for the root and for a
+ * conversation no thread names (a delegated subagent's, say). The document
+ * wins over the legacy table, as it does for the opposite lookup.
+ */
+export const threadOfSession = (
+  doc: ThreadSessions | undefined,
+  legacy: Readonly<Record<string, string>>,
+  session: string,
+): string | undefined => {
+  const named = (threads: Readonly<Record<string, string>>): string | undefined =>
+    Object.entries(threads).find(([, candidate]) => candidate === session)?.[0];
+  return named(doc?.threads ?? {}) ?? named(legacy);
+};
+
 /** One thread's view, or `undefined` for a thread neither record names. */
 export const threadViewOf = (
   thread: string,

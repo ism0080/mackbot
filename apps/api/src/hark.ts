@@ -110,14 +110,22 @@ const parseUrl = Option.liftThrowable((text: string) => new URL(text));
 
 /**
  * The web app's screen for one bot: its transcript, where its pending
- * approvals and its retry controls are. Hark only opens https links, so
- * without a public https origin there is no link.
+ * approvals and its retry controls are. A thread opens that conversation
+ * rather than the bot's main one. Hark only opens https links, so without a
+ * public https origin there is no link.
  */
-export const botDeepLink = (publicUrl: string | undefined, bot: string): string | undefined =>
+export const botDeepLink = (
+  publicUrl: string | undefined,
+  bot: string,
+  thread?: string,
+): string | undefined =>
   Option.getOrUndefined(
     Option.map(
       Option.filter(parseUrl(publicUrl?.trim() ?? ""), (url) => url.protocol === "https:"),
-      (url) => `${url.origin}/chat/${encodeURIComponent(bot)}`,
+      (url) =>
+        thread === undefined
+          ? `${url.origin}/chat/${encodeURIComponent(bot)}`
+          : `${url.origin}/chat/${encodeURIComponent(bot)}/${encodeURIComponent(thread)}`,
     ),
   );
 
@@ -182,6 +190,8 @@ export const approvalPrompt = (approval: {
   readonly deadline: number;
   readonly now: number;
   readonly publicUrl?: string;
+  /** The thread the call paused in; absent is the bot's main conversation. */
+  readonly thread?: string;
 }): HarkApprovalPrompt => {
   const head = `${approval.toolPath}\n\n${approval.summary}`;
   const prompt =
@@ -193,7 +203,7 @@ export const approvalPrompt = (approval: {
     approvalId: approval.approvalId,
     title: bounded(approval.bot, MAX_TITLE),
     prompt: bounded(prompt, MAX_PROMPT),
-    url: botDeepLink(approval.publicUrl, approval.bot),
+    url: botDeepLink(approval.publicUrl, approval.bot, approval.thread),
     expiresInSeconds: Math.min(
       MAX_PROMPT_EXPIRY_SECONDS,
       Math.max(MIN_PROMPT_EXPIRY_SECONDS, seconds),

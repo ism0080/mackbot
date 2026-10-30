@@ -12,6 +12,7 @@ import {
   recordActivity,
   recordThread,
   recordThreadUpdate,
+  threadOfSession,
   threadTitleOf,
   ThreadsDoc,
 } from "../src/threads.ts";
@@ -226,5 +227,19 @@ describe("listThreads", () => {
       ["4", true, 0],
       ["3", false, 0],
     ]);
+  });
+});
+
+describe("threadOfSession", () => {
+  const doc: ThreadSessions = { threads: { plan: "4" }, sessions: {} };
+
+  test("names the thread a session is, from the document or the legacy table", () => {
+    expect(threadOfSession(doc, { notes: "5" }, "4")).toBe("plan");
+    expect(threadOfSession(doc, { notes: "5" }, "5")).toBe("notes");
+  });
+
+  test("a conversation no thread names has none", () => {
+    expect(threadOfSession(doc, {}, "9")).toBeUndefined();
+    expect(threadOfSession(undefined, {}, "4")).toBeUndefined();
   });
 });
