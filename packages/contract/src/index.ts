@@ -8,19 +8,16 @@
  * Workers-only APIs and of the Worker's own modules.
  *
  * Request decoding happens at exactly one boundary: the HTTP front door
- * decodes the `*Schema`s below. Frames are built from pi's own committed
- * conversation view — the whole active transcript, plus `pi.live`,
- * `pi.inbox` and `pi.usage` — so nothing downstream validates them again.
+ * decodes the `*Schema`s below. Frames are built by the Worker from pi's own
+ * committed conversation view (see `apps/api/src/projections.ts`), so nothing
+ * downstream validates them again.
  */
 
-import type { EntryRecord, JsonObject } from "@earendil-works/pi-durable";
-import type { ImagesInputContent, Message } from "@earendil-works/pi-ai";
 import * as SchemaGetter from "effect/SchemaGetter";
-import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import type { ThinkingLevel } from "./catalog.ts";
-import { OPERATION_ORIGINS, originOf } from "./operation.ts";
+import { OPERATION_ORIGINS } from "./operation.ts";
 
 export { OPERATION_ORIGINS, OPERATION_PREFIXES, originOf } from "./operation.ts";
 export type { OperationOrigin } from "./operation.ts";
@@ -154,7 +151,7 @@ export type BotCreate = typeof BotCreateSchema.Type;
 
 /** What a write or a create answers: the bot as it is now stored. */
 export const BotWriteResultSchema = Schema.Struct({
-  id: Schema.String,
+  id: BotIdSchema,
   bot: BotConfigSchema,
 });
 export type BotWriteResult = typeof BotWriteResultSchema.Type;
@@ -201,14 +198,6 @@ export const InboxViewSchema = Schema.Struct({
   text: Schema.optional(Schema.String),
 });
 export type InboxView = typeof InboxViewSchema.Type;
-
-/**
- * @deprecated The inbox item's earlier name. Kept so the browser can move to
- * {@link InboxView} without a second wire shape.
- */
-export const QueuedItemViewSchema = InboxViewSchema;
-/** @deprecated Use {@link InboxView}. */
-export type QueuedItemView = InboxView;
 
 export const ApprovalViewSchema = Schema.Struct({
   approvalId: Schema.String,
@@ -281,8 +270,15 @@ export const TaskViewSchema = Schema.Struct({
 export type TaskView = typeof TaskViewSchema.Type;
 
 /**
+ * The harness's own reason for a task it parked instead of running again. The
+ * Worker picks parked tasks out by it and the browser offers a retry by it, so
+ * the one word is named once.
+ */
+export const PARKED_REASON = "restart_limit";
+
+/**
  * A request to run a parked task again. `taskId` names the task the harness
- * parked, which it reports as blocked with the reason `restart_limit`.
+ * parked, which it reports as blocked with the reason {@link PARKED_REASON}.
  */
 export const RetryRequestSchema = Schema.Struct({
   taskId: Schema.String,
@@ -333,6 +329,16 @@ export const AbortResultSchema = Schema.Struct({
   aborted: Schema.Boolean,
 });
 export type AbortResult = typeof AbortResultSchema.Type;
+
+/**
+ * What a compaction request answers: the task the summary is made in, which a
+ * client follows through the feed and the status view.
+ */
+export const CompactResultSchema = Schema.Struct({
+  bot: Schema.String,
+  taskId: Schema.String,
+});
+export type CompactResult = typeof CompactResultSchema.Type;
 
 export const SubmissionViewSchema = Schema.Struct({
   id: Schema.String,
@@ -395,6 +401,16 @@ export const BotViewSchema = Schema.Struct({
 });
 export type BotView = typeof BotViewSchema.Type;
 
+/**
+ * `/status`'s envelope: one view per bot that answered, plus the bots whose
+ * status could not be read, each with a message safe to show.
+ */
+export const StatusResponseSchema = Schema.Struct({
+  bots: Schema.Record(Schema.String, BotViewSchema),
+  errors: Schema.Record(Schema.String, Schema.String),
+});
+export type StatusResponse = typeof StatusResponseSchema.Type;
+
 export const TranscriptPageSchema = Schema.Struct({
   session: Schema.String,
   entries: Schema.Array(EntryViewSchema),
@@ -406,13 +422,6 @@ export type TranscriptPage = typeof TranscriptPageSchema.Type;
 // ---------------------------------------------------------------------------
 // Frames — one committed conversation value, projected for rendering
 // ---------------------------------------------------------------------------
-
-/**
- * A JSON-safe value, as the projected documents carry it. The projections
- * below decode pi's durable JSON into the views, so a `details` payload the
- * browser renders is whatever the tool published, never a re-encoding of it.
- */
-export type JsonValue = Schema.Json;
 
 /** The run a client can name: the operation that started it and its inputs. */
 export const LiveRunViewSchema = Schema.Struct({
@@ -544,29 +553,39 @@ export const FrameSchema = Schema.Union([
   TaskFailedFrameSchema,
 ]);
 
+/** What the feed writes to a stream, as the browser decodes it. */
+export type Frame = typeof FrameSchema.Type;
+
+// ---------------------------------------------------------------------------
+// Route answers — the bodies the Worker's routes respond with
+// ---------------------------------------------------------------------------
+
 /**
- * What the feed writes to a stream. The union is the wire vocabulary the
- * browser decodes; {@link FrameSchema} is the runtime decoder of the same
- * shape, kept beside it so the two cannot be written against different fields.
+ * Every refusal's body: `{ error }`, carrying a message safe to show. A route
+ * that refuses a request — a bad body, an unknown bot, a rule the write broke,
+ * an approval that was not pending, a registry that is down — answers this.
  */
-export type Frame =
-  | {
-      kind: "snapshot";
-      generation: number;
-      at: number;
-      session: string;
-      entries: readonly EntryView[];
-      live: LiveView;
-      inbox: readonly InboxView[];
-      usage: UsageView;
-      transcriptFrom: number;
-    }
-  | { kind: "append"; at: number; entries: readonly EntryView[] }
-  | { kind: "live"; at: number; live: LiveView }
-  | { kind: "inbox"; at: number; items: readonly InboxView[] }
-  | { kind: "usage"; at: number; usage: UsageView }
-  | { kind: "run"; phase: "start" | "end"; at: number; operationId: string }
-  | { kind: "task_failed"; taskId: string; task: string; message: string };
+export const ErrorBodySchema = Schema.Struct({ error: Schema.String });
+export type ErrorBody = typeof ErrorBodySchema.Type;
+
+/**
+ * `POST /chat/:bot`'s receipt when the caller does not wait for the answer:
+ * the operation the server recorded, and whether it admitted it.
+ */
+export const ChatAcceptedSchema = Schema.Struct({
+  operationId: Schema.String,
+  accepted: Schema.Boolean,
+});
+export type ChatAccepted = typeof ChatAcceptedSchema.Type;
+
+/** A decided approval: what `POST /approvals/:bot/:approvalId` answers. */
+export const DecisionAcceptedSchema = Schema.Struct({
+  approvalId: Schema.String,
+  bot: Schema.String,
+  status: Schema.Literals(["allowed", "denied"]),
+  decidedAt: Schema.Number,
+});
+export type DecisionAccepted = typeof DecisionAcceptedSchema.Type;
 
 // ---------------------------------------------------------------------------
 // Request shapes — decoded at the front door
@@ -678,329 +697,3 @@ export const slicePage = <T extends { readonly id: number }>(
     nextBefore: window.length > page.length && oldest !== undefined ? Number(oldest.id) : undefined,
   };
 };
-
-// ---------------------------------------------------------------------------
-// Projections
-// ---------------------------------------------------------------------------
-
-/**
- * The run an entry belongs to, derived from pi's own submissions: a run spans
- * the input entry it answers from through the entry that answered it. Nothing
- * is stored to say so, because `SubmissionRecord.entry` and `.answer` already
- * do, and they survive exactly as long as the run does.
- */
-export interface RunProjection {
-  /** The operation that admitted the run; `""` when the submission named none. */
-  readonly operationId: string;
-  /** The entry the run's input was placed as. */
-  readonly startEntry: number;
-  /** The entry that answered the run; absent while it is still live. */
-  readonly answer?: number;
-}
-
-const contains = (run: RunProjection, entryId: number): boolean =>
-  entryId >= run.startEntry && (run.answer === undefined || entryId <= run.answer);
-
-/**
- * The newest run projection whose window contains `entryId`.
- *
- * Windows can overlap only while an earlier run is still open, and the newest
- * is the right owner there: pi admits one submission per placement, so the
- * later input's window starts after the earlier one's.
- */
-export const runOfEntry = (
-  entryId: number,
-  runs: readonly RunProjection[],
-): RunProjection | undefined => {
-  let chosen: RunProjection | undefined;
-  for (const run of runs) {
-    if (!contains(run, entryId)) continue;
-    if (chosen === undefined || run.startEntry >= chosen.startEntry) chosen = run;
-  }
-  return chosen;
-};
-
-const textOfBlockContent = (content: string | readonly ImagesInputContent[]): string => {
-  if (Schema.is(Schema.String)(content)) return content;
-  return content.map((block) => (block.type === "text" ? block.text : "")).join("");
-};
-
-const textOfMessage = (message: Message): string => {
-  switch (message.role) {
-    case "system":
-    case "user":
-    case "toolResult":
-      return textOfBlockContent(message.content);
-    case "assistant":
-      return message.content.map((block) => (block.type === "text" ? block.text : "")).join("");
-  }
-};
-
-const roleOfEntry = (record: EntryRecord): EntryRole => {
-  const first = record.model?.[0];
-  if (first === undefined) return "system";
-  switch (first.role) {
-    case "user":
-      return "user";
-    case "assistant":
-      return "assistant";
-    case "toolResult":
-      return "tool";
-    case "system":
-      return "system";
-  }
-};
-
-/**
- * The tool facts a result entry carries for the view. The response body is
- * model context and stays in `text`; the name and the failure bit are what a
- * human-facing summary can be built from without parsing that body.
- */
-const toolOfEntry = (record: EntryRecord) => {
-  const first = record.model?.[0];
-  if (first?.role !== "toolResult") return {};
-  return { toolName: first.toolName, toolFailed: first.isError };
-};
-
-/**
- * One transcript entry. `origin` is joined from the run the entry falls in,
- * because pi's `EntryRecord` carries no origin of its own. `at` is not: an
- * entry pi committed has no commit timestamp, so only the delivery of the
- * commit that carried it can date it, and that is the feed's to add.
- */
-export const projectEntry = (record: EntryRecord, run?: RunProjection): EntryView => ({
-  id: Number(record.id),
-  kind: record.kind,
-  role: roleOfEntry(record),
-  text: (record.model ?? []).map(textOfMessage).join("\n"),
-  origin: run === undefined || run.operationId === "" ? undefined : originOf(run.operationId),
-  data: record.data,
-  ...toolOfEntry(record),
-});
-
-const usageViewOf = (inputTokens: number, outputTokens: number, exchanges: number): UsageView => ({
-  inputTokens,
-  outputTokens,
-  exchanges,
-});
-
-// Only the counters a view shows: `pi.usage` buckets carry cost and cache
-// counters too, and a decode that required them would drop a bucket pi wrote
-// without one.
-const UsageBucketSchema = Schema.Struct({ input: Schema.Number, output: Schema.Number });
-const UsageDocSchema = Schema.Struct({
-  models: Schema.optional(Schema.Record(Schema.String, UsageBucketSchema)),
-});
-type UsageDoc = typeof UsageDocSchema.Type;
-const EMPTY_USAGE: UsageDoc = {};
-
-/**
- * Sum a conversation's ledger. The ledger is pi's durable `pi.usage` document,
- * decoded here rather than trusted, so a stale or partial document reads as
- * the spend it actually records. See {@link UsageView}.
- */
-export const usageView = (state: JsonObject | undefined): UsageView => {
-  const decoded = Option.getOrElse(
-    Schema.decodeUnknownOption(UsageDocSchema)(state),
-    () => EMPTY_USAGE,
-  );
-  const models = Object.values(decoded.models ?? {});
-  let inputTokens = 0;
-  let outputTokens = 0;
-  for (const model of models) {
-    inputTokens += model.input;
-    outputTokens += model.output;
-  }
-  return usageViewOf(inputTokens, outputTokens, models.length);
-};
-
-const TextBlockSchema = Schema.Struct({
-  type: Schema.Literals(["text"]),
-  text: Schema.String,
-});
-
-const ThinkingBlockSchema = Schema.Struct({
-  type: Schema.Literals(["thinking"]),
-  thinking: Schema.String,
-});
-
-/**
- * The text and thinking blocks of a committed partial response. A provider
- * emits both as content blocks; a view shows them as the two streams a reader
- * follows, so a client never has to reassemble deltas.
- */
-const GenerationMessageSchema = Schema.Struct({ content: Schema.Array(Schema.Unknown) });
-
-const streamOfMessage = (
-  message: typeof GenerationMessageSchema.Type | undefined,
-): Pick<LiveGenerationView, "text" | "thinking"> => {
-  if (message === undefined) return {};
-  let text = "";
-  let thinking = "";
-  for (const block of message.content) {
-    const asText = Schema.decodeUnknownOption(TextBlockSchema)(block);
-    if (Option.isSome(asText)) text += asText.value.text;
-    const asThinking = Schema.decodeUnknownOption(ThinkingBlockSchema)(block);
-    if (Option.isSome(asThinking)) thinking += asThinking.value.thinking;
-  }
-  return { text: text === "" ? undefined : text, thinking: thinking === "" ? undefined : thinking };
-};
-
-const InboxContentSchema = Schema.Union([Schema.String, Schema.Array(Schema.Unknown)]);
-
-const InboxItemSchema = Schema.Struct({
-  id: Schema.Number,
-  mode: Schema.String,
-  content: Schema.optional(InboxContentSchema),
-});
-const InboxDocSchema = Schema.Struct({ items: Schema.Array(InboxItemSchema) });
-type InboxDoc = typeof InboxDocSchema.Type;
-const EMPTY_INBOX: InboxDoc = { items: [] };
-
-const textOfInboxContent = (
-  content: typeof InboxContentSchema.Type | undefined,
-): string | undefined => {
-  if (content === undefined) return undefined;
-  if (Schema.is(Schema.String)(content)) return content;
-  const text = content
-    .flatMap((block) => Option.toArray(Schema.decodeUnknownOption(TextBlockSchema)(block)))
-    .map((block) => block.text)
-    .join("");
-  return text === "" ? undefined : text;
-};
-
-/**
- * `pi.inbox` as the browser renders it: what is queued for the next boundary.
- * A write is queued too, and is named as one, so a client does not offer to
- * answer it.
- */
-export const inboxView = (state: JsonObject | undefined): readonly InboxView[] => {
-  const decoded = Option.getOrElse(
-    Schema.decodeUnknownOption(InboxDocSchema)(state),
-    () => EMPTY_INBOX,
-  );
-  return decoded.items.flatMap((item) =>
-    item.mode === "followUp" || item.mode === "steer" || item.mode === "write"
-      ? [{ id: String(item.id), mode: item.mode, text: textOfInboxContent(item.content) }]
-      : [],
-  );
-};
-
-const LiveDocSchema = Schema.Struct({
-  run: Schema.optional(Schema.Struct({ inputs: Schema.Array(Schema.Number) })),
-  generation: Schema.optional(
-    Schema.Struct({
-      attempt: Schema.Number,
-      message: Schema.optional(GenerationMessageSchema),
-      retry: Schema.optional(LiveRetryViewSchema),
-    }),
-  ),
-  tools: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        callId: Schema.String,
-        name: Schema.String,
-        status: Schema.Literals(["pending", "running", "done"]),
-        output: Schema.optional(Schema.String),
-        details: Schema.optional(Schema.Json),
-      }),
-    ),
-  ),
-  compactions: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        taskId: Schema.Number,
-        reason: Schema.String,
-        blocking: Schema.Boolean,
-      }),
-    ),
-  ),
-  compactionFailure: Schema.optional(
-    Schema.Struct({
-      taskId: Schema.Number,
-      reason: Schema.String,
-      error: Schema.String,
-    }),
-  ),
-});
-type LiveDoc = typeof LiveDocSchema.Type;
-const EMPTY_LIVE: LiveDoc = {};
-
-const generationOf = (generation: LiveDoc["generation"]): LiveGenerationView | undefined => {
-  if (generation === undefined) return undefined;
-  return {
-    attempt: generation.attempt,
-    ...streamOfMessage(generation.message),
-    retry: generation.retry,
-  };
-};
-
-/**
- * `pi.live` as the browser renders it. `operationOf` maps a submission id to
- * the operation that admitted it, so the run's identity is pi's own and not a
- * second record; `""` means pi reported no request id for it.
- */
-export const liveView = (
-  state: JsonObject | undefined,
-  operationOf: (input: string) => string,
-): LiveView => {
-  const decoded = Option.getOrElse(
-    Schema.decodeUnknownOption(LiveDocSchema)(state),
-    () => EMPTY_LIVE,
-  );
-  const inputs = (decoded.run?.inputs ?? []).map(String);
-  const first = inputs[0];
-  return {
-    run:
-      decoded.run === undefined
-        ? undefined
-        : { operationId: first === undefined ? "" : operationOf(first), inputs },
-    generation: generationOf(decoded.generation),
-    tools: (decoded.tools ?? []).map((tool) => ({
-      callId: tool.callId,
-      name: tool.name,
-      status: tool.status,
-      output: tool.output,
-      details: tool.details,
-    })),
-    compactions: (decoded.compactions ?? []).map((compaction) => ({
-      taskId: String(compaction.taskId),
-      reason: compaction.reason,
-      blocking: compaction.blocking,
-    })),
-    compactionFailure:
-      decoded.compactionFailure === undefined
-        ? undefined
-        : {
-            taskId: String(decoded.compactionFailure.taskId),
-            reason: decoded.compactionFailure.reason,
-            error: decoded.compactionFailure.error,
-          },
-  };
-};
-
-// ---------------------------------------------------------------------------
-// Streams — the name a feed segment is filed under
-// ---------------------------------------------------------------------------
-
-/**
- * The durable name of one session's feed segment. A session's segments share a
- * tag and differ only here, so `list({ tag, limit: 1 })` finds the newest, and
- * a client resuming on `Last-Event-ID` can tell a new segment from a chunk of
- * the one it was reading.
- */
-export const streamIdFor = (sessionId: string, generation: number): string =>
-  `feed:${sessionId}:${generation}`;
-
-/** The stream a client attaches to for one generation of one session. */
-export const streamView = (
-  sessionId: string,
-  generation: number,
-  cursor: number,
-  state: StreamStatusView["state"] = "streaming",
-): StreamStatusView => ({
-  stream: streamIdFor(sessionId, generation),
-  generation,
-  cursor,
-  state,
-});

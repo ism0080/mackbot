@@ -1,4 +1,6 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import * as Effect from "effect/Effect";
 import { describe, expect, test } from "vitest";
@@ -8,6 +10,8 @@ import type { BotConfig } from "@mackbot/contract";
 import type { RawJson } from "../src/bots.ts";
 import { checkBotConfig, parseBotRegistry, resolveModelRef, validateRoster } from "../src/bots.ts";
 import { decideWrite } from "../src/registry-store.ts";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 /** Run a rule and return its refusal message, or `undefined` when it passes. */
 const refusal = async (rule: Effect.Effect<void, Error>): Promise<string | undefined> => {
@@ -120,7 +124,7 @@ describe("parseBotRegistry", () => {
   const realRegistry = (): RawJson => {
     // SAFETY: bots.json is the JSON document this test reads from disk; the
     // subject under test is what `parseBotRegistry` makes of it.
-    return JSON.parse(readFileSync(new URL("../bots.json", import.meta.url), "utf8")) as RawJson;
+    return JSON.parse(readFileSync(join(here, "..", "bots.json"), "utf8")) as RawJson;
   };
 
   test("accepts the shipped apps/api/bots.json shape", () => {

@@ -6,6 +6,7 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, test } from "vitest";
 
+import { MODEL_VARIANTS } from "../src/catalog.ts";
 import {
   ApprovalDecisionSchema,
   BotConfigSchema,
@@ -27,7 +28,9 @@ import type {
   Frame,
   TranscriptQuery,
 } from "../src/index.ts";
-import { TIMESTAMP } from "./support.ts";
+
+/** A fixed wall clock, so a frame that carries a timestamp stays deterministic. */
+const TIMESTAMP = 1_764_000_000_000;
 
 type Decoder = Parameters<typeof Schema.decodeUnknownSync>[0];
 
@@ -150,7 +153,8 @@ describe("BotConfigSchema", () => {
   });
 
   test("accepts every thinking level the catalog declares", () => {
-    for (const level of ["none", "low", "medium", "high", "xhigh", "max"]) {
+    const declared = new Set(Object.values(MODEL_VARIANTS).flat());
+    for (const level of declared) {
       expect(() =>
         Schema.decodeUnknownSync(BotConfigSchema)({
           model: "claude-haiku-5-5",

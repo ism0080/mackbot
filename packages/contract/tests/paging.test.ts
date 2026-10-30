@@ -7,8 +7,8 @@
 
 import { describe, expect, test } from "vitest";
 
-import { DEFAULT_LIMIT, MAX_LIMIT, clampLimit, runOfEntry, slicePage } from "../src/index.ts";
-import type { PageQuery, RunProjection } from "../src/index.ts";
+import { DEFAULT_LIMIT, MAX_LIMIT, clampLimit, slicePage } from "../src/index.ts";
+import type { PageQuery } from "../src/index.ts";
 
 interface Row {
   readonly id: number;
@@ -160,58 +160,5 @@ describe("clampLimit", () => {
 
   test("keeps the default inside the ceiling", () => {
     expect(DEFAULT_LIMIT).toBeLessThanOrEqual(MAX_LIMIT);
-  });
-});
-
-describe("runOfEntry", () => {
-  const early: RunProjection = { operationId: "http:early", startEntry: 10, answer: 20 };
-  const late: RunProjection = { operationId: "http:late", startEntry: 15, answer: 25 };
-  const open: RunProjection = { operationId: "cron:nightly", startEntry: 30 };
-
-  test("owns the entries from its input through its answer", () => {
-    expect(runOfEntry(10, [early])).toBe(early);
-    expect(runOfEntry(15, [early])).toBe(early);
-    expect(runOfEntry(20, [early])).toBe(early);
-  });
-
-  test("owns nothing outside its window", () => {
-    expect(runOfEntry(9, [early])).toBeUndefined();
-    expect(runOfEntry(21, [early])).toBeUndefined();
-    expect(runOfEntry(0, [early])).toBeUndefined();
-  });
-
-  test("chooses the newest overlapping run regardless of array order", () => {
-    expect(runOfEntry(17, [early, late])).toBe(late);
-    expect(runOfEntry(17, [late, early])).toBe(late);
-    expect(runOfEntry(22, [early, late])).toBe(late);
-  });
-
-  test("prefers a newer run nested inside an older one", () => {
-    const outer: RunProjection = { operationId: "http:outer", startEntry: 10, answer: 100 };
-    const inner: RunProjection = { operationId: "delegate:inner", startEntry: 40, answer: 50 };
-
-    expect(runOfEntry(45, [outer, inner])).toBe(inner);
-    expect(runOfEntry(60, [outer, inner])).toBe(outer);
-    expect(runOfEntry(100, [outer, inner])).toBe(outer);
-    expect(runOfEntry(101, [outer, inner])).toBeUndefined();
-  });
-
-  test("an open-ended run owns every later entry", () => {
-    expect(runOfEntry(30, [open])).toBe(open);
-    expect(runOfEntry(31, [open])).toBe(open);
-    expect(runOfEntry(10_000, [open])).toBe(open);
-    expect(runOfEntry(29, [open])).toBeUndefined();
-  });
-
-  test("a run whose answer is its own input owns exactly one entry", () => {
-    const single: RunProjection = { operationId: "http:single", startEntry: 7, answer: 7 };
-
-    expect(runOfEntry(7, [single])).toBe(single);
-    expect(runOfEntry(6, [single])).toBeUndefined();
-    expect(runOfEntry(8, [single])).toBeUndefined();
-  });
-
-  test("returns undefined when there are no runs", () => {
-    expect(runOfEntry(1, [])).toBeUndefined();
   });
 });

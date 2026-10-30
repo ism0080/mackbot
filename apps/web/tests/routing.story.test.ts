@@ -9,6 +9,7 @@ import { init } from "../src/main.ts";
 import { Message } from "../src/message.ts";
 import { Screen } from "../src/model.ts";
 import { Navigate, OpenLink, pathOf, screenOfPath } from "../src/route.ts";
+import { Toast } from "../src/toast.ts";
 import { update } from "../src/update.ts";
 import { CATALOG, modelWith, rosterOf, transcriptOf } from "./support/fixtures.ts";
 import { botChannel, channelOf, dataOf, foldMessages, transcriptIn } from "./support/story.ts";
@@ -349,7 +350,9 @@ describe("in-app navigation", () => {
   });
 
   test("ExternalUrlRequested opens the link without changing the screen", () => {
-    const seeded = modelWith({ toast: { text: "still here" } });
+    const seeded = modelWith({
+      toast: Toast.show(modelWith().toast, { payload: { text: "still here" } }).model,
+    });
 
     story(
       update,

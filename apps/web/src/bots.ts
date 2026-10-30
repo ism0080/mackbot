@@ -48,8 +48,8 @@ const levelOptions = (
 };
 
 /** A level the select offered, or none when the value is not one. */
-const levelOf = (value: string): ThinkingLevel | null =>
-  Schema.is(ThinkingLevelSchema)(value) ? value : null;
+const levelOf = (value: string): ThinkingLevel | undefined =>
+  Schema.is(ThinkingLevelSchema)(value) ? value : undefined;
 
 /** A control's DOM id. The bot being created has no id yet, so it shares the
  *  `new` prefix every create-form control carries. */
@@ -87,28 +87,25 @@ const modelSelect = (
  */
 const levelSelect = (
   bot: string | null,
-  current: ThinkingLevel | null | undefined,
+  current: ThinkingLevel | undefined,
   model: string,
   catalog: ModelCatalog,
   h: HtmlBuilder<Message>,
-): Html => {
-  const chosen = current ?? undefined;
-  return selectField(
+): Html =>
+  selectField(
     {
       id: fieldId(bot, "level"),
       label: "Thinking level",
       hook: "level",
-      value: chosen ?? NO_LEVEL,
+      value: current ?? NO_LEVEL,
       choices: [
         { value: NO_LEVEL, label: "No level" },
-        ...levelOptions(catalog, model, chosen).map((level) => ({ value: level, label: level })),
+        ...levelOptions(catalog, model, current).map((level) => ({ value: level, label: level })),
       ],
-      onChange: (value) =>
-        Message.EditedBotLevel({ bot, level: value === NO_LEVEL ? null : levelOf(value) }),
+      onChange: (value) => Message.EditedBotLevel({ bot, level: levelOf(value) }),
     },
     h,
   );
-};
 
 const promptArea = (bot: string | null, current: string, h: HtmlBuilder<Message>): Html =>
   textareaField(

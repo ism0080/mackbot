@@ -1,7 +1,5 @@
 /**
- * Fixtures shared by the contract tests.
- *
- * These build pi's own records (`EntryRecord`, `Message`) from the smallest
+ * pi's own records (`EntryRecord`, `Message`), built from the smallest
  * realistic value, so a projection test exercises the real shapes rather than a
  * hand-rolled approximation of them. Factories return a fresh object on every
  * call, so tests never share mutable state.

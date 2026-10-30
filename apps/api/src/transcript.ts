@@ -19,8 +19,10 @@
 import type { Cursor, EntryId, EntryQuery, EntryRecord } from "@earendil-works/pi-durable";
 
 import { clampLimit } from "@mackbot/contract";
-import { projectEntry, runOfEntry, streamView } from "@mackbot/contract";
-import type { PageQuery, RunProjection, StreamStatusView, TranscriptPage } from "@mackbot/contract";
+import type { PageQuery, StreamStatusView, TranscriptPage } from "@mackbot/contract";
+
+import { projectEntry, runOfEntry, streamView } from "./projections.ts";
+import type { RunProjection } from "./projections.ts";
 
 /**
  * One page as `Conversation.entries()` returns it: newest first, with pi's

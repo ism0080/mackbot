@@ -5,21 +5,14 @@
  * for itself.
  */
 
+import type { Message } from "@earendil-works/pi-ai";
+import type { JsonObject } from "@earendil-works/pi-durable";
 import { describe, expect, test } from "vitest";
 
-import {
-  OPERATION_ORIGINS,
-  OPERATION_PREFIXES,
-  inboxView,
-  liveView,
-  originOf,
-  projectEntry,
-  runOfEntry,
-  streamIdFor,
-  streamView,
-  usageView,
-} from "../src/index.ts";
-import type { EntryView, RunProjection } from "../src/index.ts";
+import type { EntryRole, EntryView } from "@mackbot/contract";
+
+import { inboxView, liveView, projectEntry, runOfEntry, usageView } from "../src/projections.ts";
+import type { RunProjection } from "../src/projections.ts";
 import {
   TIMESTAMP,
   assistantMessage,
@@ -29,7 +22,7 @@ import {
   thinkingBlock,
   toolResultMessage,
   userMessage,
-} from "./support.ts";
+} from "./support/pi-records.ts";
 
 const runFor = (operationId: string, startEntry = 1, answer?: number): RunProjection => {
   const run: RunProjection = { operationId, startEntry };
@@ -54,7 +47,9 @@ describe("projectEntry", () => {
     expect(view.kind).toBe("turn");
   });
 
-  test.each([
+  const roleCases: ReadonlyArray<
+    readonly [label: string, model: () => readonly Message[] | undefined, role: EntryRole]
+  > = [
     ["user", () => [userMessage("hello")], "user"],
     ["assistant", () => [assistantMessage([textBlock("hello")])], "assistant"],
     [
@@ -64,7 +59,9 @@ describe("projectEntry", () => {
     ],
     ["system", () => [systemMessage("You are Mack.")], "system"],
     ["a record with no model messages", () => undefined, "system"],
-  ] as const)("maps a %s entry", (_label, model, expectedRole) => {
+  ];
+
+  test.each(roleCases)("maps a %s entry", (_label, model, expectedRole) => {
     const view = projectEntry(entryRecord({ id: 1, kind: "entry", model: model() }));
 
     expect(view.role).toBe(expectedRole);
@@ -244,13 +241,20 @@ describe("usageView", () => {
   });
 });
 
+/**
+ * Content blocks as a durable document stores them: plain JSON, which is what
+ * `pi.live` and `pi.inbox` hold, rather than pi's typed message blocks.
+ */
+const textJson = (text: string) => ({ type: "text", text });
+const thinkingJson = (thinking: string) => ({ type: "thinking", thinking });
+
 describe("inboxView", () => {
-  const state = {
+  const state: JsonObject = {
     items: [
       {
         id: 10,
         mode: "followUp",
-        content: [textBlock("Run "), textBlock("the tests.")],
+        content: [textJson("Run "), textJson("the tests.")],
       },
       { id: 2, mode: "steer", content: "Stop after this file." },
       { id: 7, mode: "write", content: [] },
@@ -335,10 +339,10 @@ describe("liveView", () => {
           attempt: 2,
           message: {
             content: [
-              thinkingBlock("Plan "),
-              thinkingBlock("the page."),
-              textBlock("Writ"),
-              textBlock("ing."),
+              thinkingJson("Plan "),
+              thinkingJson("the page."),
+              textJson("Writ"),
+              textJson("ing."),
               { type: "toolCall", id: "call_1", name: "read_file", arguments: {} },
             ],
           },
@@ -361,7 +365,7 @@ describe("liveView", () => {
       {
         generation: {
           attempt: 1,
-          message: { content: [thinkingBlock(""), textBlock(""), { type: "toolCall" }] },
+          message: { content: [thinkingJson(""), textJson(""), { type: "toolCall" }] },
         },
       },
       operationOf,
@@ -440,47 +444,56 @@ describe("liveView", () => {
   });
 });
 
-describe("streamIdFor and streamView", () => {
-  test("names a feed segment by session and generation", () => {
-    expect(streamIdFor("bot-1", 3)).toBe("feed:bot-1:3");
-    expect(streamIdFor("root", 0)).toBe("feed:root:0");
-    expect(streamIdFor("bot-1", 3)).not.toBe(streamIdFor("bot-1", 4));
+describe("runOfEntry", () => {
+  const early: RunProjection = { operationId: "http:early", startEntry: 10, answer: 20 };
+  const late: RunProjection = { operationId: "http:late", startEntry: 15, answer: 25 };
+  const open: RunProjection = { operationId: "cron:nightly", startEntry: 30 };
+
+  test("owns the entries from its input through its answer", () => {
+    expect(runOfEntry(10, [early])).toBe(early);
+    expect(runOfEntry(15, [early])).toBe(early);
+    expect(runOfEntry(20, [early])).toBe(early);
   });
 
-  test("defaults a stream view to streaming at its cursor", () => {
-    expect(streamView("bot-1", 3, 17)).toEqual({
-      stream: "feed:bot-1:3",
-      generation: 3,
-      cursor: 17,
-      state: "streaming",
-    });
+  test("owns nothing outside its window", () => {
+    expect(runOfEntry(9, [early])).toBeUndefined();
+    expect(runOfEntry(21, [early])).toBeUndefined();
+    expect(runOfEntry(0, [early])).toBeUndefined();
   });
 
-  test.each(["completed", "errored"] as const)("carries the %s state", (state) => {
-    expect(streamView("bot-1", 0, 0, state).state).toBe(state);
-  });
-});
-
-describe("originOf", () => {
-  test.each([
-    ["cron:daily-digest", "cron"],
-    ["delegate:task-7", "delegate"],
-    ["http:req-88", "http"],
-    ["req-with-no-prefix", "http"],
-    ["", "http"],
-    ["HTTP:REQ-1", "http"],
-    ["notcron:req-1", "http"],
-    ["cronreq-1", "http"],
-  ] as const)("reads %j as %s", (operationId, expected) => {
-    expect(originOf(operationId)).toBe(expected);
+  test("chooses the newest overlapping run regardless of array order", () => {
+    expect(runOfEntry(17, [early, late])).toBe(late);
+    expect(runOfEntry(17, [late, early])).toBe(late);
+    expect(runOfEntry(22, [early, late])).toBe(late);
   });
 
-  test("every declared prefix reads back as its own origin", () => {
-    // The prefix table is the source of truth for both sides, so a new origin
-    // cannot be added to one without the reader knowing it.
-    for (const origin of Object.values(OPERATION_ORIGINS)) {
-      expect(originOf(`${OPERATION_PREFIXES[origin]}req-1`)).toBe(origin);
-    }
+  test("prefers a newer run nested inside an older one", () => {
+    const outer: RunProjection = { operationId: "http:outer", startEntry: 10, answer: 100 };
+    const inner: RunProjection = { operationId: "delegate:inner", startEntry: 40, answer: 50 };
+
+    expect(runOfEntry(45, [outer, inner])).toBe(inner);
+    expect(runOfEntry(60, [outer, inner])).toBe(outer);
+    expect(runOfEntry(100, [outer, inner])).toBe(outer);
+    expect(runOfEntry(101, [outer, inner])).toBeUndefined();
+  });
+
+  test("an open-ended run owns every later entry", () => {
+    expect(runOfEntry(30, [open])).toBe(open);
+    expect(runOfEntry(31, [open])).toBe(open);
+    expect(runOfEntry(10_000, [open])).toBe(open);
+    expect(runOfEntry(29, [open])).toBeUndefined();
+  });
+
+  test("a run whose answer is its own input owns exactly one entry", () => {
+    const single: RunProjection = { operationId: "http:single", startEntry: 7, answer: 7 };
+
+    expect(runOfEntry(7, [single])).toBe(single);
+    expect(runOfEntry(6, [single])).toBeUndefined();
+    expect(runOfEntry(8, [single])).toBeUndefined();
+  });
+
+  test("returns undefined when there are no runs", () => {
+    expect(runOfEntry(1, [])).toBeUndefined();
   });
 
   test("an entry's origin agrees with the operation that owns it", () => {

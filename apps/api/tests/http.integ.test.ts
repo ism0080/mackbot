@@ -47,6 +47,7 @@ type LiveCall = () => Effect.Effect<LiveResponse, unknown, HttpClient.HttpClient
 /** The deployed URL and its origin, the latter being what the CSRF check compares against. */
 const site = Effect.gen(function* () {
   const { url } = yield* stack;
+  if (url === undefined) return yield* Effect.die("the stack deployed without a URL");
   return { url, origin: new URL(url).origin };
 });
 
@@ -540,7 +541,7 @@ test(
     expect(abort.status).toBe(400);
     expect(yield* Http.body(abort)).toEqual({ error: "invalid request body" });
 
-    const invalidDecisions: ReadonlyArray<unknown> = [
+    const invalidDecisions: ReadonlyArray<Schema.Json> = [
       {},
       { action: "maybe" },
       { action: "allow", content: { x: {} } },
@@ -565,7 +566,8 @@ test(
     expect(missing.status).toBe(409);
     expect(yield* Http.body(missing)).toEqual({ error: "no pending approval" });
 
-    for (const body of [{}, { taskId: 5 }]) {
+    const invalidRetries: ReadonlyArray<Schema.Json> = [{}, { taskId: 5 }];
+    for (const body of invalidRetries) {
       const response = yield* Http.post(`${url}/retry/hermes`, Http.json(body), Http.bearer());
       expect(response.status).toBe(400);
       expect(yield* Http.body(response)).toEqual({ error: "invalid request body" });

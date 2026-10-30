@@ -14,11 +14,10 @@
 
 import type { HarnessInspection } from "@earendil-works/pi-durable";
 
-import { projectTasks } from "./liveness.ts";
+import { PARKED_REASON } from "@mackbot/contract";
 import type { TaskView } from "@mackbot/contract";
 
-/** The harness's own reason for a task it parked instead of running again. */
-const PARKED_REASON = "restart_limit";
+import { projectTasks } from "./liveness.ts";
 
 /**
  * The tasks the harness parked after too many restarts, oldest id first.

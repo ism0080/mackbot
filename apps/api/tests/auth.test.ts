@@ -1,5 +1,3 @@
-import { DatabaseSync } from "node:sqlite";
-
 import { describe, expect, test } from "vitest";
 
 import { handleLogin, handleLogout } from "../src/auth.ts";
@@ -10,24 +8,11 @@ import {
   LOGIN_FAILURE_LIMIT,
   LOGIN_WINDOW_MS,
 } from "../src/login-throttle.ts";
-import type { SqlStorage, SqlValue } from "../src/sql.ts";
 import { SESSION_COOKIE } from "../src/session.ts";
+import { memoryStorage } from "./support/sqlite.ts";
 
 const TOKEN = "correct-horse-battery-staple";
 const ORIGIN = "https://mackbot.test";
-
-/** A Durable Object's SQLite, played by Node's. */
-const memoryStorage = (): SqlStorage => {
-  const db = new DatabaseSync(":memory:");
-  return {
-    sql: {
-      exec: (query: string, ...bindings: SqlValue[]) => {
-        const rows = db.prepare(query).all(...bindings);
-        return { toArray: () => rows };
-      },
-    },
-  };
-};
 
 /** The guard the Worker reaches over RPC, on a clock the test moves. */
 const guardAt = (clock: { now: number }): LoginGuard => {

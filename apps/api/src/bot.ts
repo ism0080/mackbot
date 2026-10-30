@@ -48,12 +48,14 @@ import type { ApprovalStore, ApprovalWaitInput, DecidedApproval } from "./approv
 import { projectStatus } from "./status.ts";
 import { emptyTranscriptPage, transcriptPage, transcriptRead } from "./transcript.ts";
 import { generationFromStreamId, runProjections, streamTagFor } from "./feed.ts";
-import { originOf, projectEntry, streamView } from "@mackbot/contract";
+import { projectEntry, streamView } from "./projections.ts";
+import { originOf } from "@mackbot/contract";
 import type {
   AbortResult,
   ActiveRunView,
   ApprovalDecision,
   BotView,
+  CompactResult,
   PendingOperationView,
   RetryResult,
   StreamStatusView,
@@ -384,10 +386,7 @@ export class Bot extends DurableObject<Env> {
    * boundary. Nothing waits for it here, so the answer is the task a client can
    * follow in `pi.live.compactions` and in the transcript.
    */
-  async compact(
-    session: string = ROOT_SESSION,
-    instructions?: string,
-  ): Promise<{ bot: string; taskId: string }> {
+  async compact(session: string = ROOT_SESSION, instructions?: string): Promise<CompactResult> {
     await this.lifecycle.start();
     const conversation = await this.#rootOrConversation(session);
     const taskId = String(await conversation.compact(instructions, BACKGROUND_CONTEXT));

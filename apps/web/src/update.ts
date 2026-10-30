@@ -367,7 +367,7 @@ export const update = (model: Model, message: Message) =>
           config: (config) =>
             modifyFields(config, {
               model: () => chosen,
-              thinkingLevel: (level) => levelFor(catalog, chosen, level) ?? undefined,
+              thinkingLevel: (level) => levelFor(catalog, chosen, level),
             }),
         }),
       };
@@ -375,9 +375,7 @@ export const update = (model: Model, message: Message) =>
     EditedBotLevel: ({ bot, level }) => ({
       model: editBotOrDraft(model, bot, {
         draft: (draft) => modifyFields(draft, { thinkingLevel: () => level }),
-        // A bot that declares no level has no level at all, which is what the
-        // wire says.
-        config: (config) => modifyFields(config, { thinkingLevel: () => level ?? undefined }),
+        config: (config) => modifyFields(config, { thinkingLevel: () => level }),
       }),
     }),
     EditedBotPrompt: ({ bot, prompt }) => ({

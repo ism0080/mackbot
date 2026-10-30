@@ -56,7 +56,7 @@ import { toJson, toPrettyJson } from "./json.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage, SqlValue } from "./sql.ts";
 import { ApprovalDecisionSchema, ApprovalViewSchema } from "@mackbot/contract";
-import type { ApprovalDecision, ApprovalView } from "@mackbot/contract";
+import type { ApprovalDecision, ApprovalView, DecisionAccepted } from "@mackbot/contract";
 import { currentTimeMillis } from "./clock.ts";
 
 /**
@@ -251,13 +251,11 @@ export interface PausedApproval {
  */
 export type PausedRecording = "recorded" | "known" | "limited";
 
-/** What a decision records, with nothing the browser must not see. */
-export interface DecidedApproval {
-  readonly approvalId: string;
-  readonly bot: string;
-  readonly status: "allowed" | "denied";
-  readonly decidedAt: number;
-}
+/**
+ * What a decision records, with nothing the browser must not see. It is the
+ * decision route's answer, so it is the contract's shape.
+ */
+export type DecidedApproval = DecisionAccepted;
 
 /**
  * The one way a decision becomes a submission. `Bot.submit` is the intended

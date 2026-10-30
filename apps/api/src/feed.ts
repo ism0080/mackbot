@@ -35,27 +35,27 @@ import { sseResponse } from "agents/streams";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import {
-  EventsQuerySchema,
-  inboxView,
-  liveView,
-  projectEntry,
-  runOfEntry,
-  streamIdFor,
-  usageView,
-} from "@mackbot/contract";
+import { EventsQuerySchema } from "@mackbot/contract";
 import type {
   EntryView,
   EventsQuery,
   Frame,
   InboxView,
   LiveView,
-  RunProjection,
   UsageView,
 } from "@mackbot/contract";
 import { describeCause } from "./errors.ts";
 import { methodNotAllowed } from "./http.ts";
 import { toJson } from "./json.ts";
+import {
+  inboxView,
+  liveView,
+  projectEntry,
+  runOfEntry,
+  streamIdFor,
+  usageView,
+} from "./projections.ts";
+import type { RunProjection } from "./projections.ts";
 import { currentTimeMillis } from "./clock.ts";
 
 /** How long an idle tail may stay silent before it sends a comment frame. */

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "bun dev.mjs",
     "deploy": "alchemy deploy --env-file ../../.env",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run"
   },
   "dependencies": {

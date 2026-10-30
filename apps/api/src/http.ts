@@ -10,11 +10,13 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import type { ErrorBody } from "@mackbot/contract";
+
 /** The largest body any route reads. A chat message is the biggest by far. */
 export const MAX_BODY_BYTES = 256 * 1024;
 
 export const jsonError = (status: number, error: string): Response =>
-  Response.json({ error }, { status });
+  Response.json({ error } satisfies ErrorBody, { status });
 
 export const methodNotAllowed = (): Response => jsonError(405, "method not allowed");
 

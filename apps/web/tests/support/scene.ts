@@ -9,6 +9,9 @@
  */
 import type { BotView, TranscriptPage } from "@mackbot/contract";
 import { AsyncData } from "foldkit";
+import { textContent } from "foldkit/scene";
+import type { SceneSimulation } from "foldkit/scene";
+import { expect } from "vitest";
 
 import type { Channel, Model } from "../../src/model.ts";
 import { FIXTURE_NOW, modelWith } from "./fixtures.ts";
@@ -62,3 +65,17 @@ export const appModel = (
   channels,
   ...overrides,
 });
+
+/**
+ * A step that checks the rendered page reads `texts` in the order given, each
+ * one after the one before it.
+ */
+export const expectTextOrder =
+  (...texts: readonly string[]) =>
+  <M, Msg, Out>(simulation: SceneSimulation<M, Msg, Out>): SceneSimulation<M, Msg, Out> => {
+    const body = textContent(simulation.html);
+    for (const [earlier, later] of texts.slice(1).map((text, index) => [texts[index]!, text])) {
+      expect(body.indexOf(earlier)).toBeLessThan(body.indexOf(later));
+    }
+    return simulation;
+  };

@@ -2,11 +2,14 @@ import {
   AbortResultSchema,
   BotConfigSchema,
   BotIdSchema,
-  BotViewSchema,
   BotWriteResultSchema,
+  ChatAcceptedSchema,
+  DecisionAcceptedSchema,
+  ErrorBodySchema,
   ModelCatalogSchema,
   RetryResultSchema,
   RosterSchema,
+  StatusResponseSchema,
   TranscriptPageSchema,
 } from "@mackbot/contract";
 import type { AbortRequest, BotCreate, BotWrite } from "@mackbot/contract";
@@ -27,16 +30,6 @@ import { retryRequest, retryRoute } from "./task-retry.ts";
 
 /** The transcript page size the app asks for; the route clamps it to 200. */
 export const TRANSCRIPT_LIMIT = 50;
-
-/**
- * `/status`'s envelope: one view per bot that answered, plus the bots whose
- * status could not be read. The per-bot `BotView` is the contract's; the
- * envelope wrapping it is this route's shape.
- */
-const StatusResponseSchema = Schema.Struct({
-  bots: Schema.Record(Schema.String, BotViewSchema),
-  errors: Schema.Record(Schema.String, Schema.String),
-});
 
 /**
  * The Worker origin. The Worker serves this app, so every route is same-origin:
@@ -90,26 +83,6 @@ export const Transcript = Command.define("Transcript", {
 });
 
 /**
- * The decision route's own response shapes, not the contract's: the route is the
- * server's and serves the four fields the store wrote, then `{ error }` when the
- * approval was not pending. A browser must decode the shape it is actually
- * served, so these live here as the route's shape rather than as a contract type.
- */
-const DecisionAcceptedSchema = Schema.Struct({
-  approvalId: Schema.String,
-  bot: Schema.String,
-  status: Schema.Literals(["allowed", "denied"]),
-  decidedAt: Schema.Number,
-});
-
-/**
- * A refusal's own shape: `{ error }`, carrying the rule's words. The decision
- * route answers it when the approval was not pending, and the write routes
- * answer it when a rule refused the write.
- */
-const RefusedSchema = Schema.Struct({ error: Schema.String });
-
-/**
  * The roster the registry holds: one configuration per bot, keyed by bot id.
  * The route answers the contract's `RosterSchema`, so the browser decodes it
  * with the contract's schema rather than a private copy of the shape.
@@ -153,25 +126,16 @@ export const Catalog = Command.define("Catalog", {
 const refusalOf = (
   response: HttpClientResponse.HttpClientResponse,
 ): Effect.Effect<string, never, never> =>
-  HttpClientResponse.schemaBodyJson(RefusedSchema)(response).pipe(
+  HttpClientResponse.schemaBodyJson(ErrorBodySchema)(response).pipe(
     Effect.map((body) => body.error),
     Effect.catch(() => Effect.succeed(`the write route answered ${response.status}`)),
   );
 
 /**
- * `POST /chat/:bot`'s accepted answer: the operation the server recorded, and
- * whether it admitted it. `wait=0` asks for the receipt immediately rather than
- * holding the request open for the run's result; the transcript and its SSE
- * stream are how the answer arrives.
- */
-const ChatAcceptedSchema = Schema.Struct({
-  operationId: Schema.String,
-  accepted: Schema.Boolean,
-});
-
-/**
  * `POST /chat/:bot` with the text the composer holds. This is the app's one
- * route that starts work instead of observing it.
+ * route that starts work instead of observing it. `wait=0` asks for the
+ * receipt immediately rather than holding the request open for the run's
+ * result; the transcript and its SSE stream are how the answer arrives.
  */
 export const Chat = Command.define("Chat", {
   args: { bot: Schema.String, text: Schema.String },
@@ -319,7 +283,7 @@ export const DecideApproval = Command.define("DecideApproval", {
       const response = yield* client.execute(request);
 
       if (response.status === 409) {
-        yield* HttpClientResponse.schemaBodyJson(RefusedSchema)(response);
+        yield* HttpClientResponse.schemaBodyJson(ErrorBodySchema)(response);
         return Message.ApprovalRefused({ bot, approvalId });
       }
       if (response.status < 200 || response.status >= 300) {

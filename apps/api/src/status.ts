@@ -22,9 +22,10 @@ import type {
   PendingOperationView,
   TaskView,
 } from "@mackbot/contract";
-import { usageView } from "@mackbot/contract";
 import type { ModelRef } from "@mackbot/contract";
 import type { ThinkingLevel } from "@mackbot/contract/catalog";
+
+import { usageView } from "./projections.ts";
 
 export interface StatusFacts {
   readonly id: string;

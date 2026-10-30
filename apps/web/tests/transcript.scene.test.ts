@@ -20,10 +20,9 @@ import {
   scene,
   selector,
   submit,
-  textContent,
   type,
 } from "foldkit/scene";
-import { expect as viExpect, test } from "vitest";
+import { test } from "vitest";
 
 import { Chat, Status, Transcript } from "../src/api.ts";
 import { Message } from "../src/message.ts";
@@ -33,7 +32,7 @@ import { ScrollToLatest } from "../src/scroll.ts";
 import { update } from "../src/update.ts";
 import { view } from "../src/view.ts";
 import { approvalOf, entryOf, FIXTURE_NOW, statusOf, transcriptOf } from "./support/fixtures.ts";
-import { appModel, botChannel } from "./support/scene.ts";
+import { appModel, botChannel, expectTextOrder } from "./support/scene.ts";
 import { settleToastScene } from "./support/toast.ts";
 
 const at = (minutesAgo: number): number => FIXTURE_NOW - minutesAgo * 60_000;
@@ -95,16 +94,7 @@ test("entries keep their order and say who spoke and from where", () => {
     expect(selector('[data-entry="2"] .origin')).toBeAbsent(),
     expect(selector('[data-entry="3"] .origin')).toContainText("cron"),
     // The page renders in entry order, oldest first.
-    (simulation) => {
-      const body = textContent(simulation.html);
-      viExpect(body.indexOf("Morning, Hermes.")).toBeLessThan(
-        body.indexOf("Three things moved overnight."),
-      );
-      viExpect(body.indexOf("Three things moved overnight.")).toBeLessThan(
-        body.indexOf("Nightly digest"),
-      );
-      return simulation;
-    },
+    expectTextOrder("Morning, Hermes.", "Three things moved overnight.", "Nightly digest"),
   );
 });
 
@@ -281,14 +271,9 @@ test("the thread is a polite live log, divided by the day each part was said", (
     ),
     expect(role("log", { name: "Conversation with Hermes" })).toHaveAttr("aria-live", "polite"),
     expectAll(all.selector(".dayline")).toHaveCount(2),
-    (simulation) => {
-      const body = textContent(simulation.html);
-      // The older day's divider precedes its entries; "Today" sits between
-      // them and the newest one.
-      viExpect(body.indexOf("Earlier this week.")).toBeLessThan(body.indexOf("Today"));
-      viExpect(body.indexOf("Today")).toBeLessThan(body.indexOf("Now."));
-      return simulation;
-    },
+    // The older day's divider precedes its entries; "Today" sits between
+    // them and the newest one.
+    expectTextOrder("Earlier this week.", "Today", "Now."),
   );
 });
 

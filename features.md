@@ -32,6 +32,11 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Approval controls in the web app: a paused call becomes a durable approval,
   the app's cards decide allow or deny, and the decision steers the resume.
   Other channels still need their own controls.
+- Sign-in hardening: `/login` is throttled per client, and `POST /logout`
+  clears the session cookie from the web app's sign-out.
+- Retention: the hourly cron prunes each bot's audit rows, recorded failures
+  and settled approvals past their retention.
+- A delegation depth limit: a chain of hand-offs is refused past three.
 
 ## Product and UX
 
@@ -72,7 +77,7 @@ foundation pieces are already implemented and are intentionally omitted here:
   failure, is not yet a state of its own that a human can decide about.
 - **Asynchronous delegation.** Add async fire-and-poll delegation, richer thread
   lineage, and stronger anti-livelock behavior. The basic `delegatesTo`
-  allowlist is implemented.
+  allowlist and the depth limit are implemented.
 - **Delegation that survives a crash.** `delegate_to_bot` is still an unsafe
   replay: an eviction mid-delegation leaves the model with an interrupted
   result. Its operation id makes the submission idempotent, so deriving it

@@ -21,7 +21,16 @@ import {
   RetryRequestSchema,
   TranscriptQuerySchema,
 } from "@mackbot/contract";
-import type { BotView } from "@mackbot/contract";
+import type {
+  BotView,
+  BotWriteResult,
+  ChatAccepted,
+  CompactResult,
+  DecisionAccepted,
+  ModelCatalog,
+  Roster,
+  StatusResponse,
+} from "@mackbot/contract";
 import { MODEL_VARIANTS } from "@mackbot/contract/catalog";
 
 import type { Bot } from "./bot.ts";
@@ -122,16 +131,14 @@ export const handleChat = async ({ request, url, bot }: BotScoped): Promise<Resp
   // operationId again (admission is at-most-once) and let it long-poll.
   if (url.searchParams.get("wait") === "0" || body.wait === false) {
     return Response.json(
-      { operationId: receipt.operationId, accepted: receipt.accepted },
+      { operationId: receipt.operationId, accepted: receipt.accepted } satisfies ChatAccepted,
       { status: 202 },
     );
   }
   const result = await bot.wait(operationId, LONG_POLL_TIMEOUT_MS, receipt.session);
   if (result.status === "timeout") {
-    return Response.json(
-      { operationId, accepted: receipt.accepted, status: result.status },
-      { status: 202 },
-    );
+    const accepted: ChatAccepted = { operationId, accepted: receipt.accepted };
+    return Response.json({ ...accepted, status: result.status }, { status: 202 });
   }
   return Response.json(result, { status: 200 });
 };
@@ -172,7 +179,7 @@ export const handleApproval = async ({ request, bot, path }: BotScoped): Promise
     // not be replaced by a second one.
     return jsonError(409, "no pending approval");
   }
-  return Response.json(decided);
+  return Response.json(decided satisfies DecisionAccepted);
 };
 
 /**
@@ -208,7 +215,7 @@ export const handleCompact = async ({ request, bot }: BotScoped): Promise<Respon
   const body = await readJsonBody(request, CompactBodySchema, EMPTY_OBJECT);
   if (body === undefined) return invalidBody();
   const result = await bot.compact(body.session, body.instructions);
-  return Response.json(result);
+  return Response.json(result satisfies CompactResult);
 };
 
 interface BotStatusResult {
@@ -247,12 +254,12 @@ export const handleStatus = async (env: Env): Promise<Response> => {
       statuses[entry.id] = entry.status;
     }
   }
-  return Response.json({ bots: statuses, errors });
+  return Response.json({ bots: statuses, errors } satisfies StatusResponse);
 };
 
 /** The roster: every bot the fleet runs, as the browser edits it. */
 export const handleRoster = async (env: Env): Promise<Response> =>
-  Response.json({ bots: await readRoster(env) });
+  Response.json({ bots: await readRoster(env) } satisfies Roster);
 
 /**
  * The models the Worker knows, and the thinking levels each one supports.
@@ -261,7 +268,8 @@ export const handleRoster = async (env: Env): Promise<Response> =>
  * reaching the browser's module graph: the browser offers a picker, and the
  * Worker is what knows which models exist.
  */
-export const handleModels = (): Response => Response.json({ models: MODEL_VARIANTS });
+export const handleModels = (): Response =>
+  Response.json({ models: MODEL_VARIANTS } satisfies ModelCatalog);
 
 const WRITE_REFUSAL_STATUS: Record<(RegistryWrite & { readonly ok: false })["code"], number> = {
   invalid: 400,
@@ -287,7 +295,8 @@ export const handleBotCreate = async (request: Request, env: Env): Promise<Respo
   if (body === undefined) return invalidBody();
   const result = await writeBot(env, body.id, body.bot, "create");
   if (!result.ok) return writeRefusal(result);
-  return Response.json({ id: body.id, bot: result.roster[body.id] }, { status: 201 });
+  const created: BotWriteResult = { id: body.id, bot: result.roster[body.id] };
+  return Response.json(created, { status: 201 });
 };
 
 /**
@@ -303,5 +312,5 @@ export const handleBotWrite = async (
   if (body === undefined) return invalidBody();
   const result = await writeBot(env, botId, body.bot, "replace");
   if (!result.ok) return writeRefusal(result);
-  return Response.json({ id: botId, bot: result.roster[botId] });
+  return Response.json({ id: botId, bot: result.roster[botId] } satisfies BotWriteResult);
 };

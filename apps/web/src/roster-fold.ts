@@ -68,12 +68,12 @@ export const catalogOf = (model: Model): ModelCatalog => dataOf(model.catalog) ?
 export const levelFor = (
   catalog: ModelCatalog,
   model: string,
-  level: ThinkingLevel | null | undefined,
-): ThinkingLevel | null => {
-  if (level === undefined || level === null) return null;
+  level: ThinkingLevel | undefined,
+): ThinkingLevel | undefined => {
+  if (level === undefined) return undefined;
   const supported = catalog.models[model];
   if (supported === undefined) return level;
-  return supported.includes(level) ? level : null;
+  return supported.includes(level) ? level : undefined;
 };
 
 /** The field a configuration is missing, if any. The server refuses both, so
@@ -89,6 +89,6 @@ export const emptyFieldOf = (config: BotConfig): string | null =>
 export const configOfDraft = (draft: BotDraft): BotConfig => ({
   model: draft.model,
   systemPrompt: draft.systemPrompt,
-  thinkingLevel: draft.thinkingLevel ?? undefined,
+  thinkingLevel: draft.thinkingLevel,
   brief: draft.brief.trim().length === 0 ? undefined : draft.brief,
 });

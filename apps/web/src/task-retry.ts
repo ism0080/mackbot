@@ -10,6 +10,7 @@
  * offers it. The Command that makes the request lives in `api.ts`, with the
  * app's other Commands.
  */
+import { PARKED_REASON } from "@mackbot/contract";
 import type { RetryRequest, TaskView } from "@mackbot/contract";
 import * as Schema from "effect/Schema";
 import type { Html, HtmlBuilder } from "foldkit/html";
@@ -17,9 +18,6 @@ import type { Html, HtmlBuilder } from "foldkit/html";
 import { Message } from "./message.ts";
 import { avatar, botName } from "./partials.ts";
 import { button } from "./ui.ts";
-
-/** The harness's own reason for a task it parked instead of running again. */
-export const PARKED_REASON = "restart_limit";
 
 /** The part of a task that says the harness parked it. */
 const ParkedTaskSchema = Schema.Struct({

@@ -1,4 +1,4 @@
-import type { ConversationView, EntryRecord } from "@earendil-works/pi-durable";
+import type { ConversationId, ConversationView, EntryRecord } from "@earendil-works/pi-durable";
 import type { StreamJson, Streams, StreamStatus, StreamWriter } from "agents/streams";
 import { describe, expect, test } from "vitest";
 
@@ -88,9 +88,12 @@ const entry = (id: number): EntryRecord =>
   // SAFETY: pi's ids are branded numbers; the brand is all this adds.
   ({ id, conversationId: 1, kind: "note" }) as EntryRecord;
 
-const view = (ids: readonly number[]): ConversationView =>
-  // SAFETY: the feed reads only `entries` and `docs` of a view.
-  ({ conversation: {}, entries: ids.map(entry), docs: {} }) as ConversationView;
+const view = (ids: readonly number[]): ConversationView => ({
+  // SAFETY: pi's ids are branded numbers; the brand is all this adds.
+  conversation: { id: 1 as ConversationId },
+  entries: ids.map(entry),
+  docs: {},
+});
 
 interface Chunk {
   readonly kind: string;

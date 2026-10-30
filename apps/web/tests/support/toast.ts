@@ -31,7 +31,9 @@ const STALE = 999;
 export const toastEntry = (index = 0): string => `${TOAST_ID}-entry-${index}`;
 
 /** The words of the newest toast on the stack, or none when it is empty. */
-export const toastText = (model: { readonly toast: Toast.Model }): string | undefined => {
+export const toastText = (model: {
+  readonly toast: typeof Toast.Model.Type;
+}): string | undefined => {
   const newest = model.toast.entries[model.toast.entries.length - 1];
   return newest === undefined ? undefined : newest.payload.text;
 };

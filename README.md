@@ -18,7 +18,7 @@ the root package is the workspace orchestrator; every other package is a member.
   - `src/` — the front-door Worker, the `Bot` Durable Object, the Executor bridge, and the seams
     (delegation, audit).
   - `tests/` — the HTTP integration suite, plus unit tests for the Worker's
-    request, session, operation and registry seams.
+    request, session, operation, projection and registry seams.
 - `apps/web/` — `@mackbot/web`, the Foldkit browser app, with its Story and
   Scene tests in `tests/`.
 - `packages/contract/` — `@mackbot/contract`, the wire vocabulary the Worker and
@@ -31,7 +31,7 @@ the root package is the workspace orchestrator; every other package is a member.
 bun install
 
 bun run check       # deploy shape, typecheck, lint and test
-bun run typecheck   # tsc --noEmit, for every workspace member
+bun run typecheck   # tsc --noEmit over src, then over src + tests (tsconfig.test.json), for every workspace member
 bun run lint        # oxlint (core profile + vendored forge plugin)
 bun run lint:css    # stylelint — the good-css rules over every stylesheet under apps/web/src
 bun run format      # oxfmt
@@ -56,14 +56,14 @@ motion and `overflow: clip` — with the rules core stylelint cannot express
 Tests are split by boundary:
 
 - **`packages/contract/tests/`** — Vitest unit tests of the wire vocabulary:
-  schemas reject the shapes a route must not accept, paging walks a transcript
-  without repeating or skipping an id, and the projections map pi's records to
-  the views the browser renders.
+  schemas reject the shapes a route must not accept, and paging walks a
+  transcript without repeating or skipping an id.
 - **`apps/web/tests/`** — Foldkit [Story and Scene](https://foldkit.dev/testing)
   tests. Story drives `update` directly and asserts the Model and the Commands
   it returns; Scene drives the rendered view through real interactions and
   assertions. Neither runs a browser or executes a Command's Effect.
-- **`apps/api/tests/`** — Vitest unit tests for the pure seams, and an
+- **`apps/api/tests/`** — Vitest unit tests for the pure seams, including the
+  projections that map pi's records to the views the browser renders, and an
   [Alchemy](https://alchemy.run/testing) integration suite that deploys the
   real Stack once in local-dev mode (`Test.make({ dev: true })`), drives the
   live Worker URL over HTTP, and tears it down. It needs no Cloudflare
@@ -88,7 +88,12 @@ gets `401` JSON, while an unauthenticated navigation is redirected to `/login`.
 
 - `GET /login` — the token form, a static page with no script. `POST /login`
   with a `token` form field answers `303` to `/` and sets the cookie, or `401`
-  with the form again.
+  with the form again. Each client (by `CF-Connecting-IP`) gets five wrong
+  tokens per 15 minutes; past that every attempt answers `429` with
+  `Retry-After` until the window has passed, and a success clears the count.
+- `POST /logout` — clear the session cookie and answer `204`. It needs no
+  credential, but as a cookie mutation it carries the same `Origin` and
+  `X-Mackbot-CSRF` proof, so a cross-site page cannot sign the user out.
 - `POST /chat/:bot` — submit text to a bot. Returns the answer, or `202` with an
   `operationId` when the wait times out or `wait=0` (resubmit the same
   `operationId` to keep waiting; admission is at-most-once).
@@ -123,12 +128,25 @@ gets `401` JSON, while an unauthenticated navigation is redirected to `/login`.
   `{"taskId": "<id>"}`, naming a task the harness parked after too many
   restarts. The answer is `{ bot, taskId, retried }`, where `retried` is false
   when nothing was parked under that id.
+- `POST /compact/:bot` — compact a conversation by hand. The body is optional;
+  `{"session": "<id>", "instructions": "..."}` names the conversation and
+  guides the summary. The answer is `{ bot, taskId }`, the task the summary is
+  made in.
 - `GET /bots` — the roster: one configuration per bot, keyed by bot id.
 - `POST /bots` — add a bot. The body is `{"id": "<slug>", "bot": <configuration>}`.
 - `PUT /bots/:id` — replace a bot's configuration. The body is
   `{"bot": <configuration>}`.
 - `GET /models` — the models the Worker knows, and the thinking levels each one
   supports.
+
+A refusal answers `{ "error": "<message>" }`: `400` for a body or query that
+does not decode, `404` for an unknown bot, `405` for the wrong method, `409` for
+a conflict, and `503` when the roster could not be read because the registry is
+down. Every answer's shape is a Schema in `@mackbot/contract`.
+
+The hourly cron sends each bot that declares a `brief` its brief, and prunes
+every bot's audit rows (30 days), recorded failures (7 days) and settled
+approvals (30 days) past their retention; pending approvals are never dropped.
 
 ## The bot roster
 
@@ -152,7 +170,9 @@ module graph, so the Worker stays the one that knows which models exist.
 
 The Worker and the web app share one vocabulary in the
 [`@mackbot/contract`](./packages/contract) package. Every route decodes its
-input and its output against a Schema there, so the two cannot drift apart.
+input against a Schema there and builds its answer as that Schema's type, and
+the web app decodes the answer with the same Schema, so the two cannot drift
+apart.
 
 ## The web app
 

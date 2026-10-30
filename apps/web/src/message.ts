@@ -171,7 +171,7 @@ export const Message = defineMessageUnion({
   EditedBotModel: { bot: Schema.NullOr(Schema.String), model: Schema.String },
   EditedBotLevel: {
     bot: Schema.NullOr(Schema.String),
-    level: Schema.NullOr(ThinkingLevelSchema),
+    level: Schema.optional(ThinkingLevelSchema),
   },
   EditedBotPrompt: { bot: Schema.NullOr(Schema.String), prompt: Schema.String },
   EditedBotBrief: { bot: Schema.NullOr(Schema.String), brief: Schema.String },

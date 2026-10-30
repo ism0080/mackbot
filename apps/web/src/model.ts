@@ -73,12 +73,13 @@ export type ThinkingLevel = typeof ThinkingLevelSchema.Type;
  * The editable fields of one bot.
  *
  * The strings are loose on purpose: a bot that has not been filled in yet is
- * still a state the form can be in. `null` for a thinking level is the bot
- * declaring no level, which is not the same thing as the level named "none".
+ * still a state the form can be in. An absent thinking level is the bot
+ * declaring no level, as the wire says, which is not the same thing as the
+ * level named "none".
  */
 export const BotDraftSchema = Schema.Struct({
   model: Schema.String,
-  thinkingLevel: Schema.NullOr(ThinkingLevelSchema),
+  thinkingLevel: Schema.optional(ThinkingLevelSchema),
   systemPrompt: Schema.String,
   brief: Schema.String,
 });
@@ -87,7 +88,6 @@ export type BotDraft = typeof BotDraftSchema.Type;
 /** The draft a bot that is being created starts from: nothing filled in yet. */
 export const EMPTY_DRAFT: BotDraft = {
   model: "",
-  thinkingLevel: null,
   systemPrompt: "",
   brief: "",
 };

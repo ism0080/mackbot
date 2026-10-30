@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "lint": "oxlint --config .oxlintrc.json",
     "lint:css": "stylelint \"src/**/*.css\"",
     "test:css": "bun stylelint/fixtures.test.mjs"
