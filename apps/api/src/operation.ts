@@ -48,15 +48,28 @@ export const cronOperationId = (botId: string, scheduledTime: number): string =>
 export const abortOperationId = (session: string): string => `abort:${session}`;
 
 /**
+ * The bots a delegation passed through before its source, as the `via:`
+ * segment of its id. Absent for a delegation that started with a person or a
+ * schedule, so the id of a first hand-off is what it always was.
+ */
+const viaSegment = (upstream: readonly string[]): string =>
+  upstream.length === 0 ? "" : `via:${upstream.join(",")}:`;
+
+/**
  * The operation one delegated tool call submits under.
  *
  * The id comes from the call's durable task, not from the model, so a replay of
  * the call after an eviction derives the same id and the target's idempotent
  * submission joins the first attempt instead of submitting the work twice.
- * Nothing the model says can move it.
+ * Nothing the model says can move it. `upstream` is the chain of bots that
+ * handed this work along before `sourceBotId`, oldest first: it is fixed for
+ * the run the call belongs to, so a replay derives it again unchanged.
  */
-export const delegateTaskOperationId = (sourceBotId: string, taskId: string): string =>
-  `${DELEGATE_PREFIX}${sourceBotId}:task:${taskId}`;
+export const delegateTaskOperationId = (
+  sourceBotId: string,
+  taskId: string,
+  upstream: readonly string[] = [],
+): string => `${DELEGATE_PREFIX}${sourceBotId}:${viaSegment(upstream)}task:${taskId}`;
 
 /**
  * An explicit caller override for that id, namespaced into its own `caller:`
@@ -64,8 +77,29 @@ export const delegateTaskOperationId = (sourceBotId: string, taskId: string): st
  * `cron:`, or `delegate:` work. Callers normally omit it; the task-derived id
  * above is the retry-safe one.
  */
-export const delegateCallerOperationId = (sourceBotId: string, supplied: string): string =>
-  `${DELEGATE_PREFIX}${sourceBotId}:caller:${supplied}`;
+export const delegateCallerOperationId = (
+  sourceBotId: string,
+  supplied: string,
+  upstream: readonly string[] = [],
+): string => `${DELEGATE_PREFIX}${sourceBotId}:${viaSegment(upstream)}caller:${supplied}`;
+
+/**
+ * The source bot and the `via:` chain, which come before any caller-supplied
+ * text: bot ids are slugs, so neither can contain the `:` that ends them.
+ */
+const DELEGATION_CHAIN = /^delegate:([a-z0-9][a-z0-9-]*):(?:via:([a-z0-9,-]+):)?(?:task|caller):/u;
+
+/**
+ * The bots a delegated operation has passed through, oldest first and ending
+ * with the bot that submitted it; empty for an operation no bot delegated.
+ * Only the two builders above write the segments this reads.
+ */
+export const delegationChainOf = (operationId: string): readonly string[] => {
+  const match = DELEGATION_CHAIN.exec(operationId);
+  if (match === null) return [];
+  const via = match[2] === undefined ? [] : match[2].split(",").filter((id) => id !== "");
+  return [...via, match[1] ?? ""];
+};
 
 /**
  * The request id a delegation's answer arrives under in the delegating
@@ -75,17 +109,3 @@ export const delegateCallerOperationId = (sourceBotId: string, supplied: string)
  */
 export const delegateReportRequestId = (sourceBotId: string, taskId: string): string =>
   `delegate-report:${sourceBotId}:task:${taskId}`;
-
-/**
- * The earlier, model-supplied delegation id. Kept because other callers may
- * still name a delegation explicitly; the tool now derives its id from the
- * call's task (see {@link delegateTaskOperationId}).
- */
-export const delegateOperationId = (sourceBotId: string, supplied: string | undefined): string => {
-  if (supplied === undefined) return `${DELEGATE_PREFIX}${sourceBotId}:${crypto.randomUUID()}`;
-  // Honoring an id the tool already returned is what makes a timed-out
-  // delegation safe to retry. Namespacing it again would run the task twice.
-  return supplied.startsWith(DELEGATE_PREFIX)
-    ? supplied
-    : `${DELEGATE_PREFIX}${sourceBotId}:${supplied}`;
-};

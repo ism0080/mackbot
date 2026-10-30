@@ -19,6 +19,7 @@
 import type { ReportInfo, ReportTask } from "@earendil-works/pi-durable";
 import { Effect, Option, Predicate, Schema } from "effect";
 
+import { describeCause } from "./errors.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage, SqlValue } from "./sql.ts";
 import { FailureViewSchema } from "@mackbot/contract";
@@ -37,9 +38,18 @@ export type FailureStore = {
   readonly record: (cause: unknown, info: ReportInfo) => void;
   /** The most recent failures, newest first. */
   readonly recent: (limit?: number) => readonly FailureView[];
-  /** Forget every recorded failure. */
-  readonly clear: () => void;
+  /**
+   * Delete every failure older than `cutoff`, a timestamp in milliseconds,
+   * and say how many went. Defaults to {@link FAILURE_RETENTION_MS} before now.
+   */
+  readonly prune: (cutoff?: number) => number;
 };
+
+/**
+ * How long a failure is kept: seven days. `/status` shows the newest few, and
+ * a failure a week old has either been dealt with or been reported again.
+ */
+export const FAILURE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The harness's own word for a failure, and the human-readable shape of it. */
 export type ClassifiedFailure = {
@@ -60,18 +70,6 @@ export type ClassifiedFailure = {
 const nameOf = (cause: unknown): string => {
   if (!(cause instanceof Error)) return "Error";
   return Predicate.isString(cause.name) ? cause.name : "Error";
-};
-
-/** The message of an error, or of the value itself when it is not an error. */
-const messageOf = (cause: unknown): string => {
-  if (cause instanceof Error && Predicate.isString(cause.message)) return cause.message;
-  // `String()` throws for a value with a null prototype, and a failure report
-  // must not fail while it formats the failure.
-  return Effect.runSync(
-    Effect.try(() => String(cause)).pipe(
-      Effect.orElseSucceed(() => Object.prototype.toString.call(cause)),
-    ),
-  );
 };
 
 const truncate = (message: string): string =>
@@ -96,7 +94,7 @@ const taskFields = (
  * the shape of its own variant, so no arm has to guess which fields exist.
  */
 export const classifyFailure = (cause: unknown, info: ReportInfo): ClassifiedFailure => {
-  const base = { name: nameOf(cause), detail: truncate(messageOf(cause)) };
+  const base = { name: nameOf(cause), detail: truncate(describeCause(cause)) };
   switch (info.type) {
     case "session_failed":
       return { kind: info.type, ...base };
@@ -133,7 +131,7 @@ const INSERT_SQL =
 const LIST_SQL =
   "SELECT at, kind, name, detail, task_id, task_kind, extension, callback FROM mackbot_failures ORDER BY at DESC, rowid DESC LIMIT ?";
 
-const CLEAR_SQL = "DELETE FROM mackbot_failures";
+const PRUNE_SQL = "DELETE FROM mackbot_failures WHERE at < ? RETURNING at";
 
 // A negative LIMIT means "no limit" in SQLite, which would defeat the cap.
 const boundedLimit = (limit: number): number =>
@@ -208,10 +206,10 @@ export const createFailureStore = (storage: SqlStorage): FailureStore => {
     );
   };
 
-  const clear = (): void => {
+  const prune = (cutoff: number = Date.now() - FAILURE_RETENTION_MS): number => {
     ensureMigrated();
-    write(executor, CLEAR_SQL);
+    return read(executor, PRUNE_SQL, cutoff).length;
   };
 
-  return { record, recent, clear };
+  return { record, recent, prune };
 };

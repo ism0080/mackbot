@@ -31,16 +31,6 @@ export interface EntryPage {
   readonly next?: Cursor;
 }
 
-/** The conversation's newest entry id, or 0 when it has none. */
-export const highestEntryId = (records: readonly EntryRecord[]): number => {
-  let highest = 0;
-  for (const record of records) {
-    const id = Number(record.id);
-    if (id > highest) highest = id;
-  }
-  return highest;
-};
-
 /** What to read for one transcript page, and how many entries it holds. */
 export interface TranscriptRead {
   readonly limit: number;

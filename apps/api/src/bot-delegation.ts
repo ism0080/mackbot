@@ -44,8 +44,10 @@
  * `target` is validated against the live roster the registry holds, so an
  * unknown or typo'd bot id comes back as a tool error instead of a Cloudflare
  * RPC failure. Self-delegation is rejected to avoid accidental runaway
- * recursion; v1 also warns the model never to hand work back to a bot that
- * delegated to it (mutual delegation livelocks on the 55s tool timeout).
+ * recursion, and so is a chain of hand-offs that loops or runs long: each
+ * delegated operation id carries the bots the work already passed through
+ * (see `delegationChainOf`), so a target refuses to hand work back to any of
+ * them, and refuses past {@link MAX_DELEGATION_DEPTH} hand-offs.
  *
  * ## Approvals
  *
@@ -60,27 +62,32 @@
  * Public API (what `src/index.ts` imports):
  *
  *   import { createBotDelegation } from "./bot-delegation.ts";
- *   registry.install(createBotDelegation({ env, sourceBotId: botId }));
+ *   registry.install(createBotDelegation({ env, sourceBotId: botId, submissions }));
  */
 
 import type { Context } from "@earendil-works/chord";
 import { Type } from "@earendil-works/pi-ai";
 import { defineExtension, defineTask, defineTool } from "@earendil-works/pi-durable";
 import type {
+  ConversationId,
   Extension,
+  SubmissionRecord,
   Task,
   TaskOptions,
   ToolExecutionApi,
   ToolExecutionResult,
 } from "@earendil-works/pi-durable";
+import type { BotConfig } from "@mackbot/contract";
 import {
   delegateCallerOperationId,
   delegateReportRequestId,
   delegateTaskOperationId,
+  delegationChainOf,
 } from "./operation.ts";
 import { createDelegationPolicy } from "./services/delegation.ts";
 import { REGISTRY_NAME } from "./services/bot-registry.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
+import { describeCause } from "./errors.ts";
 import { maybeApprovalNotice } from "./executor-mcp.ts";
 import type { Env, WaitResult } from "./index.ts";
 import * as Effect from "effect/Effect";
@@ -88,6 +95,71 @@ import * as Effect from "effect/Effect";
 export type BotDelegationConfig = {
   readonly env: Env;
   readonly sourceBotId: string;
+  /**
+   * The submissions of one conversation, from `harness.inspect()`. The run a
+   * call belongs to is answering the conversation's placed inputs, and their
+   * operation ids say which bots handed the work here. Without it every call
+   * is treated as the first hand-off, so only self-delegation is refused.
+   */
+  readonly submissions?: (conversationId: ConversationId) => Promise<readonly SubmissionRecord[]>;
+};
+
+/**
+ * The longest chain of hand-offs one piece of work may take. A bot that was
+ * handed work this many times may not hand it on: a chain past it is a
+ * livelock in the making, not a plan.
+ */
+export const MAX_DELEGATION_DEPTH = 3;
+
+/**
+ * The bots that handed the running work here, oldest first: every bot named by
+ * the operation ids of the inputs the run is answering, each once. A run that
+ * answers a person or a schedule has an empty chain.
+ */
+export const runDelegationChain = (submissions: readonly SubmissionRecord[]): readonly string[] => {
+  const chain: string[] = [];
+  for (const submission of submissions) {
+    if (submission.type !== "input" || submission.status !== "placed") continue;
+    for (const bot of delegationChainOf(submission.requestId ?? "")) {
+      if (!chain.includes(bot)) chain.push(bot);
+    }
+  }
+  return chain;
+};
+
+/** What one delegation would be: who asks, whom, and how the work got here. */
+export interface DelegationRequest {
+  readonly roster: Readonly<Record<string, BotConfig>>;
+  readonly source: string;
+  readonly target: string;
+  /** {@link runDelegationChain} of the run the call belongs to. */
+  readonly chain: readonly string[];
+}
+
+/**
+ * Why a delegation is refused, or `undefined` when it may go ahead. The target
+ * must be declared, must not be the source or any bot the work already passed
+ * through, the chain must stay within {@link MAX_DELEGATION_DEPTH}, and the
+ * source's `delegatesTo` must allow it.
+ */
+export const refuseDelegation = (request: DelegationRequest): string | undefined => {
+  const { roster, source, target, chain } = request;
+  if (!Object.hasOwn(roster, target)) {
+    return `unknown bot "${target}". Declared bots: ${Object.keys(roster).join(", ")}`;
+  }
+  if (target === source) return "a bot cannot delegate to itself";
+  if (chain.includes(target)) {
+    return `"${target}" already handed this work along (${[...chain, source].join(" -> ")}); delegating back to it would loop. Answer with what you have instead.`;
+  }
+  if (chain.length + 1 > MAX_DELEGATION_DEPTH) {
+    return `this work has already been delegated ${chain.length} times (${[...chain, source].join(" -> ")}); the limit is ${MAX_DELEGATION_DEPTH}. Answer with what you have instead.`;
+  }
+  const policy = createDelegationPolicy(roster);
+  if (!policy.canDelegate(source, target)) {
+    const allowed = policy.allowedTargets(source);
+    return `bot "${source}" is not allowed to delegate to "${target}" (not in delegatesTo: ${allowed.join(", ") || "(none)"})`;
+  }
+  return undefined;
 };
 
 /** What the reporter needs to find the target's answer and deliver it. */
@@ -299,42 +371,27 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
             // The roster is read on every call, because a human may have
             // changed it since the last one.
             const bots = yield* attempt(() => env.Registry.getByName(REGISTRY_NAME).roster());
-            if (!Object.hasOwn(bots, args.target)) {
-              return {
-                output: [
-                  {
-                    type: "text",
-                    text: `unknown bot "${args.target}". Declared bots: ${Object.keys(bots).join(", ")}`,
-                  },
-                ],
-                isError: true,
-              };
-            }
-            if (args.target === sourceBotId) {
-              return {
-                output: [{ type: "text", text: "a bot cannot delegate to itself" }],
-                isError: true,
-              };
-            }
-            const policy = createDelegationPolicy(bots);
-            if (!policy.canDelegate(sourceBotId, args.target)) {
-              const allowed = policy.allowedTargets(sourceBotId);
-              return {
-                output: [
-                  {
-                    type: "text",
-                    text: `bot "${sourceBotId}" is not allowed to delegate to "${args.target}" (not in delegatesTo: ${allowed.join(", ") || "(none)"})`,
-                  },
-                ],
-                isError: true,
-              };
+            const submissions = config.submissions;
+            const chain =
+              submissions === undefined
+                ? []
+                : runDelegationChain(yield* attempt(() => submissions(api.conversationId)));
+            const refusal = refuseDelegation({
+              roster: bots,
+              source: sourceBotId,
+              target: args.target,
+              chain,
+            });
+            if (refusal !== undefined) {
+              return { output: [{ type: "text", text: refusal }], isError: true };
             }
             // The call's task names the operation, so a replay of this call
-            // joins the submission it already made.
+            // joins the submission it already made. The chain rides in the id,
+            // so the target refuses to hand the work back.
             const operationId =
               args.operationId === undefined
-                ? delegateTaskOperationId(sourceBotId, String(api.taskId))
-                : delegateCallerOperationId(sourceBotId, args.operationId);
+                ? delegateTaskOperationId(sourceBotId, String(api.taskId), chain)
+                : delegateCallerOperationId(sourceBotId, args.operationId, chain);
             const whenBusy = args.whenBusy ?? "followUp";
             const stub = env.Bot.getByName(args.target);
             yield* attempt(() => stub.submit(args.task, operationId, whenBusy));
@@ -378,7 +435,7 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
                 output: [
                   {
                     type: "text",
-                    text: `delegation to "${args.target}" failed: ${cause instanceof Error ? cause.message : String(cause)}. The target may already hold the work; do not resubmit it.`,
+                    text: `delegation to "${args.target}" failed: ${describeCause(cause)}. The target may already hold the work; do not resubmit it.`,
                   },
                 ],
                 isError: true,

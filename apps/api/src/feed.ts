@@ -53,6 +53,7 @@ import type {
   RunProjection,
   UsageView,
 } from "@mackbot/contract";
+import { describeCause } from "./errors.ts";
 
 /** How long an idle tail may stay silent before it sends a comment frame. */
 const HEARTBEAT_MS = 25_000;
@@ -152,9 +153,6 @@ const methodNotAllowed = (): Response =>
 
 const streamRequired = (): Response =>
   Response.json({ error: "stream is required" }, { status: 400 });
-
-const describeCause = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
 
 const runStreams = <A>(task: () => Promise<A>): Promise<A> =>
   Effect.runPromise(Effect.tryPromise(task));
@@ -315,20 +313,28 @@ export const createFeed = (deps: FeedDeps): Feed => {
     }
   };
 
+  /**
+   * Open one segment for writing. A segment that has already settled cannot be
+   * written to, and dropping the frames meant for it would lose them, so that
+   * is a failure: the caller's batch is logged and the next commit starts a
+   * fresh segment past it.
+   */
   const openSegment = async (
     session: string,
     generation: number,
     projection: Projection,
-  ): Promise<SessionWriter | undefined> => {
+  ): Promise<SessionWriter> => {
     const streamId = streamIdFor(session, generation);
     const status = await runStreams(() => deps.streams.status(streamId));
-    if (status !== null && status.state !== "streaming") return undefined;
+    if (status !== null && status.state !== "streaming") {
+      throw new Error(`feed segment "${streamId}" is already ${status.state}`);
+    }
     const writer = await runStreams(() =>
       deps.streams.open(streamId, { tag: streamTagFor(deps.botId, session) }),
     );
     const target: SessionWriter = { streamId, generation, writer, chunks: status?.cursor ?? 0 };
-    writers.set(session, target);
     if (target.chunks === 0) seed(session, target, projection);
+    writers.set(session, target);
     await sweep(session);
     return target;
   };
@@ -349,10 +355,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
    * segment always begins at sequence zero with a snapshot, which is the only
    * state the bridge can prove it knows after a restart.
    */
-  const seedSegment = async (
-    session: string,
-    projection: Projection,
-  ): Promise<SessionWriter | undefined> => {
+  const seedSegment = async (session: string, projection: Projection): Promise<SessionWriter> => {
     const tag = streamTagFor(deps.botId, session);
     const listed = await runStreams(() =>
       deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 }),
@@ -379,10 +382,30 @@ export const createFeed = (deps: FeedDeps): Feed => {
     await openSegment(session, generation, projection);
   };
 
+  /**
+   * The segment this session writes to. A session whose writer was dropped by
+   * a failed append starts a fresh segment, whose snapshot is the only state
+   * the bridge can prove its readers hold.
+   */
+  const writerFor = async (session: string, projection: Projection): Promise<SessionWriter> =>
+    writers.get(session) ?? (await seedSegment(session, projection));
+
+  /**
+   * Append one frame. A failed append drops the writer and rethrows, so the
+   * caller does not record the frame as delivered and the next commit starts
+   * a fresh segment instead of writing past a gap.
+   */
   const emit = async (session: string, projection: Projection, frame: Frame): Promise<void> => {
-    const target = writers.get(session) ?? (await openSegment(session, 1, projection));
-    if (target === undefined) return;
-    target.writer.append(toChunk(frame));
+    const target = await writerFor(session, projection);
+    await Effect.runPromise(
+      Effect.try({ try: () => target.writer.append(toChunk(frame)), catch: (cause) => cause }).pipe(
+        Effect.tapError(() =>
+          Effect.sync(() => {
+            if (writers.get(session) === target) writers.delete(session);
+          }),
+        ),
+      ),
+    );
     target.chunks += 1;
     if (target.chunks >= maxChunks) await rotateTo(session, target.generation + 1, projection);
   };
@@ -390,12 +413,13 @@ export const createFeed = (deps: FeedDeps): Feed => {
   /**
    * One commit: the run boundary it moved, the entries it appended, and the
    * documents it changed. The order is the order a reader folds them in — a run
-   * starts before its input entry lands and ends after its answer does.
+   * starts before its input entry lands and ends after its answer does. Each
+   * piece of state advances only after its frame is appended.
    */
   const deliver = async (session: string, projection: Projection): Promise<void> => {
     const at = Date.now();
     const state = stateOf(session);
-    if (writers.get(session) === undefined) await openSegment(session, 1, projection);
+    await writerFor(session, projection);
 
     const operation = projection.operation;
     if (operation !== undefined && operation !== state.operation) {
@@ -411,31 +435,32 @@ export const createFeed = (deps: FeedDeps): Feed => {
     state.operation = operation;
 
     const appended = projection.view.entries.filter((entry) => Number(entry.id) > state.delivered);
-    if (appended.length > 0) {
-      state.delivered = Number(appended[appended.length - 1]?.id ?? state.delivered);
+    const last = appended[appended.length - 1];
+    if (last !== undefined) {
       await emit(session, projection, {
         kind: "append",
         at,
         entries: appended.map((entry) => entryView(entry, projection.runs, at)),
       });
+      state.delivered = Math.max(state.delivered, Number(last.id));
     }
 
     const live = JSON.stringify(projection.live);
     if (live !== state.live) {
-      state.live = live;
       await emit(session, projection, { kind: "live", at, live: projection.live });
+      state.live = live;
     }
 
     const inbox = JSON.stringify(projection.inbox);
     if (inbox !== state.inbox) {
-      state.inbox = inbox;
       await emit(session, projection, { kind: "inbox", at, items: projection.inbox });
+      state.inbox = inbox;
     }
 
     const usage = JSON.stringify(projection.usage);
     if (usage !== state.usage) {
-      state.usage = usage;
       await emit(session, projection, { kind: "usage", at, usage: projection.usage });
+      state.usage = usage;
     }
   };
 
@@ -515,7 +540,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
  * the recorded cursor is on a different basis and only `from: 0` is safe;
  * otherwise `?from=` passes through.
  */
-const resumeFrom = (streamId: string, query: EventsQuery): number | undefined => {
+export const resumeFrom = (streamId: string, query: EventsQuery): number | undefined => {
   if (query.gen === undefined) return query.from;
   return query.gen === generationFromStreamId(streamId) ? query.from : 0;
 };

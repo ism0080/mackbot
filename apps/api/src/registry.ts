@@ -25,7 +25,7 @@ import botsJson from "../bots.json";
 import { BotConfigSchema, BotIdSchema } from "@mackbot/contract";
 import { parseBotRegistry } from "./bots.ts";
 import type { BotConfig } from "./bots.ts";
-import { createRegistryStore, decideWrite, readOrSeed } from "./registry-store.ts";
+import { botOf, createRegistryStore, decideWrite, readOrSeed } from "./registry-store.ts";
 import type { RegistryStore, RegistryWrite } from "./registry-store.ts";
 import type { Env } from "./index.ts";
 
@@ -76,14 +76,17 @@ const decodeBot = async (id: string, bot: BotConfig): Promise<DecodedBot> =>
 
 export class Registry extends DurableObject<Env> {
   #store: RegistryStore | undefined;
+  /**
+   * The roster as last read or written. This object is the table's only
+   * writer, so the copy goes stale only through {@link put}, which replaces
+   * it; every route's read is then answered without touching SQLite.
+   */
+  #roster: Record<string, BotConfig> | undefined;
+  /** Bumped by every write, so a read that a write overtook is not cached. */
+  #writes = 0;
 
   #registry(): RegistryStore {
-    this.#store ??= createRegistryStore({
-      sql: this.ctx.storage.sql,
-      // The Durable Object's transaction hands the closure its transaction
-      // object; the store's closure needs nothing but the storage it holds.
-      transaction: (closure) => this.ctx.storage.transaction(() => closure()),
-    });
+    this.#store ??= createRegistryStore({ sql: this.ctx.storage.sql });
     return this.#store;
   }
 
@@ -95,16 +98,34 @@ export class Registry extends DurableObject<Env> {
    * roster rather than with nothing.
    */
   async roster(): Promise<Record<string, BotConfig>> {
-    return await this.ctx.storage.transaction(async () => {
+    if (this.#roster !== undefined) return this.#roster;
+    const writes = this.#writes;
+    const bots = await this.ctx.storage.transaction(async () => {
       const store = this.#registry();
       return await readOrSeed(store, seedBots);
     });
+    if (writes === this.#writes) this.#roster = bots;
+    return bots;
   }
 
   /** One bot, or nothing when the registry does not declare it. */
   async bot(id: string): Promise<BotConfig | undefined> {
-    const bots = await this.roster();
-    return bots[id];
+    return botOf(await this.roster(), id);
+  }
+
+  /**
+   * Several bots in one call, keyed by id; an id the registry does not
+   * declare is absent. A caller that needs more than one bot's configuration
+   * asks once instead of once per bot.
+   */
+  async bots(ids: readonly string[]): Promise<Record<string, BotConfig>> {
+    const roster = await this.roster();
+    const found: Record<string, BotConfig> = {};
+    for (const id of ids) {
+      const bot = botOf(roster, id);
+      if (bot !== undefined) found[id] = bot;
+    }
+    return found;
   }
 
   /**
@@ -114,7 +135,7 @@ export class Registry extends DurableObject<Env> {
    * the rules refuse returns the refusal and changes nothing.
    */
   async put(id: string, bot: BotConfig, mode: "create" | "replace"): Promise<RegistryWrite> {
-    return await this.ctx.storage.transaction(async () => {
+    const written = await this.ctx.storage.transaction(async (): Promise<RegistryWrite> => {
       const store = this.#registry();
       const current = await readOrSeed(store, seedBots);
       // The shape is checked before the rules, because the rules read the
@@ -128,5 +149,10 @@ export class Registry extends DurableObject<Env> {
       await store.write(id, decoded.bot);
       return { ok: true, roster: decision.roster, code: null, error: null };
     });
+    // Dropped rather than replaced on a refusal too, so the next read is the
+    // table's own answer whatever the transaction did.
+    this.#writes += 1;
+    this.#roster = written.ok ? written.roster : undefined;
+    return written;
   }
 }

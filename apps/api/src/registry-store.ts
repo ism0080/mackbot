@@ -37,12 +37,12 @@ const UPSERT_SQL = "INSERT OR REPLACE INTO mackbot_bots (id, spec) VALUES (?, ?)
 const SpecSchema = Schema.fromJsonString(BotConfigSchema);
 
 /**
- * The storage the store reads and writes through: the SQL seam and the
- * transaction that makes a read-modify-write one step.
+ * The storage the store reads and writes through. The read-modify-write is
+ * made one step by the Durable Object that owns the table, which wraps it in
+ * its own transaction.
  */
 export interface RegistryStorage {
   readonly sql: SqlExecutor;
-  readonly transaction: <T>(closure: () => Promise<T>) => Promise<T>;
 }
 
 export interface RegistryStore {
@@ -113,12 +113,13 @@ export const createRegistryStore = (storage: RegistryStorage): RegistryStore => 
   const readAll = (): Effect.Effect<Record<string, BotConfig>, Error> =>
     Effect.gen(function* () {
       ensureMigrated();
-      const bots: Record<string, BotConfig> = {};
+      const bots: Array<readonly [string, BotConfig]> = [];
       for (const row of readRows(executor, SELECT_ALL_SQL)) {
         const id = String(row.id);
-        bots[id] = yield* decodeSpec(id, String(row.spec));
+        bots.push([id, yield* decodeSpec(id, String(row.spec))]);
       }
-      return bots;
+      // `fromEntries` defines own properties, so no id can reach the prototype.
+      return Object.fromEntries(bots);
     });
 
   return {
@@ -132,6 +133,16 @@ export const createRegistryStore = (storage: RegistryStorage): RegistryStore => 
     },
   };
 };
+
+/**
+ * One bot of a roster, or nothing when the roster does not declare it. The
+ * roster is a plain record keyed by an id a client chose, so only its own keys
+ * count: `constructor` or `__proto__` would otherwise name a bot.
+ */
+export const botOf = (
+  roster: Readonly<Record<string, BotConfig>>,
+  id: string,
+): BotConfig | undefined => (Object.hasOwn(roster, id) ? roster[id] : undefined);
 
 /**
  * The roster, seeded when the table is empty.
