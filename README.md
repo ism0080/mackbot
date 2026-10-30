@@ -121,7 +121,8 @@ gets `401` JSON, while an unauthenticated navigation is redirected to `/login`.
   recorded durably and steered into the pausing session, and the harness's hook
   lets only a human-decided `executor_resume` through. An approval that is
   already decided, unknown or not resumable answers `409` rather than resuming
-  twice.
+  twice. A decision made on the phone through Hark (see Phone approvals) takes
+  the same path inside the bot, so no route is open to Hark.
 - `POST /abort/:bot` — stop a bot's current work. The body is optional;
   `{"session": "<id>"}` names the conversation to stop, and an empty body stops
   the bot's root conversation. The answer is `{ bot, session, aborted }`, where
@@ -226,6 +227,23 @@ passes `--env-file ../../.env`.
 bindings and Durable Objects, and the Foldkit app on Vite's dev server in front
 of it. One origin, so the browser app's cookie and CSRF checks behave as they do
 in production.
+
+### Phone approvals (Hark)
+
+Install Hark in Executor as an app from its MCP server (`https://hark.fyi/mcp`)
+under the namespace `hark`, and set `notify`, `interactions_create`,
+`interactions_get` and `interactions_cancel` to never require approval: the
+harness, not a person, makes those calls, and one Executor pauses is dropped
+with a log line rather than turned into an approval. Nothing else is needed.
+A new approval then becomes an Approve/Deny prompt on the phone, and the
+approval's own wait reads the answer every 30 seconds for the first quarter
+hour and every five minutes after that, deciding it the same way the app's
+cards do (audited with channel `hark`). Deciding in the app withdraws the
+prompt. A task parked by the crash-loop guard sends a push.
+
+Two optional variables: `HARK_TOOLS` names another Executor namespace for
+Hark, or `off` to turn the channel off; `MACKBOT_PUBLIC_URL`, the app's https
+origin, adds a tap link to the bot's screen.
 
 Cloudflare credentials live in Alchemy profiles (`~/.alchemy/profiles.json`); do
 not export `CLOUDFLARE_API_TOKEN`.

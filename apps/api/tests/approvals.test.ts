@@ -8,7 +8,7 @@ import {
   MAX_PENDING_APPROVALS,
   WAIT_DEADLINE_MS,
 } from "../src/approvals.ts";
-import type { ApprovalStoreOptions, ApprovalWaitInput } from "../src/approvals.ts";
+import type { ApprovalStoreOptions, ApprovalWaitInput, SettledApproval } from "../src/approvals.ts";
 import type { AuditRecord } from "../src/audit-log.ts";
 import { approvalOperationId, pausedCallAuditId } from "../src/operation.ts";
 import type { SqlRow, SqlStorage, SqlValue } from "../src/sql.ts";
@@ -304,6 +304,112 @@ describe("expiry", () => {
   });
 });
 
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+describe("the phone channel", () => {
+  test("is told about a new approval once, with its wait's deadline", async () => {
+    const recorded: { approvalId: string; deadline: number }[] = [];
+    const { store } = setup({
+      onRecorded: (approval, deadline) => {
+        recorded.push({ approvalId: approval.approvalId, deadline });
+      },
+    });
+    store.recordPaused(pause("req-1"));
+    store.recordPaused(pause("req-1"));
+    await flush();
+    expect(recorded).toEqual([
+      { approvalId: approvalIdOf(store), deadline: T0 + WAIT_DEADLINE_MS },
+    ]);
+  });
+
+  test("a hook that throws does not fail the pause", () => {
+    const { store } = setup({
+      onRecorded: () => {
+        throw new Error("phone unreachable");
+      },
+    });
+    expect(store.recordPaused(pause("req-1"))).toBe("recorded");
+  });
+
+  test("an answer from the phone is decided and steered by the wait", async () => {
+    const wait = recorder();
+    const settled: SettledApproval[] = [];
+    const { store } = setup({
+      submit: wait.submit,
+      answerOf: async () => ({ action: "deny" }),
+      onSettled: (approval) => {
+        settled.push(approval);
+      },
+    });
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    expect(await store.deliver(approvalId)).toBe("delivered");
+    await flush();
+    expect(store.stateOf("req-1").state).toBe("denied");
+    expect(wait.calls[0]?.input).toContain('{"action":"decline"}');
+    expect(settled).toEqual([
+      { approvalId, bot: "hermes", how: "decided", via: "hark", status: "denied" },
+    ]);
+  });
+
+  test("no answer yet, or a phone that fails, leaves the approval pending", async () => {
+    const wait = recorder();
+    const answers = [
+      async () => undefined,
+      async () => {
+        throw new Error("Executor is down");
+      },
+    ];
+    for (const answerOf of answers) {
+      const { store } = setup({ submit: wait.submit, answerOf });
+      store.recordPaused(pause("req-1"));
+      expect(await store.deliver(approvalIdOf(store))).toBe("pending");
+      expect(store.stateOf("req-1").state).toBe("pending");
+    }
+    expect(wait.calls).toHaveLength(0);
+  });
+
+  test("an approval decided in the app is not asked about again, and is settled via the app", async () => {
+    let asked = 0;
+    const settled: SettledApproval[] = [];
+    const { store } = setup({
+      submit: recorder().submit,
+      answerOf: async () => {
+        asked += 1;
+        return { action: "allow" };
+      },
+      onSettled: (approval) => {
+        settled.push(approval);
+      },
+    });
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    await store.decide(approvalId, { action: "deny" }, recorder().submit);
+    await store.deliver(approvalId);
+    await flush();
+    expect(asked).toBe(0);
+    expect(store.stateOf("req-1").state).toBe("denied");
+    expect(settled).toEqual([
+      { approvalId, bot: "hermes", how: "decided", via: "app", status: "denied" },
+    ]);
+  });
+
+  test("an expiry is announced once, and only for a pending approval", async () => {
+    const settled: SettledApproval[] = [];
+    const { store } = setup({
+      onSettled: (approval) => {
+        settled.push(approval);
+      },
+    });
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    store.expire(approvalId);
+    store.expire(approvalId);
+    await flush();
+    expect(settled).toEqual([{ approvalId, how: "expired" }]);
+  });
+});
+
 describe("prune", () => {
   test("drops finished approvals past retention and keeps the rest", async () => {
     const { store, advance } = setup();
@@ -370,6 +476,21 @@ describe("audit", () => {
       detail: { approvalId, action: "allow", withContent: true, channel: "http" },
     });
     expect(JSON.stringify(records)).not.toContain("ada@example.com");
+  });
+
+  test("a decision made on the phone is audited with the hark channel", async () => {
+    const { store, records } = audited({
+      submit: recorder().submit,
+      answerOf: async () => ({ action: "allow" }),
+    });
+    store.recordPaused(pause("req-1"));
+    const approvalId = approvalIdOf(store);
+    await store.deliver(approvalId);
+    expect(records.find((record) => record.kind === "approval.decided")).toEqual({
+      kind: "approval.decided",
+      operationId: approvalOperationId(approvalId),
+      detail: { approvalId, action: "allow", withContent: false, channel: "hark" },
+    });
   });
 
   test("a repeated decision is a redelivery, and one a resume carried out is nothing", async () => {

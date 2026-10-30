@@ -18,6 +18,13 @@ export interface Env {
   readonly EXECUTOR_TOKEN: string;
   readonly OPENCODE_API_KEY: string;
   readonly CHAT_BEARER_TOKEN: string;
+  /**
+   * Where the Hark app's tools live in Executor; unset means `tools.hark`, and
+   * `off` turns the phone channel off.
+   */
+  readonly HARK_TOOLS?: string;
+  /** The web app's public https origin, for a push's tap link. */
+  readonly MACKBOT_PUBLIC_URL?: string;
 }
 
 export interface WaitResult {

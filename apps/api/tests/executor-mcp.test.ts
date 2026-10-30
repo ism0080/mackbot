@@ -3,6 +3,7 @@ import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import {
   createExecutorMcp,
+  executorCallOutcomeOf,
   failureResult,
   maybeApprovalNotice,
   redactSecrets,
@@ -288,5 +289,67 @@ describe("the shared read-only client", () => {
     expect(connects).toBe(2);
     expect(first.isClosed()).toBe(true);
     expect(second.isClosed()).toBe(false);
+  });
+});
+
+describe("executorCallOutcomeOf: a harness-issued call", () => {
+  const secrets = { url: "https://mcp.executor.example/org/acme/mcp", token: "pat_secret" };
+  /** One call's own result, as Executor's `call` wraps it. */
+  type SingleCall = {
+    readonly path: string;
+    readonly ok: boolean;
+    readonly value?: { readonly content: readonly { type: string; text: string }[] };
+    readonly error?: { readonly message: string };
+  };
+  const single = (value: SingleCall) => ({
+    content: [],
+    structuredContent: { status: "completed", execution: { ok: true, value } },
+  });
+
+  test("a tool that refused its input failed, even though the program ran", () => {
+    const outcome = executorCallOutcomeOf(
+      single({
+        path: "tools.hark.notify",
+        ok: false,
+        error: { message: "InputInvalid (HTTP 422): Expected object {accountId, input}" },
+      }),
+      secrets,
+    );
+    expect(outcome).toEqual({
+      kind: "failed",
+      detail: "InputInvalid (HTTP 422): Expected object {accountId, input}",
+    });
+  });
+
+  test("a completed call carries the tool's own content", () => {
+    const content = [{ type: "text", text: '{"accepted":1}' }];
+    expect(
+      executorCallOutcomeOf(
+        single({ path: "tools.hark.notify", ok: true, value: { content } }),
+        secrets,
+      ),
+    ).toEqual({ kind: "completed", value: { content } });
+  });
+
+  test("Executor's pause envelope is a pause, whatever else the result says", () => {
+    const outcome = executorCallOutcomeOf(
+      {
+        content: [],
+        structuredContent: { status: "approval-required", requestId: "apr_1" },
+      },
+      secrets,
+    );
+    expect(outcome).toEqual({ kind: "paused" });
+  });
+
+  test("a failure's words keep no secret", () => {
+    const outcome = executorCallOutcomeOf(
+      {
+        content: [{ type: "text", text: `401 from ${secrets.url} with pat_secret` }],
+        isError: true,
+      },
+      secrets,
+    );
+    expect(outcome.kind === "failed" ? outcome.detail : "").not.toMatch(/pat_secret|acme/u);
   });
 });

@@ -46,6 +46,8 @@ export const AUDIT_KINDS = [
   "delegation.backgrounded",
   "delegation.settled",
   "delegation.failed",
+  // A push or an approval prompt Hark accepted for the user's phone.
+  "notification.sent",
 ] as const;
 
 export const AuditKindSchema = Schema.Literals(AUDIT_KINDS);

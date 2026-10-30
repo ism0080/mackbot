@@ -32,6 +32,10 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Approval controls in the web app: a paused call becomes a durable approval,
   the app's cards decide allow or deny, and the decision steers the resume.
   Other channels still need their own controls.
+- Phone approvals and alerts through Hark: the harness puts each new approval
+  to the user's phone as an Approve/Deny prompt and reads the answer on the
+  approval's wait, and a parked task sends a push. Hark is called through
+  Executor, so it needs no secret of its own.
 - Sign-in hardening: `/login` is rate-limited per client by Cloudflare's
   rate-limiting binding, and `POST /logout`
   clears the session cookie from the web app's sign-out.

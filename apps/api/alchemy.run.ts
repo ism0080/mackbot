@@ -15,7 +15,8 @@
  *
  * Secrets (`EXECUTOR_URL`, `EXECUTOR_TOKEN`, `OPENCODE_API_KEY`,
  * `CHAT_BEARER_TOKEN`) resolve from the environment via `Config.Redacted` and
- * bind as `secret_text`. `nodejs_compat` is required: pi-ai reads
+ * bind as `secret_text`. `HARK_TOOLS` and `MACKBOT_PUBLIC_URL` are optional
+ * plain text, bound only when set. `nodejs_compat` is required: pi-ai reads
  * `OPENCODE_API_KEY` from `process.env`, and the agents lifecycle and the MCP
  * SDK use Node built-ins.
  *
@@ -39,6 +40,7 @@ import * as Alchemy from "alchemy";
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 
 import type { Bot } from "./src/index.ts";
 import {
@@ -55,6 +57,10 @@ export default Alchemy.Stack(
     state: Cloudflare.state(),
   },
   Effect.gen(function* () {
+    // Optional: bound only when set, so an unset one reaches the Worker as
+    // absent and the code's default applies.
+    const harkTools = yield* Config.option(Config.String("HARK_TOOLS"));
+    const publicUrl = yield* Config.option(Config.String("MACKBOT_PUBLIC_URL"));
     const worker = yield* Cloudflare.Website.Foldkit("Mackbot", {
       // The Vite root: the sibling browser app. `main` resolves from here.
       rootDir: "../web",
@@ -98,6 +104,14 @@ export default Alchemy.Stack(
         EXECUTOR_TOKEN: Config.Redacted("EXECUTOR_TOKEN"),
         OPENCODE_API_KEY: Config.Redacted("OPENCODE_API_KEY"),
         CHAT_BEARER_TOKEN: Config.Redacted("CHAT_BEARER_TOKEN"),
+        ...Option.match(harkTools, {
+          onNone: () => ({}),
+          onSome: (value) => ({ HARK_TOOLS: value }),
+        }),
+        ...Option.match(publicUrl, {
+          onNone: () => ({}),
+          onSome: (value) => ({ MACKBOT_PUBLIC_URL: value }),
+        }),
       },
     });
 

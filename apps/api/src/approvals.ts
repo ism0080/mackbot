@@ -38,6 +38,13 @@
  * marks it when it gives up, and every read marks the ones whose deadline has
  * passed, so a lost wait cannot leave a row pending forever.
  *
+ * The same wait also asks the host whether the human answered on another
+ * channel (their phone, through Hark) while the approval is pending, and an
+ * answer is decided through {@link ApprovalStore.decide}, the route's own
+ * path, recorded with the channel it came by. The host hears when an approval
+ * is recorded and when it stops being pending, so it can put the question to
+ * the phone and withdraw it again.
+ *
  * Each step of that life (requested, limited, decided, redelivered, delivered,
  * resumed, expired) is reported to the host's audit sink as it happens.
  *
@@ -300,6 +307,25 @@ export interface ApprovalStoreOptions {
    * HTTP path's steer is exactly what may have been lost.
    */
   readonly submit?: ApprovalSubmitter;
+  /**
+   * Told about each approval the first time it is recorded, never about a
+   * pause the store already knew, with the clock its wait gives up at. The
+   * host puts the question to the human's phone from here; like the wait, it
+   * runs behind the tool and its failure is only logged.
+   */
+  readonly onRecorded?: (approval: ApprovalView, deadline: number) => void;
+  /**
+   * A decision the human made outside the web app, e.g. on their phone, or
+   * `undefined` while there is none. The wait asks on every wake while the
+   * approval is pending, and an answer takes the same decision path as the
+   * app's, recorded as made `via` that channel.
+   */
+  readonly answerOf?: (approvalId: string) => Promise<ApprovalDecision | undefined>;
+  /**
+   * Told once an approval stops being pending: decided, and by which channel,
+   * or expired. Runs behind the decision and its failure is only logged.
+   */
+  readonly onSettled?: (settled: SettledApproval) => void;
   /** The clock the store stamps and expires rows by; the wall clock by default. */
   readonly now?: () => number;
   /**
@@ -309,6 +335,23 @@ export interface ApprovalStoreOptions {
    */
   readonly audit?: AuditSink;
 }
+
+/**
+ * Where a decision came from: the web app's approval cards (and any other
+ * caller of the decision route), or the human's phone through Hark.
+ */
+export type DecidedVia = "app" | "hark";
+
+/** An approval that stopped being pending, and how. */
+export type SettledApproval =
+  | {
+      readonly approvalId: string;
+      readonly bot: string;
+      readonly how: "decided";
+      readonly via: DecidedVia;
+      readonly status: "allowed" | "denied";
+    }
+  | { readonly approvalId: string; readonly how: "expired" };
 
 /** What one delivery attempt found. */
 export type ApprovalDelivery =
@@ -354,18 +397,21 @@ export type ApprovalStore = {
    * Decide a pending approval and steer the decision into its conversation.
    * Repeating the decision an approval already has delivers it again, so a
    * caller whose steer failed can retry; a different decision, or one on an
-   * approval that cannot be decided, is `undefined`.
+   * approval that cannot be decided, is `undefined`. `via` names the channel
+   * the human decided on; the app's route by default.
    */
   readonly decide: (
     approvalId: string,
     decision: ApprovalDecision,
     submit: ApprovalSubmitter,
+    via?: DecidedVia,
   ) => Promise<DecidedApproval | undefined>;
   /**
    * Submit the steer a decided approval is waiting for. The wait calls this:
    * the HTTP path may have recorded the decision and lost the steer, and the
    * steer it submits again carries the same operation id, so pi admits one
-   * submission per approval.
+   * submission per approval. A pending approval asks the host's `answerOf`
+   * first, so a decision made on the phone is carried out from here.
    */
   readonly deliver: (approvalId: string) => Promise<ApprovalDelivery>;
   /** Mark an approval nobody decided as expired; a decided one is left alone. */
@@ -445,6 +491,28 @@ const decisionOf = (status: "allowed" | "denied", stored: string | null): Approv
 const sameDecision = (left: ApprovalDecision, right: ApprovalDecision): boolean =>
   left.action === right.action && sameApprovalContent(left.content, right.content);
 
+/**
+ * Run a host hook without waiting for it: a throw or a rejection becomes the
+ * log line `describe` writes, never a failure of the caller.
+ */
+const behindTheTool = (
+  run: () => void | Promise<void>,
+  describe: (cause: unknown) => string,
+): void => {
+  void Effect.runPromise(
+    Effect.tryPromise({
+      try: async () => run(),
+      catch: (cause: unknown) => cause,
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.sync(() => {
+          console.error(describe(cause));
+        }),
+      ),
+    ),
+  );
+};
+
 export function createApprovalStore(
   storage: SqlStorage,
   options?: ApprovalStoreOptions,
@@ -475,8 +543,11 @@ export function createApprovalStore(
     migrated = true;
   };
 
-  /** The approval ids a statement returned, each audited as expired. */
-  const auditExpired = (rows: readonly SqlRow[], by: "deadline" | "wait"): void => {
+  /**
+   * The approval ids a statement returned, each audited as expired and
+   * announced, so a question put to the phone is withdrawn with it.
+   */
+  const settleExpired = (rows: readonly SqlRow[], by: "deadline" | "wait"): void => {
     for (const row of rows) {
       for (const expired of Option.toArray(Schema.decodeUnknownOption(ApprovalIdRowSchema)(row))) {
         audit({
@@ -484,6 +555,11 @@ export function createApprovalStore(
           operationId: approvalOperationId(expired.approval_id),
           detail: { approvalId: expired.approval_id, by },
         });
+        behindTheTool(
+          () => options?.onSettled?.({ approvalId: expired.approval_id, how: "expired" }),
+          (cause) =>
+            `mackbot: announcing the expiry of "${expired.approval_id}" failed: ${describeCause(cause)}`,
+        );
       }
     }
   };
@@ -494,7 +570,7 @@ export function createApprovalStore(
    * pending forever.
    */
   const expireStale = (at: number): void => {
-    auditExpired(read(executor, EXPIRE_STALE_SQL, at, at - WAIT_DEADLINE_MS), "deadline");
+    settleExpired(read(executor, EXPIRE_STALE_SQL, at, at - WAIT_DEADLINE_MS), "deadline");
   };
 
   /** Migrate, expire what is past its deadline, and say what time it is. */
@@ -554,19 +630,16 @@ export function createApprovalStore(
     // `Random` is not one, and effect/Crypto ships no WebCrypto layer.
     // oxlint-disable-next-line forge/no-ambient-nondeterminism -- unguessable id
     const approvalId = crypto.randomUUID();
-    insert(
-      Schema.decodeUnknownSync(ApprovalViewSchema)({
-        approvalId,
-        bot: paused.bot,
-        toolPath: tool ?? "executor",
-        summary: summaryOf(tool, artifact),
-        artifact,
-        status: "pending",
-        requestedAt: at,
-      }),
-      paused.requestId,
-      paused.session,
-    );
+    const approval = Schema.decodeUnknownSync(ApprovalViewSchema)({
+      approvalId,
+      bot: paused.bot,
+      toolPath: tool ?? "executor",
+      summary: summaryOf(tool, artifact),
+      artifact,
+      status: "pending",
+      requestedAt: at,
+    });
+    insert(approval, paused.requestId, paused.session);
     audit({
       kind: "approval.requested",
       operationId: approvalOperationId(approvalId),
@@ -582,19 +655,14 @@ export function createApprovalStore(
     // a result to return, and the wait's failure is a log line rather than a
     // failed call. The store is not consulted again from module scope, so the
     // wait the host starts here is the one the Harness can resume.
-    void Effect.runPromise(
-      Effect.tryPromise({
-        try: async () => options?.startWait?.(wait),
-        catch: (cause: unknown) => cause,
-      }).pipe(
-        Effect.catch((cause) =>
-          Effect.sync(() => {
-            console.error(
-              `mackbot: starting the approval wait for "${approvalId}" failed: ${describeCause(cause)}. Repeating the decision delivers it.`,
-            );
-          }),
-        ),
-      ),
+    behindTheTool(
+      () => options?.startWait?.(wait),
+      (cause) =>
+        `mackbot: starting the approval wait for "${approvalId}" failed: ${describeCause(cause)}. Repeating the decision delivers it.`,
+    );
+    behindTheTool(
+      () => options?.onRecorded?.(approval, wait.deadline),
+      (cause) => `mackbot: announcing the approval "${approvalId}" failed: ${describeCause(cause)}`,
     );
     return "recorded";
   };
@@ -680,6 +748,7 @@ export function createApprovalStore(
     approvalId: string,
     decision: ApprovalDecision,
     submit: ApprovalSubmitter,
+    via: DecidedVia = "app",
   ): Promise<DecidedApproval | undefined> => {
     const at = prepare();
     const row = decidable(approvalId);
@@ -708,8 +777,8 @@ export function createApprovalStore(
     // Durable before the steer: a crash after this leaves the decision recorded
     // and the row out of `pending`, a crash before it leaves the approval alone.
     write(executor, DECIDE_SQL, status, at, toJson(decision), approvalId);
-    // The decision's only way in is its HTTP route, and the steer it admits is
-    // named for that route, so the steer's origin is the channel it came by.
+    // A decision comes in by the HTTP route, whose steer is named for it, or
+    // from the phone through Hark; the audit row names the channel it came by.
     // No person is named: the Worker has one operator and no user identity.
     audit({
       kind: "approval.decided",
@@ -718,9 +787,14 @@ export function createApprovalStore(
         approvalId,
         action: decision.action,
         withContent: decision.content !== undefined,
-        channel: originOf(approvalOperationId(approvalId)),
+        channel: via === "hark" ? "hark" : originOf(approvalOperationId(approvalId)),
       },
     });
+    behindTheTool(
+      () => options?.onSettled?.({ approvalId, bot: row.bot, how: "decided", via, status }),
+      (cause) =>
+        `mackbot: announcing the decision on "${approvalId}" failed: ${describeCause(cause)}`,
+    );
     await submit(
       resumeText(row.requestId, decision),
       approvalOperationId(approvalId),
@@ -758,7 +832,7 @@ export function createApprovalStore(
     prepare();
     const row = deliveryOf(approvalId);
     if (row.kind === "unknown") return "unknown";
-    if (row.kind === "pending") return "pending";
+    if (row.kind === "pending") return await answerFromElsewhere(approvalId);
     // A resume already carried the decision out; a steer now would only ask the
     // model for a resume the policy refuses.
     if (row.resumed) return "delivered";
@@ -780,9 +854,36 @@ export function createApprovalStore(
     return "delivered";
   };
 
+  /**
+   * A pending approval the human may have answered on another channel. The
+   * answer goes through {@link decide}, the web app's own path, so the policy
+   * finds the same durable decision vouching for the resume. A host that
+   * cannot ask, or a channel that fails, leaves the approval pending.
+   */
+  const answerFromElsewhere = async (approvalId: string): Promise<ApprovalDelivery> => {
+    const answerOf = options?.answerOf;
+    const submit = options?.submit;
+    if (answerOf === undefined || submit === undefined) return "pending";
+    const answer = await Effect.runPromise(
+      Effect.tryPromise(() => answerOf(approvalId)).pipe(
+        Effect.catch((cause) =>
+          Effect.sync(() => {
+            console.error(
+              `mackbot: reading the answer to "${approvalId}" failed: ${describeCause(cause)}`,
+            );
+            return undefined;
+          }),
+        ),
+      ),
+    );
+    if (answer === undefined) return "pending";
+    const decided = await decide(approvalId, answer, submit, "hark");
+    return decided === undefined ? "pending" : "delivered";
+  };
+
   const expire = (approvalId: string): void => {
     ensureMigrated();
-    auditExpired(read(executor, EXPIRE_SQL, now(), approvalId), "wait");
+    settleExpired(read(executor, EXPIRE_SQL, now(), approvalId), "wait");
   };
 
   const prune = (olderThanMs: number = APPROVAL_RETENTION_MS): void => {

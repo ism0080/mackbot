@@ -24,7 +24,7 @@ import { createModels } from "@earendil-works/pi-ai";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { createExecutorMcp } from "./executor-mcp.ts";
+import { createExecutorMcp, createExecutorToolClient } from "./executor-mcp.ts";
 import type { PausedCall, PausedSink } from "./executor-mcp.ts";
 import { createExecutorPolicy } from "./executor-policy.ts";
 import { createBotDelegation } from "./bot-delegation.ts";
@@ -32,7 +32,7 @@ import { commitmentsExtension } from "./commitments.ts";
 import { voiceExtension } from "./voice.ts";
 import { syncExtensions } from "./registry-sync.ts";
 import { legacyThreadSession, recordThread, ThreadsDoc } from "./threads.ts";
-import { createFailureStore } from "./failures.ts";
+import { classifyFailure, createFailureStore } from "./failures.ts";
 import type { FailureStore } from "./failures.ts";
 import { projectTasks } from "./liveness.ts";
 import { parkedTasks } from "./task-retry.ts";
@@ -45,6 +45,14 @@ import type { BotConfig } from "./bots.ts";
 import type { ThinkingLevel } from "@mackbot/contract/catalog";
 import { createApprovalExtension, createApprovalStore, createApprovalWait } from "./approvals.ts";
 import type { ApprovalStore, ApprovalWaitInput, DecidedApproval } from "./approvals.ts";
+import {
+  approvalPrompt,
+  createHarkNotifier,
+  harkToolsOf,
+  parkedNotificationKey,
+  parkedTaskNotification,
+} from "./hark.ts";
+import type { HarkNotifier } from "./hark.ts";
 import { projectStatus } from "./status.ts";
 import { emptyTranscriptPage, transcriptPage, transcriptRead } from "./transcript.ts";
 import { generationFromStreamId, runProjections, streamTagFor } from "./feed.ts";
@@ -113,6 +121,7 @@ export class Bot extends DurableObject<Env> {
   #auditSink: AuditLog | undefined;
   #approvalStore: ApprovalStore | undefined;
   #failureStore: FailureStore | undefined;
+  #harkNotifier: HarkNotifier | undefined;
   #feedService: Feed | undefined;
   /**
    * The configuration each session was last configured with, by session id.
@@ -238,6 +247,21 @@ export class Bot extends DurableObject<Env> {
           settings: () => settingsFor(this.#loaded ?? bot),
           onReport: (cause, info) => {
             this.#failures().record(cause, info);
+            // A parked task waits on a human, so the human is told.
+            if (info.type === "task_parked") {
+              const failure = classifyFailure(cause, info);
+              void this.#behind(
+                this.#hark().notify(
+                  parkedTaskNotification({
+                    bot: this.lifecycle.name,
+                    taskId: String(info.task.id),
+                    taskKind: info.task.kind,
+                    detail: failure.detail,
+                    publicUrl: env.MACKBOT_PUBLIC_URL,
+                  }),
+                ),
+              );
+            }
           },
         },
         context,
@@ -376,6 +400,8 @@ export class Bot extends DurableObject<Env> {
     }
     const id = await Effect.runPromise(taskIdOf(taskId));
     await pi.retryTask(id, BACKGROUND_CONTEXT);
+    // The same task parking again is news again.
+    this.#hark().forget(parkedNotificationKey(taskId));
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -622,8 +648,62 @@ export class Bot extends DurableObject<Env> {
       submit: (input, operationId, whenBusy, session) =>
         this.submit(input, operationId, whenBusy, undefined, session),
       audit: (record) => this.#record(record),
+      // The phone hears about a pause, can answer it, and loses the question
+      // once it is answered anywhere else.
+      onRecorded: (approval, deadline) => {
+        void this.#behind(
+          this.#hark().ask(
+            approvalPrompt({
+              bot: approval.bot,
+              approvalId: approval.approvalId,
+              toolPath: approval.toolPath,
+              summary: approval.summary,
+              draft: approval.artifact?.body,
+              deadline,
+              now: Date.now(),
+              publicUrl: this.env.MACKBOT_PUBLIC_URL,
+            }),
+          ),
+        );
+      },
+      answerOf: (approvalId) => this.#hark().answerOf(approvalId),
+      // A question the phone did not answer is withdrawn once the approval is
+      // decided elsewhere or expires.
+      onSettled: (settled) => {
+        if (settled.how === "decided" && settled.via === "hark") return;
+        void this.#behind(this.#hark().withdraw(settled.approvalId));
+      },
     });
     return this.#approvalStore;
+  }
+
+  /** The phone channel, through the Executor connection the bridge uses. */
+  #hark(): HarkNotifier {
+    this.#harkNotifier ??= createHarkNotifier({
+      tools: harkToolsOf(this.env.HARK_TOOLS),
+      executor: createExecutorToolClient({
+        url: this.env.EXECUTOR_URL,
+        token: this.env.EXECUTOR_TOKEN,
+      }),
+      storage: this.ctx.storage,
+      onSent: (sent) => {
+        this.#record({
+          kind: "notification.sent",
+          operationId: `hark:${sent.key}`,
+          detail: { key: sent.key, channel: "hark" },
+        });
+      },
+    });
+    return this.#harkNotifier;
+  }
+
+  /**
+   * Keep the Durable Object alive for work nobody awaits, such as a call to
+   * the phone behind an approval or a park. The work never rejects.
+   */
+  #behind<A>(work: Promise<A>): Promise<A> {
+    this.ctx.waitUntil(work);
+    return work;
   }
 
   /**
@@ -665,6 +745,7 @@ export class Bot extends DurableObject<Env> {
     this.#audit().prune();
     this.#failures().prune();
     this.#approvals().prune();
+    this.#hark().prune();
   }
 
   #failures(): FailureStore {

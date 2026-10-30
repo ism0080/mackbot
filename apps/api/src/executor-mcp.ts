@@ -99,7 +99,7 @@ type ResolvedConfig = {
  * request type so the dictionary shape stays at the protocol boundary instead of
  * being re-declared here.
  */
-type McpToolArguments = NonNullable<CallToolRequest["params"]["arguments"]>;
+export type McpToolArguments = NonNullable<CallToolRequest["params"]["arguments"]>;
 
 const resolveConfig = (config: ExecutorMcpConfig): ResolvedConfig => ({
   url: config.url,
@@ -543,6 +543,114 @@ export const failureResult = (
     redacted.length > MAX_ERROR_CHARS ? `${redacted.slice(0, MAX_ERROR_CHARS)}…` : redacted;
   return errorResult(`Executor MCP call failed (${name}): ${bounded}`);
 };
+
+/**
+ * What an MCP app tool answered through Executor: its own content list, as
+ * the tool returned it.
+ */
+const ExecutorToolValueSchema = Schema.Struct({
+  content: Schema.Array(
+    Schema.Struct({ type: Schema.String, text: Schema.optional(Schema.String) }),
+  ),
+});
+
+export type ExecutorToolValue = typeof ExecutorToolValueSchema.Type;
+
+/**
+ * How one harness-issued call to an app tool ended. `paused` means Executor
+ * gated the call for approval; the harness made it, not the model, so nobody
+ * is there to resume it. A completed call carries the tool's content when it
+ * answered with any.
+ */
+export type ExecutorCallOutcome =
+  | { readonly kind: "completed"; readonly value?: ExecutorToolValue }
+  | { readonly kind: "paused" }
+  | { readonly kind: "failed"; readonly detail: string };
+
+/**
+ * The single call's own verdict. `call` answers `execution.ok: true` for a
+ * call Executor ran, and reports the tool's own failure (an invalid input, a
+ * refused request) one level down, in `execution.value.ok`, beside the tool's
+ * result in `execution.value.value`.
+ */
+const SingleCallOutcomeSchema = Schema.Struct({
+  execution: Schema.Struct({
+    ok: Schema.Boolean,
+    value: Schema.optional(
+      Schema.Struct({
+        ok: Schema.optional(Schema.Boolean),
+        value: Schema.optional(Schema.Unknown),
+        error: Schema.optional(Schema.Struct({ message: Schema.optional(Schema.String) })),
+      }),
+    ),
+  }),
+});
+
+/**
+ * Classify the result of one `call` to an app tool. A pause is read the way
+ * {@link renderResult} reads it, from Executor's own envelope only, and it is
+ * never handed to an approval sink.
+ */
+export const executorCallOutcomeOf = (
+  result: CallToolResult,
+  secrets: { readonly url: string; readonly token: string },
+): ExecutorCallOutcome => {
+  if (pauseOf(result) !== undefined) return { kind: "paused" };
+  const failed = (detail: string): ExecutorCallOutcome => {
+    const redacted = redactSecrets(detail, secrets);
+    return {
+      kind: "failed",
+      detail:
+        redacted.length > MAX_ERROR_CHARS ? `${redacted.slice(0, MAX_ERROR_CHARS)}…` : redacted,
+    };
+  };
+  if (result.isError === true) return failed(renderContent(result.content));
+  const outcome = Option.getOrUndefined(
+    Schema.decodeUnknownOption(SingleCallOutcomeSchema)(result.structuredContent),
+  );
+  if (outcome === undefined) return { kind: "completed" };
+  if (!outcome.execution.ok || outcome.execution.value?.ok === false) {
+    return failed(outcome.execution.value?.error?.message ?? renderContent(result.content));
+  }
+  return {
+    kind: "completed",
+    value: Option.getOrUndefined(
+      Schema.decodeUnknownOption(ExecutorToolValueSchema)(outcome.execution.value?.value),
+    ),
+  };
+};
+
+/**
+ * Executor reached from harness code rather than from the model: a `describe`
+ * of exact paths, and one direct `call`. Each opens its own connection, like
+ * the model's unsafe tools, and neither touches the paused-call sink.
+ */
+export type ExecutorToolClient = {
+  readonly describe: (paths: readonly string[]) => Effect.Effect<CallToolResult, string>;
+  readonly call: (
+    path: string,
+    input: McpToolArguments,
+  ) => Effect.Effect<ExecutorCallOutcome, string>;
+};
+
+export function createExecutorToolClient(
+  config: ExecutorMcpConfig,
+  options?: { readonly connect?: (config: ResolvedConfig) => Promise<Client> },
+): ExecutorToolClient {
+  const bridge = makeBridge(config, options?.connect ?? openClient);
+  // A transport failure quotes the URL it failed on, which names the org
+  // connection, so the host only ever sees it redacted.
+  const redacted = (cause: unknown): string => redactSecrets(describeCause(cause), bridge.config);
+  return {
+    describe: (paths) =>
+      Effect.mapError(callMetaTool(bridge, "describe", { paths: [...paths] }, false), redacted),
+    call: (path, input) =>
+      callMetaTool(bridge, "call", { calls: { path, input } }, false).pipe(
+        Effect.map((result) => executorCallOutcomeOf(result, bridge.config)),
+        Effect.mapError(redacted),
+      ),
+  };
+}
 
 const executorProtocol = [
   "All real tools live behind Executor; you reach them only through the executor_* tools.",
