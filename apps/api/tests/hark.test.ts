@@ -283,6 +283,14 @@ describe("createHarkNotifier: reading the answer", () => {
     expect(await (await asked("denied")).notifier.answerOf("ap-1")).toEqual({ action: "deny" });
   });
 
+  test("an approval of some other prompt decides nothing", async () => {
+    const { notifier, executor } = setup();
+    executor.answer(TOOLS.ask, interaction("int_1", "pending"));
+    await notifier.ask(prompt());
+    executor.answer(TOOLS.answer, interaction("int_other", "approved"));
+    expect(await notifier.answerOf("ap-1")).toBeUndefined();
+  });
+
   test("reads the interaction the prompt created", async () => {
     const { notifier, executor } = await asked("pending");
     await notifier.answerOf("ap-1");

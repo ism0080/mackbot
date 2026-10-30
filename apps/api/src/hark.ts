@@ -517,8 +517,11 @@ export const createHarkNotifier = (options: HarkNotifierOptions): HarkNotifier =
         write(executor, CHECKED_SQL, at, key);
         const outcome = yield* callHark(tools.answer, { id: prompt.interaction_id }, key);
         if (outcome.kind !== "completed") return undefined;
-        const status = interactionOf(outcome.value)?.status;
-        if (status === undefined || status === "pending") return undefined;
+        const interaction = interactionOf(outcome.value);
+        // An answer about any other prompt decides nothing about this approval.
+        if (interaction === undefined || interaction.id !== prompt.interaction_id) return undefined;
+        const status = interaction.status;
+        if (status === "pending") return undefined;
         // Answered, expired or withdrawn: there is nothing more to read.
         settle(key);
         return decisionOfAnswer(status);
