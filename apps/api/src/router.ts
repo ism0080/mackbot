@@ -9,7 +9,7 @@
 
 import * as Effect from "effect/Effect";
 
-import { handleLogin, handleLogout, LOGIN_GUARD_NAME } from "./auth.ts";
+import { handleLogin, handleLogout } from "./auth.ts";
 import type { Env } from "./env.ts";
 import { describeCause } from "./errors.ts";
 import { jsonError, methodNotAllowed, secured, unknownBot } from "./http.ts";
@@ -149,7 +149,7 @@ const botRoute = async (request: Request, env: Env, url: URL): Promise<Response 
 /** The Worker's own answer, or `undefined` when the request is for the built app. */
 const workerRoute = async (request: Request, env: Env, url: URL): Promise<Response | undefined> => {
   if (url.pathname === "/login") {
-    return await handleLogin(request, env.CHAT_BEARER_TOKEN, env.Bot.getByName(LOGIN_GUARD_NAME));
+    return await handleLogin(request, env.CHAT_BEARER_TOKEN, env.LOGIN_RATE_LIMIT);
   }
   if (url.pathname === "/logout") return handleLogout(request);
   return (

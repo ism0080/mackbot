@@ -13,6 +13,7 @@ export interface Env {
   readonly Registry: DurableObjectNamespace<Registry>;
   readonly AI: Ai;
   readonly ASSETS: Fetcher;
+  readonly LOGIN_RATE_LIMIT: RateLimit;
   readonly EXECUTOR_URL: string;
   readonly EXECUTOR_TOKEN: string;
   readonly OPENCODE_API_KEY: string;

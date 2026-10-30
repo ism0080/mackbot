@@ -1,26 +1,23 @@
 import { describe, expect, test } from "vitest";
 
 import { handleLogin, handleLogout } from "../src/auth.ts";
-import type { LoginGuard } from "../src/auth.ts";
+import type { LoginLimiter } from "../src/auth.ts";
+import { LOGIN_ATTEMPT_LIMIT, LOGIN_ATTEMPT_PERIOD_SECONDS } from "../src/login-limit.ts";
 import { LOGIN_CONTENT_SECURITY_POLICY } from "../src/login-page.ts";
-import {
-  createLoginThrottle,
-  LOGIN_FAILURE_LIMIT,
-  LOGIN_WINDOW_MS,
-} from "../src/login-throttle.ts";
 import { SESSION_COOKIE } from "../src/session.ts";
-import { memoryStorage } from "./support/sqlite.ts";
 
 const TOKEN = "correct-horse-battery-staple";
 const ORIGIN = "https://mackbot.test";
 
-/** The guard the Worker reaches over RPC, on a clock the test moves. */
-const guardAt = (clock: { now: number }): LoginGuard => {
-  const throttle = createLoginThrottle(memoryStorage());
+/** A stand-in for the rate-limiting binding: a fixed allowance per key, recording each key it is asked about. */
+const allowance = (limit = LOGIN_ATTEMPT_LIMIT): LoginLimiter & { readonly keys: string[] } => {
+  const keys: string[] = [];
   return {
-    loginRetryAfter: async (client) => throttle.retryAfter(client, clock.now),
-    recordLoginFailure: async (client) => throttle.recordFailure(client, clock.now),
-    clearLoginFailures: async (client) => throttle.clear(client),
+    keys,
+    limit: async ({ key }) => {
+      keys.push(key);
+      return { success: keys.filter((seen) => seen === key).length <= limit };
+    },
   };
 };
 
@@ -34,53 +31,57 @@ const login = (token: string, client = "203.0.113.7"): Request =>
     body: new URLSearchParams({ token }).toString(),
   });
 
-const failTimes = async (guard: LoginGuard, times: number, client?: string): Promise<void> => {
-  for (let attempt = 0; attempt < times; attempt += 1) {
-    expect((await handleLogin(login("wrong", client), TOKEN, guard)).status).toBe(401);
-  }
-};
-
 describe("handleLogin", () => {
   test("the right token sets the session cookie and redirects home", async () => {
-    const response = await handleLogin(login(TOKEN), TOKEN, guardAt({ now: 0 }));
+    const response = await handleLogin(login(TOKEN), TOKEN, allowance());
     expect(response.status).toBe(303);
     expect(response.headers.get("Location")).toBe("/");
     expect(response.headers.get("Set-Cookie")).toMatch(new RegExp(`^${SESSION_COOKIE}=v2\\.`, "u"));
   });
 
-  test("a client locked out by failures is refused even with the right token", async () => {
-    const guard = guardAt({ now: 1_000 });
-    await failTimes(guard, LOGIN_FAILURE_LIMIT);
-    const response = await handleLogin(login(TOKEN), TOKEN, guard);
-    expect(response.status).toBe(429);
-    expect(Number(response.headers.get("Retry-After"))).toBe(LOGIN_WINDOW_MS / 1000);
+  test("a wrong token is refused without a cookie", async () => {
+    const response = await handleLogin(login("wrong"), TOKEN, allowance());
+    expect(response.status).toBe(401);
     expect(response.headers.get("Set-Cookie")).toBeNull();
   });
 
-  test("the lockout is per client", async () => {
-    const guard = guardAt({ now: 1_000 });
-    await failTimes(guard, LOGIN_FAILURE_LIMIT, "198.51.100.1");
-    expect((await handleLogin(login(TOKEN, "198.51.100.2"), TOKEN, guard)).status).toBe(303);
+  test("attempts are counted per client address", async () => {
+    const limiter = allowance();
+    await handleLogin(login("wrong", "198.51.100.1"), TOKEN, limiter);
+    await handleLogin(login(TOKEN, "198.51.100.2"), TOKEN, limiter);
+    expect(limiter.keys).toEqual(["198.51.100.1", "198.51.100.2"]);
   });
 
-  test("the lockout ends when the window that started with the first failure has passed", async () => {
-    const clock = { now: 1_000 };
-    const guard = guardAt(clock);
-    await failTimes(guard, LOGIN_FAILURE_LIMIT);
-    clock.now += LOGIN_WINDOW_MS;
-    expect((await handleLogin(login(TOKEN), TOKEN, guard)).status).toBe(303);
+  test("a client past its allowance is refused even with the right token", async () => {
+    const limiter = allowance();
+    for (let attempt = 0; attempt < LOGIN_ATTEMPT_LIMIT; attempt += 1) {
+      expect((await handleLogin(login("wrong"), TOKEN, limiter)).status).toBe(401);
+    }
+    const response = await handleLogin(login(TOKEN), TOKEN, limiter);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Retry-After")).toBe(String(LOGIN_ATTEMPT_PERIOD_SECONDS));
+    expect(response.headers.get("Set-Cookie")).toBeNull();
+    expect((await handleLogin(login(TOKEN, "198.51.100.9"), TOKEN, limiter)).status).toBe(303);
   });
 
-  test("a success clears the client's failures", async () => {
-    const guard = guardAt({ now: 1_000 });
-    await failTimes(guard, LOGIN_FAILURE_LIMIT - 1);
-    expect((await handleLogin(login(TOKEN), TOKEN, guard)).status).toBe(303);
-    await failTimes(guard, LOGIN_FAILURE_LIMIT - 1);
-    expect((await handleLogin(login(TOKEN), TOKEN, guard)).status).toBe(303);
+  test("a limiter that cannot answer refuses the attempt", async () => {
+    const failing: LoginLimiter = {
+      limit: () => Promise.reject(new Error("rate limiter unavailable")),
+    };
+    const response = await handleLogin(login(TOKEN), TOKEN, failing);
+    expect(response.status).toBe(429);
+    expect(response.headers.get("Set-Cookie")).toBeNull();
+  });
+
+  test("showing the form spends no attempt", async () => {
+    const limiter = allowance();
+    const response = await handleLogin(new Request(`${ORIGIN}/login`), TOKEN, limiter);
+    expect(response.status).toBe(200);
+    expect(limiter.keys).toEqual([]);
   });
 
   test("the login page carries its own policy and may not be framed", async () => {
-    const response = await handleLogin(new Request(`${ORIGIN}/login`), TOKEN, guardAt({ now: 0 }));
+    const response = await handleLogin(new Request(`${ORIGIN}/login`), TOKEN, allowance());
     expect(response.status).toBe(200);
     expect(response.headers.get("Content-Security-Policy")).toBe(LOGIN_CONTENT_SECURITY_POLICY);
     expect(response.headers.get("X-Frame-Options")).toBe("DENY");

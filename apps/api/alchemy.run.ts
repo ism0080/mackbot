@@ -10,6 +10,8 @@
  * stops being exported fails the deploy instead of losing its namespace, so
  * both stay exported from `src/index.ts`.
  * `Cloudflare.Workers.AI()` binds Workers AI for the cheap `@cf/…` model tier.
+ * `Cloudflare.RateLimit` binds the per-client `/login` allowance; its numbers
+ * live in `src/login-limit.ts`, which the Worker reads too.
  *
  * Secrets (`EXECUTOR_URL`, `EXECUTOR_TOKEN`, `OPENCODE_API_KEY`,
  * `CHAT_BEARER_TOKEN`) resolve from the environment via `Config.Redacted` and
@@ -39,6 +41,11 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 
 import type { Bot } from "./src/index.ts";
+import {
+  LOGIN_ATTEMPT_LIMIT,
+  LOGIN_ATTEMPT_PERIOD_SECONDS,
+  LOGIN_RATE_LIMIT_NAMESPACE,
+} from "./src/login-limit.ts";
 import type { Registry } from "./src/registry.ts";
 
 export default Alchemy.Stack(
@@ -83,6 +90,10 @@ export default Alchemy.Stack(
         Bot: Cloudflare.DurableObject<Bot>("Bot"),
         Registry: Cloudflare.DurableObject<Registry>("Registry"),
         AI: Cloudflare.Workers.AI(),
+        LOGIN_RATE_LIMIT: Cloudflare.RateLimit("LOGIN_RATE_LIMIT", {
+          namespaceId: LOGIN_RATE_LIMIT_NAMESPACE,
+          simple: { limit: LOGIN_ATTEMPT_LIMIT, period: LOGIN_ATTEMPT_PERIOD_SECONDS },
+        }),
         EXECUTOR_URL: Config.Redacted("EXECUTOR_URL"),
         EXECUTOR_TOKEN: Config.Redacted("EXECUTOR_TOKEN"),
         OPENCODE_API_KEY: Config.Redacted("OPENCODE_API_KEY"),

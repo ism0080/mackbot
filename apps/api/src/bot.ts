@@ -74,8 +74,6 @@ import type { Env, WaitResult } from "./env.ts";
 import { describeCause } from "./errors.ts";
 import { conversationIdOf, taskIdOf } from "./ids.ts";
 import { toJson } from "./json.ts";
-import { createLoginThrottle } from "./login-throttle.ts";
-import type { LoginThrottle } from "./login-throttle.ts";
 
 /** How many recent failures `/status` reports. A status page, not a history. */
 const FAILURE_LIMIT = 10;
@@ -116,7 +114,6 @@ export class Bot extends DurableObject<Env> {
   #approvalStore: ApprovalStore | undefined;
   #failureStore: FailureStore | undefined;
   #feedService: Feed | undefined;
-  #loginThrottleStore: LoginThrottle | undefined;
   /**
    * The configuration each session was last configured with, by session id.
    *
@@ -847,28 +844,5 @@ export class Bot extends DurableObject<Env> {
   async #usage(): Promise<UsageState> {
     const pi = await this.harness.pi();
     return pi.usage(BACKGROUND_CONTEXT);
-  }
-
-  /*
-   * The login guard. Only the instance named `LOGIN_GUARD_NAME` (see
-   * `auth.ts`) is called with these, and they touch nothing but its SQLite: the
-   * harness of that instance is never started.
-   */
-
-  async loginRetryAfter(client: string): Promise<number | undefined> {
-    return this.#loginThrottle().retryAfter(client, Date.now());
-  }
-
-  async recordLoginFailure(client: string): Promise<void> {
-    this.#loginThrottle().recordFailure(client, Date.now());
-  }
-
-  async clearLoginFailures(client: string): Promise<void> {
-    this.#loginThrottle().clear(client);
-  }
-
-  #loginThrottle(): LoginThrottle {
-    this.#loginThrottleStore ??= createLoginThrottle(this.ctx.storage);
-    return this.#loginThrottleStore;
   }
 }

@@ -88,9 +88,11 @@ gets `401` JSON, while an unauthenticated navigation is redirected to `/login`.
 
 - `GET /login` — the token form, a static page with no script. `POST /login`
   with a `token` form field answers `303` to `/` and sets the cookie, or `401`
-  with the form again. Each client (by `CF-Connecting-IP`) gets five wrong
-  tokens per 15 minutes; past that every attempt answers `429` with
-  `Retry-After` until the window has passed, and a success clears the count.
+  with the form again. Each client (by `CF-Connecting-IP`) gets five attempts
+  a minute, counted by Cloudflare's rate-limiting binding (`LOGIN_RATE_LIMIT`)
+  before the token is read; past that an attempt answers `429` with
+  `Retry-After: 60`. The binding counts per Cloudflare location, so the limit is
+  approximate.
 - `POST /logout` — clear the session cookie and answer `204`. It needs no
   credential, but as a cookie mutation it carries the same `Origin` and
   `X-Mackbot-CSRF` proof, so a cross-site page cannot sign the user out.

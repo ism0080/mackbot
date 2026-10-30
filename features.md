@@ -32,7 +32,8 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Approval controls in the web app: a paused call becomes a durable approval,
   the app's cards decide allow or deny, and the decision steers the resume.
   Other channels still need their own controls.
-- Sign-in hardening: `/login` is throttled per client, and `POST /logout`
+- Sign-in hardening: `/login` is rate-limited per client by Cloudflare's
+  rate-limiting binding, and `POST /logout`
   clears the session cookie from the web app's sign-out.
 - Retention: the hourly cron prunes each bot's audit rows, recorded failures
   and settled approvals past their retention.

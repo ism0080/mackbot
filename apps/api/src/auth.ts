@@ -1,11 +1,11 @@
 /**
  * auth - the two routes that change who the browser is: `/login` and `/logout`.
  *
- * `/login` answers without a credential, so it is throttled per client by a
- * {@link LoginGuard}: the Worker passes the `Bot` Durable Object instance
- * named {@link LOGIN_GUARD_NAME}, whose SQLite holds the counts (see
- * `login-throttle.ts`). The guard is checked before the token is, so a client
- * that is locked out learns nothing from another guess.
+ * `/login` answers without a credential, so every attempt first spends one of
+ * the client's allowance on the `LOGIN_RATE_LIMIT` binding (see
+ * `login-limit.ts`). The limit is checked before the token is, so a client
+ * past it learns nothing from another guess; and a limiter that cannot answer
+ * refuses the attempt rather than letting it through uncounted.
  */
 
 import * as Clock from "effect/Clock";
@@ -14,23 +14,13 @@ import * as Schema from "effect/Schema";
 
 import { tokensMatch } from "./chat-request.ts";
 import { jsonError, methodNotAllowed, secured } from "./http.ts";
+import { LOGIN_ATTEMPT_PERIOD_SECONDS } from "./login-limit.ts";
 import { LOGIN_CONTENT_SECURITY_POLICY, loginDocument } from "./login-page.ts";
 import type { LoginNotice } from "./login-page.ts";
 import { clearedSessionCookie, csrfAllows, issueSession, sessionCookie } from "./session.ts";
 
-/** The failed-login counts, as the front door reaches them. */
-export interface LoginGuard {
-  /** Seconds until `client` may try again, or `undefined` when it may try now. */
-  loginRetryAfter(client: string): Promise<number | undefined>;
-  recordLoginFailure(client: string): Promise<void>;
-  clearLoginFailures(client: string): Promise<void>;
-}
-
-/**
- * The `Bot` instance that holds the login counts. A bot id must start with a
- * lowercase letter or digit, so no declared bot can ever share this name.
- */
-export const LOGIN_GUARD_NAME = "_login-guard";
+/** The part of Cloudflare's rate-limiting binding `/login` uses. */
+export type LoginLimiter = Pick<RateLimit, "limit">;
 
 const LoginFormSchema = Schema.Struct({ token: Schema.NonEmptyString });
 
@@ -44,6 +34,14 @@ const readLoginToken = (request: Request): Effect.Effect<string | undefined> =>
 
 /** Who is guessing: the caller's address as Cloudflare saw it. */
 const clientOf = (request: Request): string => request.headers.get("CF-Connecting-IP") ?? "unknown";
+
+/** Whether `client` may try a token now; spends one attempt of its allowance. */
+const attemptAllowed = (limiter: LoginLimiter, client: string): Effect.Effect<boolean> =>
+  Effect.tryPromise(() => limiter.limit({ key: client })).pipe(
+    Effect.map((outcome) => outcome.success),
+    Effect.tapError((cause) => Effect.logError("login rate limiter failed", cause)),
+    Effect.orElseSucceed(() => false),
+  );
 
 const loginPage = (notice: LoginNotice, status: number, headers: Record<string, string> = {}) =>
   secured(
@@ -61,14 +59,12 @@ const loginPage = (notice: LoginNotice, status: number, headers: Record<string, 
 export const handleLogin = async (
   request: Request,
   token: string,
-  guard: LoginGuard,
+  limiter: LoginLimiter,
 ): Promise<Response> => {
   if (request.method === "GET") return loginPage("none", 200);
   if (request.method !== "POST") return methodNotAllowed();
-  const client = clientOf(request);
-  const retryAfter = await guard.loginRetryAfter(client);
-  if (retryAfter !== undefined) {
-    return loginPage("throttled", 429, { "Retry-After": String(retryAfter) });
+  if (!(await Effect.runPromise(attemptAllowed(limiter, clientOf(request))))) {
+    return loginPage("throttled", 429, { "Retry-After": String(LOGIN_ATTEMPT_PERIOD_SECONDS) });
   }
   const accepted = await Effect.runPromise(
     readLoginToken(request).pipe(
@@ -77,11 +73,7 @@ export const handleLogin = async (
       ),
     ),
   );
-  if (!accepted) {
-    await guard.recordLoginFailure(client);
-    return loginPage("rejected", 401);
-  }
-  await guard.clearLoginFailures(client);
+  if (!accepted) return loginPage("rejected", 401);
   const value = await Effect.runPromise(
     Effect.flatMap(Clock.currentTimeMillis, (now) => issueSession(token, now)),
   );
