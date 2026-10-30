@@ -10,8 +10,10 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import { toJson } from "./json.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlStorage } from "./sql.ts";
+import { currentTimeMillis } from "./clock.ts";
 
 export const AuditEventSchema = Schema.Struct({
   timestamp: Schema.Number,
@@ -84,7 +86,7 @@ export const createAuditLog = (storage: SqlStorage): AuditLog => {
                 validated.botId,
                 validated.kind,
                 validated.operationId,
-                JSON.stringify(validated.detail),
+                toJson(validated.detail),
               );
             },
             catch: (cause) => cause,
@@ -93,7 +95,7 @@ export const createAuditLog = (storage: SqlStorage): AuditLog => {
       ),
     );
 
-  const prune = (cutoff: number = Date.now() - AUDIT_RETENTION_MS): number => {
+  const prune = (cutoff: number = currentTimeMillis() - AUDIT_RETENTION_MS): number => {
     ensureMigrated();
     return read(executor, PRUNE_SQL, cutoff).length;
   };

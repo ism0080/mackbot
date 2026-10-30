@@ -14,6 +14,7 @@
  */
 
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { BotConfigSchema } from "@mackbot/contract";
@@ -133,10 +134,6 @@ export type RawJson =
   | readonly RawJson[]
   | { readonly [key: string]: RawJson };
 
-/** A JSON object, and not an array or a scalar. */
-const isRawObject = (value: RawJson): value is { readonly [key: string]: RawJson } =>
-  Object.prototype.toString.call(value) === "[object Object]";
-
 /**
  * Decode a roster that arrived as raw JSON, the way the seed file does.
  *
@@ -146,7 +143,7 @@ const isRawObject = (value: RawJson): value is { readonly [key: string]: RawJson
 export const parseBotRegistry = (raw: RawJson): BotRegistryParse =>
   Effect.runSync(
     Effect.gen(function* () {
-      if (!isRawObject(raw)) {
+      if (!Predicate.isObject(raw)) {
         return yield* fail("the registry must be a JSON object keyed by bot id");
       }
       const bots: Record<string, BotConfig> = {};

@@ -54,6 +54,9 @@ import type {
   UsageView,
 } from "@mackbot/contract";
 import { describeCause } from "./errors.ts";
+import { methodNotAllowed } from "./http.ts";
+import { toJson } from "./json.ts";
+import { currentTimeMillis } from "./clock.ts";
 
 /** How long an idle tail may stay silent before it sends a comment frame. */
 const HEARTBEAT_MS = 25_000;
@@ -148,14 +151,14 @@ interface Projection {
   readonly operation?: string;
 }
 
-const methodNotAllowed = (): Response =>
-  Response.json({ error: "method not allowed" }, { status: 405 });
-
 const streamRequired = (): Response =>
   Response.json({ error: "stream is required" }, { status: 400 });
 
-const runStreams = <A>(task: () => Promise<A>): Promise<A> =>
-  Effect.runPromise(Effect.tryPromise(task));
+/** A segment that settled before this isolate could write to it. */
+export class FeedSegmentSettled extends Schema.TaggedError<FeedSegmentSettled>()(
+  "FeedSegmentSettled",
+  { streamId: Schema.String, state: Schema.String, message: Schema.String },
+) {}
 
 /**
  * SAFETY: a Frame is JSON data by construction — the contract's projections
@@ -273,7 +276,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
    * projections the segment will report changes to.
    */
   const seed = (session: string, target: SessionWriter, projection: Projection): void => {
-    const at = Date.now();
+    const at = currentTimeMillis();
     const entries = projection.view.entries.map((entry) => entryView(entry, projection.runs, at));
     target.writer.append(
       toChunk({
@@ -292,22 +295,31 @@ export const createFeed = (deps: FeedDeps): Feed => {
 
     const state = stateOf(session);
     state.delivered = entries[entries.length - 1]?.id ?? state.delivered;
-    state.live = JSON.stringify(projection.live);
-    state.inbox = JSON.stringify(projection.inbox);
-    state.usage = JSON.stringify(projection.usage);
+    state.live = toJson(projection.live);
+    state.inbox = toJson(projection.inbox);
+    state.usage = toJson(projection.usage);
     state.operation = projection.operation;
   };
 
   const sweep = async (session: string): Promise<void> => {
     const tag = streamTagFor(deps.botId, session);
-    const listed = await runStreams(() =>
-      deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 }),
-    );
+    const listed = await deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 });
     for (const status of listed.slice(RETENTION_STREAMS)) {
       if (status.state === "streaming") continue;
+      // A segment that will not delete is swept again by the next rotation, so
+      // the failure is logged rather than failing the commit that rotated.
       await Effect.runPromise(
-        Effect.tryPromise(() => deps.streams.delete(status.streamId)).pipe(
-          Effect.catch(() => Effect.void),
+        Effect.tryPromise({
+          try: () => deps.streams.delete(status.streamId),
+          catch: (cause) => cause,
+        }).pipe(
+          Effect.catch((cause) =>
+            Effect.sync(() => {
+              console.error(
+                `mackbot: feed sweep of "${status.streamId}" failed: ${describeCause(cause)}`,
+              );
+            }),
+          ),
         ),
       );
     }
@@ -325,13 +337,15 @@ export const createFeed = (deps: FeedDeps): Feed => {
     projection: Projection,
   ): Promise<SessionWriter> => {
     const streamId = streamIdFor(session, generation);
-    const status = await runStreams(() => deps.streams.status(streamId));
+    const status = await deps.streams.status(streamId);
     if (status !== null && status.state !== "streaming") {
-      throw new Error(`feed segment "${streamId}" is already ${status.state}`);
+      throw new FeedSegmentSettled({
+        streamId,
+        state: status.state,
+        message: `feed segment "${streamId}" is already ${status.state}`,
+      });
     }
-    const writer = await runStreams(() =>
-      deps.streams.open(streamId, { tag: streamTagFor(deps.botId, session) }),
-    );
+    const writer = await deps.streams.open(streamId, { tag: streamTagFor(deps.botId, session) });
     const target: SessionWriter = { streamId, generation, writer, chunks: status?.cursor ?? 0 };
     if (target.chunks === 0) seed(session, target, projection);
     writers.set(session, target);
@@ -345,7 +359,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
    * do at a run's end.
    */
   const settleStream = async (streamId: string): Promise<void> => {
-    const writer = await runStreams(() => deps.streams.open(streamId));
+    const writer = await deps.streams.open(streamId);
     writer.close();
   };
 
@@ -357,9 +371,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
    */
   const seedSegment = async (session: string, projection: Projection): Promise<SessionWriter> => {
     const tag = streamTagFor(deps.botId, session);
-    const listed = await runStreams(() =>
-      deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 }),
-    );
+    const listed = await deps.streams.list({ tag, limit: RETENTION_STREAMS + 16 });
     let newest = 0;
     for (const status of listed) {
       const generation = generationFromStreamId(status.streamId);
@@ -417,7 +429,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
    * piece of state advances only after its frame is appended.
    */
   const deliver = async (session: string, projection: Projection): Promise<void> => {
-    const at = Date.now();
+    const at = currentTimeMillis();
     const state = stateOf(session);
     await writerFor(session, projection);
 
@@ -445,19 +457,19 @@ export const createFeed = (deps: FeedDeps): Feed => {
       state.delivered = Math.max(state.delivered, Number(last.id));
     }
 
-    const live = JSON.stringify(projection.live);
+    const live = toJson(projection.live);
     if (live !== state.live) {
       await emit(session, projection, { kind: "live", at, live: projection.live });
       state.live = live;
     }
 
-    const inbox = JSON.stringify(projection.inbox);
+    const inbox = toJson(projection.inbox);
     if (inbox !== state.inbox) {
       await emit(session, projection, { kind: "inbox", at, items: projection.inbox });
       state.inbox = inbox;
     }
 
-    const usage = JSON.stringify(projection.usage);
+    const usage = toJson(projection.usage);
     if (usage !== state.usage) {
       await emit(session, projection, { kind: "usage", at, usage: projection.usage });
       state.usage = usage;
@@ -490,7 +502,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
     if (attached.has(session)) return;
     attached.add(session);
     await Effect.runPromise(
-      Effect.tryPromise(() => subscribe(session)).pipe(
+      Effect.tryPromise({ try: () => subscribe(session), catch: (cause) => cause }).pipe(
         Effect.catch((cause) => {
           attached.delete(session);
           console.error(`mackbot: feed attach for "${session}" failed: ${describeCause(cause)}`);
@@ -509,9 +521,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
   };
 
   const newestStreamFor = async (session: string): Promise<string | undefined> => {
-    const listed = await runStreams(() =>
-      deps.streams.list({ tag: streamTagFor(deps.botId, session), limit: 1 }),
-    );
+    const listed = await deps.streams.list({ tag: streamTagFor(deps.botId, session), limit: 1 });
     return listed[0]?.streamId;
   };
 
@@ -526,9 +536,7 @@ export const createFeed = (deps: FeedDeps): Feed => {
       explicit ?? (session === undefined ? undefined : await newestStreamFor(session));
     if (streamId === undefined || streamId === "") return streamRequired();
     const from = resumeFrom(streamId, query);
-    return await runStreams(() =>
-      sseResponse(deps.streams, streamId, { request, from, heartbeatMs: HEARTBEAT_MS }),
-    );
+    return await sseResponse(deps.streams, streamId, { request, from, heartbeatMs: HEARTBEAT_MS });
   };
 
   return { attach, serve };

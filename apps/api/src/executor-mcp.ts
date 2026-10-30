@@ -70,6 +70,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { describeCause } from "./errors.ts";
+import { toJson, toPrettyJson } from "./json.ts";
 
 /** Tool-call timeout: well above the SDK's 60s default and Executor's 5-min `execute`. */
 const DEFAULT_TIMEOUT_MS = 600_000;
@@ -271,16 +273,13 @@ export const redactSecrets = (
     .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/giu, "[url]");
 };
 
-const describeError = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
-
 const renderContent = (content: CallToolResult["content"]): string => {
   const parts: string[] = [];
   for (const item of content) {
     if (item.type === "text") {
       parts.push(item.text);
     } else {
-      parts.push(`[${item.type} content] ${JSON.stringify(item)}`);
+      parts.push(`[${item.type} content] ${toJson(item)}`);
     }
   }
   return parts.join("\n");
@@ -374,7 +373,7 @@ const pauseOf = (result: CallToolResult): Pause | undefined => {
     return Option.getOrUndefined(
       Option.map(Schema.decodeUnknownOption(PauseEnvelopeSchema)(structured), (envelope) => ({
         envelope,
-        raw: JSON.stringify(structured),
+        raw: toJson(structured),
       })),
     );
   }
@@ -438,7 +437,7 @@ const repeatsStructured = (text: string, structured: string): boolean => {
     Schema.decodeUnknownOption(JsonFromText)(trimmed),
     () => undefined,
   );
-  return parsed !== undefined && JSON.stringify(parsed) === structured;
+  return parsed !== undefined && toJson(parsed) === structured;
 };
 
 const renderBody = (text: string, structured: string): string => {
@@ -478,7 +477,7 @@ export const renderResult = (
 ): ToolExecutionResult => {
   const text = renderContent(result.content);
   const structuredContent = result.structuredContent;
-  const compact = structuredContent === undefined ? "" : JSON.stringify(structuredContent);
+  const compact = structuredContent === undefined ? "" : toJson(structuredContent);
   // Executor answers most tools with the same payload in `content` and in
   // `structuredContent`. Rendering both charges the model twice for one result,
   // so the structured section is dropped when it only repeats the text. A text
@@ -486,7 +485,7 @@ export const renderResult = (
   const structured =
     structuredContent === undefined || repeatsStructured(text, compact)
       ? ""
-      : JSON.stringify(structuredContent, null, 2);
+      : toPrettyJson(structuredContent);
   const body = renderBody(text, structured);
   const pause = pauseOf(result);
   const paused = pausedEnvelope(pause);
@@ -536,7 +535,7 @@ export const failureResult = (
   name: string,
   cause: unknown,
 ): ToolExecutionResult => {
-  const detail = describeError(cause);
+  const detail = describeCause(cause);
   const logged = config.token.length > 0 ? detail.split(config.token).join("[redacted]") : detail;
   console.error(`mackbot: Executor MCP call failed (${name}): ${logged}`);
   const redacted = redactSecrets(detail, config);

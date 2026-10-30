@@ -29,17 +29,24 @@ import { botOf, createRegistryStore, decideWrite, readOrSeed } from "./registry-
 import type { RegistryStore, RegistryWrite } from "./registry-store.ts";
 import type { Env } from "./index.ts";
 
+/** The bundled seed file breaks a rule: the Worker was built with a roster it cannot run. */
+export class InvalidSeedRoster extends Schema.TaggedError<InvalidSeedRoster>()(
+  "InvalidSeedRoster",
+  { message: Schema.String },
+) {}
+
 /**
  * The seed roster: the bots the bundled file declares.
  *
  * The file is the seed, not a second source for the same fact. A registry
  * that has been seeded reads it no more, and the registry is the only truth
- * from then on.
+ * from then on. The seed is read inside the storage transaction's callback,
+ * so a broken file is thrown there and rolls the transaction back.
  */
 export const seedBots = (): Record<string, BotConfig> => {
   const parsed = parseBotRegistry(botsJson);
   if (!parsed.ok) {
-    throw new Error(`bots.json: ${parsed.error}`);
+    throw new InvalidSeedRoster({ message: `bots.json: ${parsed.error}` });
   }
   return parsed.bots;
 };

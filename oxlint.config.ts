@@ -24,12 +24,30 @@ export default defineConfig({
   },
   overrides: [
     {
-      // Effect-idiom rules for the Effect surface (apps/api/alchemy.run.ts).
-      // apps/api/src wraps the Pi/Cloudflare promise+callback SDKs at its
-      // boundaries, where rules such as no-try-catch would fight deliberate
-      // boundary code, so the effect profile stays off there.
-      files: ["apps/api/alchemy.run.ts"],
+      // Effect-idiom rules for the Worker and its deploy script.
+      files: ["apps/api/alchemy.run.ts", "apps/api/src/**/*.ts"],
       rules: profiles.effect,
+    },
+    {
+      // The Durable Object classes and the Worker entry are the promise
+      // boundary: the Workers runtime, the Agents SDK and Pi Durable call
+      // their methods as plain async RPCs and callbacks, outside any Effect
+      // runtime. The timestamps they stamp on audit rows and runs are host
+      // facts read at that boundary, so ambient time is allowed there and
+      // nowhere else; every module they call reads time through Effect's
+      // Clock or takes it as an argument.
+      files: ["apps/api/src/index.ts", "apps/api/src/bot.ts", "apps/api/src/registry.ts"],
+      rules: { "forge/no-ambient-nondeterminism": "off" },
+    },
+    {
+      // WebCrypto: the session key is derived with HKDF, signed and verified
+      // with HMAC, and bearer digests are compared with `timingSafeEqual`.
+      // effect/Crypto offers none of these (only digests and random values)
+      // and ships no WebCrypto layer, so these two modules call
+      // `crypto.subtle` directly, each call wrapped as a typed
+      // `WebCryptoFailure` (see src/errors.ts).
+      files: ["apps/api/src/session.ts", "apps/api/src/chat-request.ts"],
+      rules: { "forge/no-ambient-nondeterminism": "off" },
     },
   ],
   env: {

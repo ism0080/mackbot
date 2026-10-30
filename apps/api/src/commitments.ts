@@ -19,6 +19,7 @@
 import { Type } from "@earendil-works/pi-ai";
 import { defineDoc, defineExtension, defineTool, section } from "@earendil-works/pi-durable";
 import type { Extension, TaskId } from "@earendil-works/pi-durable";
+import { currentTimeMillis } from "./clock.ts";
 
 /**
  * One commitment the bot owes its user.
@@ -80,7 +81,7 @@ const addCommitment = defineTool({
       if (replayed !== undefined) return { kind: "replayed" as const, id: replayed.id };
       const tracked = doc.items.find((item) => item.status === "open" && item.text === args.text);
       if (tracked !== undefined) return { kind: "tracked" as const, id: tracked.id };
-      doc.items.push({ id, text: args.text, status: "open", at: Date.now() });
+      doc.items.push({ id, text: args.text, status: "open", at: currentTimeMillis() });
       return { kind: "added" as const, id };
     }, context);
     if (outcome.kind === "added") {

@@ -17,13 +17,14 @@
  */
 
 import type { ReportInfo, ReportTask } from "@earendil-works/pi-durable";
-import { Effect, Option, Predicate, Schema } from "effect";
+import { Clock, Effect, Match, Option, Predicate, Schema } from "effect";
 
 import { describeCause } from "./errors.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage, SqlValue } from "./sql.ts";
 import { FailureViewSchema } from "@mackbot/contract";
 import type { FailureView } from "@mackbot/contract";
+import { currentTimeMillis } from "./clock.ts";
 
 /** The detail's cap, marker included. */
 const MAX_DETAIL = 500;
@@ -94,27 +95,28 @@ const taskFields = (
  * the shape of its own variant, so no arm has to guess which fields exist.
  */
 export const classifyFailure = (cause: unknown, info: ReportInfo): ClassifiedFailure => {
-  const base = { name: nameOf(cause), detail: truncate(describeCause(cause)) };
-  switch (info.type) {
-    case "session_failed":
-      return { kind: info.type, ...base };
-    case "task_faulted":
-      return { kind: info.type, ...base, ...taskFields(info.task), extension: info.extension };
-    case "task_parked":
-      return { kind: info.type, ...base, ...taskFields(info.task), extension: info.extension };
-    case "migration_failed":
-      return { kind: info.type, ...base, ...taskFields(info.task), extension: info.extension };
-    case "task_outdated":
-      return { kind: info.type, ...base, ...taskFields(info.task), extension: info.extension };
-    case "task_error":
-      return { kind: info.type, ...base, ...taskFields(info.task), extension: info.extension };
-    case "extension_error":
-      return { kind: info.type, ...base, ...taskFields(info.task), extension: info.extension };
-    case "host_error":
-      return { kind: info.type, ...base, ...taskFields(info.task), callback: info.callback };
-    case "listener_error":
-      return { kind: info.type, ...base };
-  }
+  const base = { kind: info.type, name: nameOf(cause), detail: truncate(describeCause(cause)) };
+  const withExtension = (variant: {
+    readonly task?: ReportTask;
+    readonly extension?: string;
+  }): ClassifiedFailure => ({ ...base, ...taskFields(variant.task), extension: variant.extension });
+  return Match.value(info).pipe(
+    Match.discriminatorsExhaustive("type")({
+      session_failed: (): ClassifiedFailure => base,
+      task_faulted: withExtension,
+      task_parked: withExtension,
+      migration_failed: withExtension,
+      task_outdated: withExtension,
+      task_error: withExtension,
+      extension_error: withExtension,
+      host_error: (variant): ClassifiedFailure => ({
+        ...base,
+        ...taskFields(variant.task),
+        callback: variant.callback,
+      }),
+      listener_error: (): ClassifiedFailure => base,
+    }),
+  );
 };
 
 const CREATE_TABLE_SQL =
@@ -180,22 +182,24 @@ export const createFailureStore = (storage: SqlStorage): FailureStore => {
 
   const record = (cause: unknown, info: ReportInfo): void => {
     Effect.runSync(
-      Effect.try(() => {
-        const failure = classifyFailure(cause, info);
-        ensureMigrated();
-        write(
-          executor,
-          INSERT_SQL,
-          Date.now(),
-          failure.kind,
-          failure.name,
-          failure.detail,
-          failure.taskId ?? null,
-          failure.taskKind ?? null,
-          failure.extension ?? null,
-          failure.callback ?? null,
-        );
-      }).pipe(Effect.ignore),
+      Effect.flatMap(Clock.currentTimeMillis, (at) =>
+        Effect.try(() => {
+          const failure = classifyFailure(cause, info);
+          ensureMigrated();
+          write(
+            executor,
+            INSERT_SQL,
+            at,
+            failure.kind,
+            failure.name,
+            failure.detail,
+            failure.taskId ?? null,
+            failure.taskKind ?? null,
+            failure.extension ?? null,
+            failure.callback ?? null,
+          );
+        }),
+      ).pipe(Effect.ignore),
     );
   };
 
@@ -206,7 +210,7 @@ export const createFailureStore = (storage: SqlStorage): FailureStore => {
     );
   };
 
-  const prune = (cutoff: number = Date.now() - FAILURE_RETENTION_MS): number => {
+  const prune = (cutoff: number = currentTimeMillis() - FAILURE_RETENTION_MS): number => {
     ensureMigrated();
     return read(executor, PRUNE_SQL, cutoff).length;
   };

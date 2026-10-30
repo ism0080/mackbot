@@ -17,6 +17,7 @@ import type {
   HarnessInspection,
   Registry as ExtensionRegistry,
   SubmissionId,
+  SubmissionRecord,
   UsageState,
 } from "@earendil-works/pi-durable";
 import { createModels } from "@earendil-works/pi-ai";
@@ -61,15 +62,16 @@ import type {
 } from "@mackbot/contract";
 
 import * as Effect from "effect/Effect";
+import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
 
-import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
 import { BotRegistryService } from "./services/bot-registry.ts";
 import { createAuditLog } from "./audit-log.ts";
 import type { AuditEvent, AuditLog } from "./audit-log.ts";
 import type { Env, WaitResult } from "./env.ts";
-import { describeCause } from "./http.ts";
+import { describeCause } from "./errors.ts";
 import { conversationIdOf, taskIdOf } from "./ids.ts";
+import { toJson } from "./json.ts";
 import { createLoginThrottle } from "./login-throttle.ts";
 import type { LoginThrottle } from "./login-throttle.ts";
 
@@ -107,7 +109,7 @@ export class Bot extends DurableObject<Env> {
   readonly lifecycle: Lifecycle<Env>;
   readonly harness: PiHarness;
   readonly streams: Streams;
-  readonly runtime: ManagedRuntime<BotRegistryService, never>;
+  readonly runtime: ManagedRuntime.ManagedRuntime<BotRegistryService, never>;
   #auditSink: AuditLog | undefined;
   #approvalStore: ApprovalStore | undefined;
   #failureStore: FailureStore | undefined;
@@ -151,7 +153,7 @@ export class Bot extends DurableObject<Env> {
     this.streams = new Streams();
     this.lifecycle.use(this.harness);
     this.lifecycle.use(this.streams);
-    this.runtime = makeManagedRuntime(BotRegistryService.layerFor(env));
+    this.runtime = ManagedRuntime.make(BotRegistryService.layerFor(env));
   }
 
   /**
@@ -176,7 +178,15 @@ export class Bot extends DurableObject<Env> {
       registry.install(
         createExecutorMcp({ url: env.EXECUTOR_URL, token: env.EXECUTOR_TOKEN }, { onPaused }),
       );
-      registry.install(createBotDelegation({ env, sourceBotId: botId }));
+      // The chain of hand-offs rides in the operation ids of the inputs a run
+      // answers, so delegation reads them to refuse a loop or a long chain.
+      registry.install(
+        createBotDelegation({
+          env,
+          sourceBotId: botId,
+          submissions: (conversationId) => this.#submissionsOf(conversationId),
+        }),
+      );
       // The voice contract is fixed prose, not bot configuration: installing it
       // here rather than through `syncExtensions` means an already-seeded bot
       // gets it without its stored prompt being rewritten.
@@ -184,6 +194,7 @@ export class Bot extends DurableObject<Env> {
       registry.install(
         createExecutorPolicy({
           approvalState: (requestId) => this.#approvals().stateOf(requestId),
+          claimResume: (requestId) => this.#approvals().claimResume(requestId),
           onCall: (call) => {
             void this.#appendAudit({
               timestamp: Date.now(),
@@ -240,21 +251,14 @@ export class Bot extends DurableObject<Env> {
     thread?: string,
     session?: string,
   ): Promise<PiReceipt> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    await this.lifecycle.start();
     const sessionId =
-      session ??
-      (thread === undefined
-        ? ROOT_SESSION
-        : await Effect.runPromise(Effect.tryPromise(() => this.#sessionForThread(thread))));
-    await Effect.runPromise(Effect.tryPromise(() => this.#applyConfiguration(sessionId)));
+      session ?? (thread === undefined ? ROOT_SESSION : await this.#sessionForThread(thread));
+    await this.#applyConfiguration(sessionId);
     // Attach before the submission is durable, so no harness event of the run
     // it admits can be produced before the watcher is listening.
     await this.#feed().attach(sessionId);
-    const receipt = await Effect.runPromise(
-      Effect.tryPromise(() =>
-        this.harness.submit(text, { operationId, whenBusy, session: sessionId }),
-      ),
-    );
+    const receipt = await this.harness.submit(text, { operationId, whenBusy, session: sessionId });
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -274,13 +278,14 @@ export class Bot extends DurableObject<Env> {
     timeoutMs: number,
     session: string = ROOT_SESSION,
   ): Promise<WaitResult> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    await this.lifecycle.start();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const outcome = await Effect.runPromise(
-      Effect.tryPromise(() =>
-        this.harness.wait(operationId, { session, signal: controller.signal }),
-      ).pipe(
+      Effect.tryPromise({
+        try: () => this.harness.wait(operationId, { session, signal: controller.signal }),
+        catch: (cause) => cause,
+      }).pipe(
         Effect.match({
           onSuccess: (result) => ({ kind: "ok" as const, result }),
           onFailure: (cause) =>
@@ -329,10 +334,10 @@ export class Bot extends DurableObject<Env> {
    * too and an idle bot must not look like it did something.
    */
   async abort(session: string = ROOT_SESSION): Promise<AbortResult> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
-    const pending = await Effect.runPromise(Effect.tryPromise(() => this.harness.pending()));
+    await this.lifecycle.start();
+    const pending = await this.harness.pending();
     const live = pending.filter((operation) => operation.session === session);
-    await Effect.runPromise(Effect.tryPromise(() => this.harness.session(session).abort()));
+    await this.harness.session(session).abort();
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -352,17 +357,15 @@ export class Bot extends DurableObject<Env> {
    * retried and the caller should not be told otherwise.
    */
   async retry(taskId: string): Promise<RetryResult> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    const inspection = await Effect.runPromise(
-      Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
-    );
+    await this.lifecycle.start();
+    const pi = await this.harness.pi();
+    const inspection = await pi.inspect(BACKGROUND_CONTEXT);
     const parked = parkedTasks(inspection).find((task) => task.id === taskId);
     if (parked === undefined) {
       return { bot: this.lifecycle.name, taskId, retried: false };
     }
     const id = await Effect.runPromise(taskIdOf(taskId));
-    await Effect.runPromise(Effect.tryPromise(() => pi.retryTask(id, BACKGROUND_CONTEXT)));
+    await pi.retryTask(id, BACKGROUND_CONTEXT);
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -385,13 +388,9 @@ export class Bot extends DurableObject<Env> {
     session: string = ROOT_SESSION,
     instructions?: string,
   ): Promise<{ bot: string; taskId: string }> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    await this.lifecycle.start();
     const conversation = await this.#rootOrConversation(session);
-    const taskId = String(
-      await Effect.runPromise(
-        Effect.tryPromise(() => conversation.compact(instructions, BACKGROUND_CONTEXT)),
-      ),
-    );
+    const taskId = String(await conversation.compact(instructions, BACKGROUND_CONTEXT));
     await this.#appendAudit({
       timestamp: Date.now(),
       botId: this.lifecycle.name,
@@ -403,22 +402,22 @@ export class Bot extends DurableObject<Env> {
     return { bot: this.lifecycle.name, taskId };
   }
 
-  async status(): Promise<BotView> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+  /**
+   * The bot's status view. /status reads the whole roster before it asks
+   * each bot, so it hands the bot its configuration rather than having every
+   * bot ask the registry for it again; a caller without one leaves it out.
+   */
+  async status(config?: BotConfig): Promise<BotView> {
+    await this.lifecycle.start();
     const id = this.lifecycle.name;
-    const bot = await this.#botConfig();
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    const [sessions, pending, usage, inspection] = await Effect.runPromise(
-      Effect.all(
-        [
-          Effect.tryPromise(() => this.harness.sessions.list()),
-          Effect.tryPromise(() => this.harness.pending()),
-          Effect.tryPromise(() => this.#usage()),
-          Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
-        ],
-        { concurrency: "unbounded" },
-      ),
-    );
+    const bot = config ?? (await this.#botConfig());
+    const pi = await this.harness.pi();
+    const [sessions, pending, usage, inspection] = await Promise.all([
+      this.harness.sessions.list(),
+      this.harness.pending(),
+      this.#usage(),
+      pi.inspect(BACKGROUND_CONTEXT),
+    ]);
     const pendingViews: readonly PendingOperationView[] = pending.map((operation) => ({
       operationId: operation.operationId,
       origin: originOf(operation.operationId),
@@ -457,9 +456,7 @@ export class Bot extends DurableObject<Env> {
     if (operation === undefined) return undefined;
     const session = operation.session;
     const conversationId = await Effect.runPromise(conversationIdOf(session));
-    const live = await Effect.runPromise(
-      Effect.tryPromise(() => pi.snapshot(LiveDoc, conversationId, BACKGROUND_CONTEXT)),
-    );
+    const live = await pi.snapshot(LiveDoc, conversationId, BACKGROUND_CONTEXT);
     const run = live?.run;
     const startedAt =
       run === undefined
@@ -493,19 +490,13 @@ export class Bot extends DurableObject<Env> {
     );
     const entryId = submission?.entry;
     if (entryId === undefined) return [];
-    const conversation = await Effect.runPromise(
-      Effect.tryPromise(() => pi.conversation(conversationId, BACKGROUND_CONTEXT)),
-    );
+    const conversation = await pi.conversation(conversationId, BACKGROUND_CONTEXT);
     if (conversation === undefined) return [];
-    const page = await Effect.runPromise(
-      Effect.tryPromise(() =>
-        conversation.entries(
-          { minEntryId: entryId, maxEntryId: entryId },
-          1,
-          undefined,
-          BACKGROUND_CONTEXT,
-        ),
-      ),
+    const page = await conversation.entries(
+      { minEntryId: entryId, maxEntryId: entryId },
+      1,
+      undefined,
+      BACKGROUND_CONTEXT,
     );
     const entry = page.items[0];
     return entry === undefined ? [] : [projectEntry(entry).text];
@@ -520,7 +511,7 @@ export class Bot extends DurableObject<Env> {
     approvalId: string,
     decision: ApprovalDecision,
   ): Promise<DecidedApproval | undefined> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    await this.lifecycle.start();
     return await this.#approvals().decide(
       approvalId,
       decision,
@@ -537,7 +528,7 @@ export class Bot extends DurableObject<Env> {
    * a session on a GET.
    */
   async transcript(query: TranscriptQuery): Promise<TranscriptPage> {
-    await Effect.runPromise(Effect.tryPromise(() => this.lifecycle.start()));
+    await this.lifecycle.start();
     const thread = query.thread;
     if (thread !== undefined) {
       const existing = await this.#sessionIdForThread(thread);
@@ -550,30 +541,17 @@ export class Bot extends DurableObject<Env> {
 
   async #transcriptOf(session: string, query: TranscriptQuery): Promise<TranscriptPage> {
     const conversationId = await Effect.runPromise(conversationIdOf(session));
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    const conversation = await Effect.runPromise(
-      Effect.tryPromise(() => pi.conversation(conversationId, BACKGROUND_CONTEXT)),
-    );
+    const pi = await this.harness.pi();
+    const conversation = await pi.conversation(conversationId, BACKGROUND_CONTEXT);
     const read = transcriptRead(query);
     const page =
       conversation === undefined
         ? { items: [] as const }
-        : await Effect.runPromise(
-            Effect.tryPromise(() =>
-              conversation.entries(read.query, read.limit, undefined, BACKGROUND_CONTEXT),
-            ),
-          );
-    const inspection = await Effect.runPromise(
-      Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
-    );
+        : await conversation.entries(read.query, read.limit, undefined, BACKGROUND_CONTEXT);
     return transcriptPage(
       session,
       page,
-      runProjections(
-        inspection.submissions.filter(
-          (submission) => Number(submission.conversationId) === conversationId,
-        ),
-      ),
+      runProjections(await this.#submissionsOf(conversationId)),
       query,
       await this.#newestStream(session),
     );
@@ -585,11 +563,10 @@ export class Bot extends DurableObject<Env> {
    * client should attach to.
    */
   async #newestStream(session: string): Promise<StreamStatusView> {
-    const listed = await Effect.runPromise(
-      Effect.tryPromise(() =>
-        this.streams.list({ tag: streamTagFor(this.lifecycle.name, session), limit: 1 }),
-      ),
-    );
+    const listed = await this.streams.list({
+      tag: streamTagFor(this.lifecycle.name, session),
+      limit: 1,
+    });
     const newest = listed[0];
     return newest === undefined
       ? streamView(session, 0, 0, "completed")
@@ -624,8 +601,8 @@ export class Bot extends DurableObject<Env> {
   /** As {@link #conversationOf}, except that the root session is created when it is missing. */
   async #rootOrConversation(session: string): Promise<Conversation> {
     if (session !== ROOT_SESSION) return await this.#conversationOf(session);
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    return await Effect.runPromise(Effect.tryPromise(() => pi.root(BACKGROUND_CONTEXT)));
+    const pi = await this.harness.pi();
+    return await pi.root(BACKGROUND_CONTEXT);
   }
 
   #approvals(): ApprovalStore {
@@ -651,18 +628,35 @@ export class Bot extends DurableObject<Env> {
    */
   async #startWait(wait: ApprovalWaitInput): Promise<void> {
     const conversation = await this.#conversationOf(wait.session);
-    await Effect.runPromise(
-      Effect.tryPromise(() =>
-        conversation.commit(
-          (tx) =>
-            tx.createTask(createApprovalWait(this.#approvals()), wait, {
-              ownership: { kind: "conversation" },
-              background: true,
-            }),
-          BACKGROUND_CONTEXT,
-        ),
-      ),
+    await conversation.commit(
+      (tx) =>
+        tx.createTask(createApprovalWait(this.#approvals()), wait, {
+          ownership: { kind: "conversation" },
+          background: true,
+        }),
+      BACKGROUND_CONTEXT,
     );
+  }
+
+  /** The submissions of one conversation, as pi's inspection reports them. */
+  async #submissionsOf(conversationId: ConversationId): Promise<readonly SubmissionRecord[]> {
+    const pi = await this.harness.pi();
+    const inspection = await pi.inspect(BACKGROUND_CONTEXT);
+    return inspection.submissions.filter(
+      (submission) => submission.conversationId === conversationId,
+    );
+  }
+
+  /**
+   * Drop what is past its retention: audit rows, recorded failures, and
+   * approvals decided or expired long ago. The cron calls this for every bot,
+   * so a bot nobody talks to does not keep growing its tables. It touches
+   * only this instance's SQLite, so the harness is not started for it.
+   */
+  async prune(): Promise<void> {
+    this.#audit().prune();
+    this.#failures().prune();
+    this.#approvals().prune();
   }
 
   #failures(): FailureStore {
@@ -692,22 +686,12 @@ export class Bot extends DurableObject<Env> {
       // documents a client renders, committed together, one callback per commit.
       watch: async (session) => {
         const conversation = await this.#conversationOf(session);
-        return await Effect.runPromise(
-          Effect.tryPromise(() => conversation.watch(BACKGROUND_CONTEXT)),
-        );
+        return await conversation.watch(BACKGROUND_CONTEXT);
       },
       // A run's identity is pi's: each input submission names the entry it was
       // placed as and the entry that answered it.
-      submissions: async (session) => {
-        const conversationId = await Effect.runPromise(conversationIdOf(session));
-        const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-        const inspection = await Effect.runPromise(
-          Effect.tryPromise(() => pi.inspect(BACKGROUND_CONTEXT)),
-        );
-        return inspection.submissions.filter(
-          (submission) => Number(submission.conversationId) === conversationId,
-        );
-      },
+      submissions: async (session) =>
+        await this.#submissionsOf(await Effect.runPromise(conversationIdOf(session))),
       sessionOf: async (thread) =>
         thread === undefined ? ROOT_SESSION : await this.#sessionIdForThread(thread),
     });
@@ -731,10 +715,8 @@ export class Bot extends DurableObject<Env> {
    * isolate created, and a thread missing from both has no transcript yet.
    */
   async #sessionIdForThread(thread: string): Promise<string | undefined> {
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    const threads = await Effect.runPromise(
-      Effect.tryPromise(() => pi.snapshot(ThreadsDoc, BACKGROUND_CONTEXT)),
-    );
+    const pi = await this.harness.pi();
+    const threads = await pi.snapshot(ThreadsDoc, BACKGROUND_CONTEXT);
     const recorded =
       threads !== undefined && Object.hasOwn(threads.threads, thread)
         ? threads.threads[thread]
@@ -764,21 +746,17 @@ export class Bot extends DurableObject<Env> {
   async #createSessionForThread(thread: string): Promise<string> {
     const existing = await this.#sessionIdForThread(thread);
     if (existing !== undefined) return existing;
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
+    const pi = await this.harness.pi();
     // The mapping is written by `init`, inside the commit that creates this
     // very conversation: a crash between the two cannot orphan it, and a
     // conversation something else creates meanwhile (the root, a delegated
     // subagent) can never be recorded as this thread's.
-    const conversation = await Effect.runPromise(
-      Effect.tryPromise(() =>
-        pi.createConversation(
-          {
-            ownership: { kind: "ownerless" },
-            init: (tx, id) => recordThread(tx, thread, String(id)),
-          },
-          BACKGROUND_CONTEXT,
-        ),
-      ),
+    const conversation = await pi.createConversation(
+      {
+        ownership: { kind: "ownerless" },
+        init: (tx, id) => recordThread(tx, thread, String(id)),
+      },
+      BACKGROUND_CONTEXT,
     );
     return String(conversation.id);
   }
@@ -802,7 +780,7 @@ export class Bot extends DurableObject<Env> {
     }
     // The configuration is a small object that is decoded the same way every
     // time, so its JSON text is a faithful comparison of two configurations.
-    const applied = JSON.stringify(bot);
+    const applied = toJson(bot);
     await this.#configure(ROOT_SESSION, bot, applied);
     if (sessionId !== ROOT_SESSION) {
       await this.#configure(sessionId, bot, applied);
@@ -816,9 +794,7 @@ export class Bot extends DurableObject<Env> {
   async #configure(sessionId: string, bot: BotConfig, applied: string): Promise<void> {
     if (this.#applied.get(sessionId) === applied) return;
     const conversation = await this.#rootOrConversation(sessionId);
-    await Effect.runPromise(
-      Effect.tryPromise(() => conversation.configure(agentChange(bot), BACKGROUND_CONTEXT)),
-    );
+    await conversation.configure(agentChange(bot), BACKGROUND_CONTEXT);
     this.#applied.set(sessionId, applied);
   }
 
@@ -870,8 +846,8 @@ export class Bot extends DurableObject<Env> {
   }
 
   async #usage(): Promise<UsageState> {
-    const pi = await Effect.runPromise(Effect.tryPromise(() => this.harness.pi()));
-    return Effect.runPromise(Effect.tryPromise(() => pi.usage(BACKGROUND_CONTEXT)));
+    const pi = await this.harness.pi();
+    return pi.usage(BACKGROUND_CONTEXT);
   }
 
   /*

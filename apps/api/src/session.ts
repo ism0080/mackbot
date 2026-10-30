@@ -11,9 +11,12 @@
  * session without rotating the token.
  */
 
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 
 import { bearerMatches } from "./chat-request.ts";
+import { webCrypto } from "./errors.ts";
+import type { WebCryptoFailure } from "./errors.ts";
 
 export const SESSION_COOKIE = "mackbot_session";
 export const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 7;
@@ -43,8 +46,8 @@ const fromBase64Url = (value: string): Uint8Array =>
   );
 
 /** The session-signing key, derived from the bearer with HKDF. */
-const sessionKey = (token: string): Effect.Effect<CryptoKey> =>
-  Effect.promise(async () => {
+const sessionKey = (token: string): Effect.Effect<CryptoKey, WebCryptoFailure> =>
+  webCrypto("deriveKey", async () => {
     const material = await crypto.subtle.importKey("raw", encoder.encode(token), "HKDF", false, [
       "deriveKey",
     ]);
@@ -68,7 +71,7 @@ const messageFor = (expires: number): Uint8Array => encoder.encode(`${SESSION_SU
 export const issueSession = Effect.fnUntraced(function* (token: string, now: number) {
   const expires = Math.floor(now / 1000) + SESSION_MAX_AGE_SECONDS;
   const key = yield* sessionKey(token);
-  const signature = yield* Effect.promise(() =>
+  const signature = yield* webCrypto("sign", () =>
     crypto.subtle.sign("HMAC", key, messageFor(expires)),
   );
   return `${SESSION_VERSION}.${expires}.${toBase64Url(new Uint8Array(signature))}`;
@@ -79,7 +82,7 @@ export const verifySession = (
   token: string,
   value: string,
   now: number,
-): Effect.Effect<boolean> => {
+): Effect.Effect<boolean, WebCryptoFailure> => {
   const match = SESSION_VALUE.exec(value);
   if (match === null) return Effect.succeed(false);
   const expires = Number(match[1]);
@@ -87,7 +90,7 @@ export const verifySession = (
   const signature = fromBase64Url(match[2]!);
   return sessionKey(token).pipe(
     Effect.flatMap((key) =>
-      Effect.promise(() => crypto.subtle.verify("HMAC", key, signature, messageFor(expires))),
+      webCrypto("verify", () => crypto.subtle.verify("HMAC", key, signature, messageFor(expires))),
     ),
   );
 };
@@ -127,12 +130,13 @@ export const clearedSessionCookie = (request: Request): string => cookieWith(req
 export const authenticate = (
   request: Request,
   token: string,
-): Effect.Effect<AuthMethod | undefined> =>
+): Effect.Effect<AuthMethod | undefined, WebCryptoFailure> =>
   Effect.gen(function* () {
     if (yield* bearerMatches(request, token)) return "bearer";
     const cookie = readCookie(request, SESSION_COOKIE);
     if (cookie === undefined) return undefined;
-    return (yield* verifySession(token, cookie, Date.now())) ? "cookie" : undefined;
+    const now = yield* Clock.currentTimeMillis;
+    return (yield* verifySession(token, cookie, now)) ? "cookie" : undefined;
   });
 
 /**

@@ -49,12 +49,15 @@ import { defineExtension, defineTask } from "@earendil-works/pi-durable";
 import type { Extension, NextTaskState, Task } from "@earendil-works/pi-durable";
 
 import { sameApprovalContent } from "./executor-policy.ts";
-import type { ApprovalState, ApprovalStatus } from "./executor-policy.ts";
+import type { ApprovalStatus } from "./executor-policy.ts";
 import { approvalOperationId } from "./operation.ts";
+import { describeCause } from "./errors.ts";
+import { toJson, toPrettyJson } from "./json.ts";
 import { read, write } from "./sql.ts";
 import type { SqlExecutor, SqlRow, SqlStorage, SqlValue } from "./sql.ts";
 import { ApprovalDecisionSchema, ApprovalViewSchema } from "@mackbot/contract";
 import type { ApprovalDecision, ApprovalView } from "@mackbot/contract";
+import { currentTimeMillis } from "./clock.ts";
 
 /**
  * How many approvals one bot may have waiting at once. Each one is a row the
@@ -292,7 +295,7 @@ export interface ApprovalStoreOptions {
    * HTTP path's steer is exactly what may have been lost.
    */
   readonly submit?: ApprovalSubmitter;
-  /** The clock the store stamps and expires rows by; `Date.now` by default. */
+  /** The clock the store stamps and expires rows by; the wall clock by default. */
   readonly now?: () => number;
 }
 
@@ -366,10 +369,6 @@ export type ApprovalStore = {
 const envelopeOf = (raw: string): Envelope | undefined =>
   Option.getOrUndefined(Schema.decodeUnknownOption(EnvelopeFromText)(raw));
 
-/** A cause as one log line: the failure's own words when it has any. */
-const describeCause = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
-
 const toolOf = (envelope: Envelope | undefined): string | undefined =>
   envelope?.invocation?.path ?? envelope?.invocation?.tool;
 
@@ -387,7 +386,7 @@ const artifactOf = (
   if (input === undefined) return undefined;
   return {
     label: `${tool ?? "Executor"} — what it will do`,
-    body: JSON.stringify(input, null, 2),
+    body: toPrettyJson(input),
   };
 };
 
@@ -414,8 +413,8 @@ const resumeText = (requestId: string, decision: ApprovalDecision): string => {
   const response =
     decision.content === undefined ? { action } : { action, content: decision.content };
   return [
-    `A human ${decision.action === "allow" ? "approved" : "denied"} the Executor request ${JSON.stringify(requestId)} that paused earlier.`,
-    `Call executor_resume with requestId ${JSON.stringify(requestId)} and response ${JSON.stringify(response)}.`,
+    `A human ${decision.action === "allow" ? "approved" : "denied"} the Executor request ${toJson(requestId)} that paused earlier.`,
+    `Call executor_resume with requestId ${toJson(requestId)} and response ${toJson(response)}.`,
     "Do not repeat the original call; the resume is what carries the decision out.",
   ].join(" ");
 };
@@ -440,7 +439,7 @@ export function createApprovalStore(
   options?: ApprovalStoreOptions,
 ): ApprovalStore {
   const executor: SqlExecutor = storage.sql;
-  const now = options?.now ?? Date.now;
+  const now = options?.now ?? currentTimeMillis;
   let migrated = false;
 
   // The table is created lazily, so a bot that already ran an earlier revision
@@ -497,7 +496,7 @@ export function createApprovalStore(
       approval.thread ?? null,
       approval.toolPath,
       approval.summary,
-      approval.artifact === undefined ? null : JSON.stringify(approval.artifact),
+      approval.artifact === undefined ? null : toJson(approval.artifact),
       approval.status,
       approval.requestedAt,
       approval.decidedAt ?? null,
@@ -521,6 +520,9 @@ export function createApprovalStore(
     const envelope = envelopeOf(paused.envelope);
     const tool = toolOf(envelope);
     const artifact = artifactOf(tool, envelope);
+    // The id names the approval in a URL, so it comes from the CSPRNG: Effect's
+    // `Random` is not one, and effect/Crypto ships no WebCrypto layer.
+    // oxlint-disable-next-line forge/no-ambient-nondeterminism -- unguessable id
     const approvalId = crypto.randomUUID();
     insert(
       Schema.decodeUnknownSync(ApprovalViewSchema)({
@@ -572,23 +574,16 @@ export function createApprovalStore(
     const rows = read(executor, REQUEST_STATE_SQL, requestId);
     const record = Option.getOrUndefined(Schema.decodeUnknownOption(RequestStateSchema)(rows[0]));
     if (record === undefined) return { state: "unknown" };
-    switch (record.status) {
-      case "pending":
-        return { state: "pending" };
-      case "allowed":
-      case "denied": {
-        const decision = decisionOf(record.status, record.decision);
-        const state: ApprovalState = record.status === "allowed" ? "approved" : "denied";
-        return {
-          state,
-          content: decision.content,
-          resumed: record.resumed_at !== null,
-        };
-      }
-      // An expired approval is not a decision, so nothing vouches for it.
-      case "expired":
-        return { state: "unknown" };
-    }
+    const status = record.status;
+    if (status === "pending") return { state: "pending" };
+    // An expired approval is not a decision, so nothing vouches for it.
+    if (status === "expired") return { state: "unknown" };
+    const decision = decisionOf(status, record.decision);
+    return {
+      state: status === "allowed" ? "approved" : "denied",
+      content: decision.content,
+      resumed: record.resumed_at !== null,
+    };
   };
 
   const claimResume = (requestId: string): boolean => {
@@ -620,22 +615,17 @@ export function createApprovalStore(
             requestId: record.request_id,
             session: record.session_id,
           };
-          switch (record.status) {
-            case "pending":
-              return Option.some({ ...base, kind: "pending" });
-            case "allowed":
-            case "denied":
-              return Option.some({
-                ...base,
-                kind: "decided",
-                status: record.status,
-                decidedAt: record.decided_at ?? 0,
-                decision: decisionOf(record.status, record.decision),
-                resumed: record.resumed_at !== null,
-              });
-            case "expired":
-              return Option.none();
-          }
+          const status = record.status;
+          if (status === "pending") return Option.some({ ...base, kind: "pending" });
+          if (status === "expired") return Option.none();
+          return Option.some({
+            ...base,
+            kind: "decided",
+            status,
+            decidedAt: record.decided_at ?? 0,
+            decision: decisionOf(status, record.decision),
+            resumed: record.resumed_at !== null,
+          });
         },
       ),
     );
@@ -666,7 +656,7 @@ export function createApprovalStore(
     }
     // Durable before the steer: a crash after this leaves the decision recorded
     // and the row out of `pending`, a crash before it leaves the approval alone.
-    write(executor, DECIDE_SQL, status, at, JSON.stringify(decision), approvalId);
+    write(executor, DECIDE_SQL, status, at, toJson(decision), approvalId);
     await submit(
       resumeText(row.requestId, decision),
       approvalOperationId(approvalId),

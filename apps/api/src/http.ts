@@ -13,9 +13,6 @@ import * as Schema from "effect/Schema";
 /** The largest body any route reads. A chat message is the biggest by far. */
 export const MAX_BODY_BYTES = 256 * 1024;
 
-export const describeCause = (cause: unknown): string =>
-  cause instanceof Error ? cause.message : String(cause);
-
 export const jsonError = (status: number, error: string): Response =>
   Response.json({ error }, { status });
 

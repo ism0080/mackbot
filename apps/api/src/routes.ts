@@ -9,6 +9,7 @@
  */
 
 import * as Effect from "effect/Effect";
+import * as ManagedRuntime from "effect/ManagedRuntime";
 import * as Schema from "effect/Schema";
 
 import {
@@ -28,11 +29,12 @@ import type { BotConfig } from "./bots.ts";
 import { readChatRequest } from "./chat-request.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import type { Env } from "./env.ts";
-import { describeCause, invalidBody, jsonError, readJsonBody } from "./http.ts";
+import { describeCause } from "./errors.ts";
+import { invalidBody, jsonError, readJsonBody } from "./http.ts";
 import { PiIdSchema } from "./ids.ts";
 import { httpOperationId } from "./operation.ts";
 import type { RegistryWrite } from "./registry-store.ts";
-import { makeManagedRuntime, type ManagedRuntime } from "./runtime.ts";
+
 import { BotRegistryService } from "./services/bot-registry.ts";
 
 /** One request to a route under a declared bot. */
@@ -52,12 +54,15 @@ export interface BotScoped {
  * rather than on every request; the map is weak so a replaced environment
  * takes its runtime with it.
  */
-const registryRuntimes = new WeakMap<Env, ManagedRuntime<BotRegistryService>>();
+const registryRuntimes = new WeakMap<
+  Env,
+  ManagedRuntime.ManagedRuntime<BotRegistryService, never>
+>();
 
-const registryRuntime = (env: Env): ManagedRuntime<BotRegistryService> => {
+const registryRuntime = (env: Env): ManagedRuntime.ManagedRuntime<BotRegistryService, never> => {
   const existing = registryRuntimes.get(env);
   if (existing !== undefined) return existing;
-  const created = makeManagedRuntime(BotRegistryService.layerFor(env));
+  const created = ManagedRuntime.make(BotRegistryService.layerFor(env));
   registryRuntimes.set(env, created);
   return created;
 };
@@ -107,10 +112,11 @@ export const handleChat = async ({ request, url, bot }: BotScoped): Promise<Resp
   const body = await readChatRequest(request);
   if (body === undefined) return invalidBody();
   const operationId = httpOperationId(body.operationId);
-  const receipt = await Effect.runPromise(
-    Effect.tryPromise(() =>
-      bot.submit(body.text, operationId, body.whenBusy ?? "followUp", body.thread),
-    ),
+  const receipt = await bot.submit(
+    body.text,
+    operationId,
+    body.whenBusy ?? "followUp",
+    body.thread,
   );
   // `wait=false` returns here; to fetch the result later, POST the same
   // operationId again (admission is at-most-once) and let it long-poll.
@@ -120,9 +126,7 @@ export const handleChat = async ({ request, url, bot }: BotScoped): Promise<Resp
       { status: 202 },
     );
   }
-  const result = await Effect.runPromise(
-    Effect.tryPromise(() => bot.wait(operationId, LONG_POLL_TIMEOUT_MS, receipt.session)),
-  );
+  const result = await bot.wait(operationId, LONG_POLL_TIMEOUT_MS, receipt.session);
   if (result.status === "timeout") {
     return Response.json(
       { operationId, accepted: receipt.accepted, status: result.status },
@@ -147,7 +151,7 @@ export const handleTranscript = async ({ url, bot }: BotScoped): Promise<Respons
     ),
   );
   if (query === undefined) return jsonError(400, "invalid query");
-  const page = await Effect.runPromise(Effect.tryPromise(() => bot.transcript(query)));
+  const page = await bot.transcript(query);
   return Response.json(page);
 };
 
@@ -159,12 +163,13 @@ export const handleApproval = async ({ request, bot, path }: BotScoped): Promise
   const decision = await readJsonBody(request, ApprovalDecisionSchema);
   if (decision === undefined) return invalidBody();
   const approvalId = path[2]!;
-  const decided = await Effect.runPromise(
-    Effect.tryPromise(() => bot.decide(approvalId, decision)),
-  );
+  const decided = await bot.decide(approvalId, decision);
   if (decided === undefined) {
-    // Already decided, unknown, or not resumable: the human's decision must not
-    // be replayed into a second resume.
+    // Repeating the decision an approval already has succeeds (it re-sends a
+    // steer that may have been lost, unless a resume already ran). Only a
+    // decision that would overturn the recorded one, or an approval that is
+    // unknown, expired or not resumable, lands here: the human's answer must
+    // not be replaced by a second one.
     return jsonError(409, "no pending approval");
   }
   return Response.json(decided);
@@ -177,7 +182,7 @@ export const handleApproval = async ({ request, bot, path }: BotScoped): Promise
 export const handleAbort = async ({ request, bot }: BotScoped): Promise<Response> => {
   const body = await readJsonBody(request, AbortBodySchema, EMPTY_OBJECT);
   if (body === undefined) return invalidBody();
-  const result = await Effect.runPromise(Effect.tryPromise(() => bot.abort(body.session)));
+  const result = await bot.abort(body.session);
   return Response.json(result);
 };
 
@@ -189,7 +194,7 @@ export const handleAbort = async ({ request, bot }: BotScoped): Promise<Response
 export const handleRetry = async ({ request, bot }: BotScoped): Promise<Response> => {
   const body = await readJsonBody(request, RetryBodySchema);
   if (body === undefined) return invalidBody();
-  const result = await Effect.runPromise(Effect.tryPromise(() => bot.retry(body.taskId)));
+  const result = await bot.retry(body.taskId);
   return Response.json(result);
 };
 
@@ -202,9 +207,7 @@ export const handleRetry = async ({ request, bot }: BotScoped): Promise<Response
 export const handleCompact = async ({ request, bot }: BotScoped): Promise<Response> => {
   const body = await readJsonBody(request, CompactBodySchema, EMPTY_OBJECT);
   if (body === undefined) return invalidBody();
-  const result = await Effect.runPromise(
-    Effect.tryPromise(() => bot.compact(body.session, body.instructions)),
-  );
+  const result = await bot.compact(body.session, body.instructions);
   return Response.json(result);
 };
 
@@ -216,8 +219,14 @@ interface BotStatusResult {
 
 export const handleStatus = async (env: Env): Promise<Response> => {
   const bots = await readRoster(env);
-  const statusFor = (id: string): Effect.Effect<BotStatusResult> =>
-    Effect.tryPromise(() => env.Bot.getByName(id).status()).pipe(
+  // The roster already holds every bot's configuration, so each bot is handed
+  // its own rather than asking the registry again: one registry read per
+  // /status, not one per bot.
+  const statusFor = ([id, config]: readonly [string, BotConfig]): Effect.Effect<BotStatusResult> =>
+    Effect.tryPromise({
+      try: () => env.Bot.getByName(id).status(config),
+      catch: (cause) => cause,
+    }).pipe(
       Effect.map((status): BotStatusResult => ({ id, status })),
       Effect.catch((cause): Effect.Effect<BotStatusResult> => {
         // Log the real cause; return a generic message so internal error
@@ -227,7 +236,7 @@ export const handleStatus = async (env: Env): Promise<Response> => {
       }),
     );
   const results = await Effect.runPromise(
-    Effect.all(Object.keys(bots).map(statusFor), { concurrency: "unbounded" }),
+    Effect.all(Object.entries(bots).map(statusFor), { concurrency: "unbounded" }),
   );
   const statuses: Record<string, BotView> = {};
   const errors: Record<string, string> = {};

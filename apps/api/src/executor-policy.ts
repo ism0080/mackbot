@@ -39,9 +39,13 @@ import type {
   Wrap,
 } from "@earendil-works/pi-durable";
 import type { ApprovalDecision } from "@mackbot/contract";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
+
+import { toJson } from "./json.ts";
 
 /** The tool that carries a human's answer back to Executor. */
 const RESUME_TOOL = "executor_resume";
@@ -175,7 +179,7 @@ const statusOf = (answer: ApprovalState | ApprovalStatus): ApprovalStatus =>
 
 /** How a requestId reads in a refusal, whatever shape the model sent. */
 const requestIdText = (requestId: JsonValue | undefined): string =>
-  requestId === undefined ? "(missing)" : JSON.stringify(requestId);
+  requestId === undefined ? "(missing)" : toJson(requestId);
 
 /**
  * The refusal itself. It names the requestId, so the model can tell which
@@ -287,14 +291,24 @@ export const createExecutorPolicy = (options: ExecutorPolicyOptions): Extension 
     tool: name,
     wrap: (tool: ToolRegistration): ToolRegistration => ({
       ...tool,
-      execute: async (args, api, context) => {
-        const start = Date.now();
-        try {
-          return await tool.execute(args, api, context);
-        } finally {
-          options.onCall({ name, durationMs: Date.now() - start });
-        }
-      },
+      execute: (args, api, context) =>
+        Effect.runPromise(
+          Effect.gen(function* () {
+            const start = yield* Clock.currentTimeMillis;
+            // The tool's own rejection passes through as it is: the caller sees
+            // the failure the tool raised, not a wrapper around it.
+            return yield* Effect.tryPromise({
+              try: () => tool.execute(args, api, context),
+              catch: (cause) => cause,
+            }).pipe(
+              Effect.ensuring(
+                Effect.flatMap(Clock.currentTimeMillis, (end) =>
+                  Effect.sync(() => options.onCall({ name, durationMs: end - start })),
+                ),
+              ),
+            );
+          }),
+        ),
     }),
   });
 

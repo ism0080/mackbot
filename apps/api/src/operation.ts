@@ -21,6 +21,9 @@ const CRON_PREFIX = OPERATION_PREFIXES.cron;
 const DELEGATE_PREFIX = OPERATION_PREFIXES.delegate;
 
 export const httpOperationId = (supplied: string | undefined): string => {
+  // A fresh id must not collide with another client's, so it comes from the
+  // CSPRNG: Effect's `Random` is not one, and effect/Crypto ships no WebCrypto layer.
+  // oxlint-disable-next-line forge/no-ambient-nondeterminism -- collision-free id
   if (supplied === undefined) return `${HTTP_PREFIX}${crypto.randomUUID()}`;
   return supplied.startsWith(HTTP_PREFIX) ? supplied : `${HTTP_PREFIX}${supplied}`;
 };

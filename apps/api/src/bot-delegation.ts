@@ -88,6 +88,7 @@ import { createDelegationPolicy } from "./services/delegation.ts";
 import { REGISTRY_NAME } from "./services/bot-registry.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { describeCause } from "./errors.ts";
+import { toPrettyJson } from "./json.ts";
 import { maybeApprovalNotice } from "./executor-mcp.ts";
 import type { Env, WaitResult } from "./index.ts";
 import * as Effect from "effect/Effect";
@@ -199,7 +200,7 @@ const attempt = <A>(call: () => Promise<A>): Effect.Effect<A, Error> =>
   });
 
 /** The text a settled wait carries, or its receipt as JSON. */
-const textOf = (result: WaitResult): string => result.text ?? JSON.stringify(result, null, 2);
+const textOf = (result: WaitResult): string => result.text ?? toPrettyJson(result);
 
 /** An answer with the approval link the target surfaced, when it surfaced one. */
 const withApprovalNotice = (text: string): string => {

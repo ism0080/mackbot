@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 
+import type { BotConfig } from "../src/bots.ts";
 import type { Env } from "../src/env.ts";
 import { API_CONTENT_SECURITY_POLICY } from "../src/http.ts";
 import { handleFetch } from "../src/router.ts";
@@ -11,15 +12,30 @@ const ROSTER = { hermes: { model: "deepseek-v4-pro", systemPrompt: "You are a te
 interface Recorded {
   readonly compacts: unknown[][];
   readonly retries: string[];
+  /** The configuration each bot's status was handed, by bot id. */
+  readonly statuses: Record<string, BotConfig | undefined>;
+  rosterReads: number;
 }
 
 /** The bindings the router reaches, with the Durable Objects played by plain objects. */
-const fakeEnv = (recorded: Recorded): Env => {
+const fakeEnv = (recorded: Recorded, registry: "up" | "down" = "up"): Env => {
   const env = {
     CHAT_BEARER_TOKEN: TOKEN,
-    Registry: { getByName: () => ({ roster: async () => ROSTER }) },
+    Registry: {
+      getByName: () => ({
+        roster: async () => {
+          recorded.rosterReads += 1;
+          if (registry === "down") throw new Error("registry isolate is gone");
+          return ROSTER;
+        },
+      }),
+    },
     Bot: {
       getByName: (name: string) => ({
+        status: async (config?: BotConfig) => {
+          recorded.statuses[name] = config;
+          return { id: name };
+        },
         compact: async (...args: unknown[]) => {
           recorded.compacts.push(args);
           return { bot: name, taskId: "7" };
@@ -33,10 +49,11 @@ const fakeEnv = (recorded: Recorded): Env => {
     ASSETS: { fetch: async () => new Response("<!doctype html>", { status: 200 }) },
   };
   // SAFETY: the test drives only the routes these stand-ins answer.
+  // oxlint-disable-next-line forge/no-chained-type-assertions -- a partial test double of the Worker's bindings
   return env as unknown as Env;
 };
 
-const record = (): Recorded => ({ compacts: [], retries: [] });
+const record = (): Recorded => ({ compacts: [], retries: [], statuses: {}, rosterReads: 0 });
 
 const post = (path: string, body: string): Request =>
   new Request(`${ORIGIN}${path}`, {
@@ -122,5 +139,30 @@ describe("security headers", () => {
     const response = await handleFetch(request, fakeEnv(record()));
     expect(await response.text()).toBe("<!doctype html>");
     expect(response.headers.get("Content-Security-Policy")).toBeNull();
+  });
+});
+
+describe("the registry", () => {
+  const get = (path: string): Request =>
+    new Request(`${ORIGIN}${path}`, { headers: { Authorization: `Bearer ${TOKEN}` } });
+
+  test("a registry that does not answer is a 503, not a 500", async () => {
+    const response = await handleFetch(get("/bots"), fakeEnv(record(), "down"));
+    expect(response.status).toBe(503);
+    expect(await response.json()).toEqual({ error: "registry unavailable" });
+    expectSecured(response);
+  });
+
+  test("a bot-scoped route behind a registry that does not answer is a 503", async () => {
+    const response = await handleFetch(post("/compact/hermes", "{}"), fakeEnv(record(), "down"));
+    expect(response.status).toBe(503);
+  });
+
+  test("/status reads the roster once and hands each bot its own configuration", async () => {
+    const recorded = record();
+    const response = await handleFetch(get("/status"), fakeEnv(recorded));
+    expect(response.status).toBe(200);
+    expect(recorded.rosterReads).toBe(1);
+    expect(recorded.statuses).toEqual({ hermes: ROSTER.hermes });
   });
 });

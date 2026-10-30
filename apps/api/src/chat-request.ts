@@ -18,6 +18,8 @@ import * as Schema from "effect/Schema";
 
 import { trimmedNonEmpty } from "@mackbot/contract";
 
+import { webCrypto } from "./errors.ts";
+import type { WebCryptoFailure } from "./errors.ts";
 import { readJsonBody } from "./http.ts";
 
 export { MAX_BODY_BYTES } from "./http.ts";
@@ -47,8 +49,8 @@ const ChatRequestBodySchema = Schema.Struct({
 const BEARER_PATTERN = /^Bearer\s+(.+)$/iu;
 const encoder = new TextEncoder();
 
-const digest = (value: string): Effect.Effect<ArrayBuffer> =>
-  Effect.promise(() => crypto.subtle.digest("SHA-256", encoder.encode(value)));
+const digest = (value: string): Effect.Effect<ArrayBuffer, WebCryptoFailure> =>
+  webCrypto("digest", () => crypto.subtle.digest("SHA-256", encoder.encode(value)));
 
 /**
  * Compare two equal-length digests in constant time. Workers provide
@@ -73,12 +75,18 @@ const digestsEqual = (a: ArrayBuffer, b: ArrayBuffer): boolean => {
  * Whether `presented` is `expected`. Both are hashed first, so the comparison
  * always runs over 32 bytes and takes the same time whatever either length is.
  */
-export const tokensMatch = (presented: string, expected: string): Effect.Effect<boolean> =>
+export const tokensMatch = (
+  presented: string,
+  expected: string,
+): Effect.Effect<boolean, WebCryptoFailure> =>
   Effect.all([digest(presented), digest(expected)]).pipe(
     Effect.map(([a, b]) => digestsEqual(a, b)),
   );
 
-export const bearerMatches = (request: Request, expected: string): Effect.Effect<boolean> => {
+export const bearerMatches = (
+  request: Request,
+  expected: string,
+): Effect.Effect<boolean, WebCryptoFailure> => {
   const header = request.headers.get("Authorization");
   const token = header === null ? undefined : BEARER_PATTERN.exec(header)?.[1];
   return token === undefined ? Effect.succeed(false) : tokensMatch(token, expected);

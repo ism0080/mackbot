@@ -129,7 +129,7 @@ export const createRegistryStore = (storage: RegistryStorage): RegistryStore => 
     read: () => Effect.runPromise(readAll()),
     write: async (id: string, bot: BotConfig) => {
       ensureMigrated();
-      writeRow(executor, UPSERT_SQL, id, JSON.stringify(bot));
+      writeRow(executor, UPSERT_SQL, id, Schema.encodeSync(SpecSchema)(bot));
     },
   };
 };

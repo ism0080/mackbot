@@ -11,7 +11,8 @@ import * as Effect from "effect/Effect";
 
 import { handleLogin, handleLogout, LOGIN_GUARD_NAME } from "./auth.ts";
 import type { Env } from "./env.ts";
-import { describeCause, jsonError, methodNotAllowed, secured, unknownBot } from "./http.ts";
+import { describeCause } from "./errors.ts";
+import { jsonError, methodNotAllowed, secured, unknownBot } from "./http.ts";
 import { cronOperationId } from "./operation.ts";
 import {
   handleAbort,
@@ -29,6 +30,7 @@ import {
   readRoster,
 } from "./routes.ts";
 import type { BotScoped } from "./routes.ts";
+import { RegistryUnavailable } from "./services/bot-registry.ts";
 import { authenticate, csrfAllows } from "./session.ts";
 
 /** A route under one bot: its path, the one method it answers, and its handler. */
@@ -171,30 +173,49 @@ export const handleFetch = (request: Request, env: Env): Promise<Response> =>
         Effect.sync(() => {
           // Never leak a stack or internal detail: log the cause, return JSON.
           console.error(`mackbot: request failed: ${describeCause(cause)}`);
-          return secured(jsonError(500, "internal error"));
+          // The roster could not be read: the registry is down, not the
+          // request wrong, so the client is told to come back rather than
+          // that the Worker broke.
+          return cause instanceof RegistryUnavailable
+            ? secured(jsonError(503, "registry unavailable"))
+            : secured(jsonError(500, "internal error"));
         }),
       ),
     ),
   );
 
+/**
+ * One bot's share of a scheduled run, its failure logged under `what` rather
+ * than failing the rest: one failing bot must not stop the others.
+ */
+const perBot = <A>(id: string, what: string, call: () => Promise<A>): Effect.Effect<void> =>
+  Effect.tryPromise({ try: call, catch: (cause) => cause }).pipe(
+    Effect.match({
+      onSuccess: () => undefined,
+      onFailure: (cause) => {
+        console.error(`mackbot: ${what} for "${id}" failed: ${describeCause(cause)}`);
+      },
+    }),
+  );
+
+/**
+ * The cron: every bot that declares a brief is sent it, and every bot drops
+ * the audit rows, failures and settled approvals past their retention.
+ */
 export const handleScheduled = async (controller: ScheduledController, env: Env): Promise<void> => {
   const scheduledTime = controller.scheduledTime;
   const bots = await readRoster(env);
-  const admissions: Effect.Effect<void>[] = [];
+  const work: Effect.Effect<void>[] = [];
   for (const [id, bot] of Object.entries(bots)) {
+    const stub = env.Bot.getByName(id);
+    work.push(perBot(id, "retention prune", () => stub.prune()));
     const brief = bot.brief;
     if (brief === undefined) continue;
-    admissions.push(
-      Effect.tryPromise(() =>
-        env.Bot.getByName(id).submit(brief, cronOperationId(id, scheduledTime), "followUp"),
-      ).pipe(
-        // One failing bot must not stop the others' briefs.
-        Effect.catch((cause) => {
-          console.error(`mackbot: cron brief for "${id}" failed: ${describeCause(cause)}`);
-          return Effect.void;
-        }),
+    work.push(
+      perBot(id, "cron brief", () =>
+        stub.submit(brief, cronOperationId(id, scheduledTime), "followUp"),
       ),
     );
   }
-  await Effect.runPromise(Effect.all(admissions, { concurrency: "unbounded" }));
+  await Effect.runPromise(Effect.all(work, { concurrency: "unbounded" }));
 };

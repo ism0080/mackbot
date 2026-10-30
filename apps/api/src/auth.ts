@@ -8,6 +8,7 @@
  * that is locked out learns nothing from another guess.
  */
 
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -81,7 +82,9 @@ export const handleLogin = async (
     return loginPage("rejected", 401);
   }
   await guard.clearLoginFailures(client);
-  const value = await Effect.runPromise(issueSession(token, Date.now()));
+  const value = await Effect.runPromise(
+    Effect.flatMap(Clock.currentTimeMillis, (now) => issueSession(token, now)),
+  );
   return secured(
     new Response(null, {
       status: 303,

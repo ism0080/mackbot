@@ -25,6 +25,7 @@ import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { BotConfigSchema, BotViewSchema, TranscriptPageSchema } from "@mackbot/contract";
 import type { BotConfig } from "@mackbot/contract";
 import * as Http from "./support/http.ts";
+import { issueSession, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "../src/session.ts";
 import Stack from "../alchemy.run.ts";
 
 const { test, beforeAll, afterAll, deploy, destroy } = Test.make({
@@ -140,15 +141,33 @@ test(
   "a tampered or expired session cookie is refused",
   Effect.gen(function* () {
     const { url } = yield* site;
-    const now = Math.floor(Date.now() / 1000);
-    const signature = "a".repeat(43);
-    const expired = `mackbot_session=v1.${now - 60}.${signature}`;
-    const tampered = `mackbot_session=v1.${now + 600}.${signature}`;
+    const token = Http.token();
+    // Both cookies are in the current format and genuinely signed with the
+    // Worker's key, so the refusals below are the signature and the expiry
+    // speaking, not a format the Worker no longer reads.
+    const expiredValue = yield* issueSession(
+      token,
+      Date.now() - (SESSION_MAX_AGE_SECONDS + 60) * 1000,
+    );
+    const freshValue = yield* issueSession(token, Date.now());
+    const [version, expires, signature] = freshValue.split(".");
+    const tamperedValue = `${version}.${Number(expires) + 600}.${signature}`;
 
-    const expiredResponse = yield* Http.get(`${url}/status`, { cookie: expired });
+    // The untouched cookie is accepted, so the refusals below cannot be a
+    // signing key the test and the Worker disagree on.
+    const freshResponse = yield* Http.get(`${url}/status`, {
+      cookie: `${SESSION_COOKIE}=${freshValue}`,
+    });
+    expect(freshResponse.status).toBe(200);
+
+    const expiredResponse = yield* Http.get(`${url}/status`, {
+      cookie: `${SESSION_COOKIE}=${expiredValue}`,
+    });
     expect(expiredResponse.status).toBe(401);
 
-    const tamperedResponse = yield* Http.get(`${url}/status`, { cookie: tampered });
+    const tamperedResponse = yield* Http.get(`${url}/status`, {
+      cookie: `${SESSION_COOKIE}=${tamperedValue}`,
+    });
     expect(tamperedResponse.status).toBe(401);
   }),
 );
