@@ -98,7 +98,20 @@ gets `401` JSON, while an unauthenticated navigation is redirected to `/login`.
   `X-Mackbot-CSRF` proof, so a cross-site page cannot sign the user out.
 - `POST /chat/:bot` — submit text to a bot. Returns the answer, or `202` with an
   `operationId` when the wait times out or `wait=0` (resubmit the same
-  `operationId` to keep waiting; admission is at-most-once).
+  `operationId` to keep waiting; admission is at-most-once). An optional
+  `thread` names the conversation: absent is the bot's main conversation, and
+  a thread id the bot has not seen starts a new one, titled by its first line.
+- `GET /threads/:bot?include=archived` — the bot's conversations: the main one
+  first (no `thread`), then every thread, the most recently active first. Each
+  carries its `session` (what `/abort` and `/compact` take), a `title`,
+  `createdAt` and `lastActivityAt` when recorded, `archived`, `busy`, and its
+  count of pending approvals. Archived threads are left out unless
+  `include=archived` asks for them.
+- `POST /threads/:bot/:thread` — archive, restore or rename a thread. The body
+  is `{"archived": true | false, "title": "..."}`, both optional; the answer is
+  the thread's view, or `404` for a thread that was never started. Pi Durable
+  cannot delete a conversation, so archiving only hides it from the list; its
+  transcript stays reachable by its thread id.
 - `GET /status` — one `BotView` per bot: model, thinking level, busy state,
   pending operations with their origin (`http`, `cron`, or `delegate`), pending
   approvals, the run in flight, and usage. It also reports the failures the
@@ -118,7 +131,8 @@ gets `401` JSON, while an unauthenticated navigation is redirected to `/login`.
   head.
 - `POST /approvals/:bot/:approvalId` — decide a paused call. The body is
   `{"action": "allow" | "deny"}` with an optional `content` map. The decision is
-  recorded durably and steered into the pausing session, and the harness's hook
+  recorded durably and steered into the pausing session (each approval in
+  `/status` names it as `session`), and the harness's hook
   lets only a human-decided `executor_resume` through. An approval that is
   already decided, unknown or not resumable answers `409` rather than resuming
   twice. A decision made on the phone through Hark (see Phone approvals) takes
@@ -195,9 +209,16 @@ roster editor. It polls `/status`, reads `/bots`, and follows `/events` for each
 bot with a run in flight.
 
 Navigation is URL-backed (home, `/new` for the bot picker, `/chat/:bot` for a
-transcript, `/bots` for the roster); the Worker's asset binding serves
+bot's main conversation, `/chat/:bot/:thread` for one of its threads, `/bots`
+for the roster); the Worker's asset binding serves
 `index.html` for any other path, so a deep link or a reload lands on the same
-screen. The composer posts to `POST /chat/:bot` with `wait=0`, then follows the
+screen. A transcript screen lists the bot's conversations under its header:
+the main one, every thread, a New conversation button that mints a thread id
+(the server creates the conversation with its first message), and Archive for
+the open thread. The transcript, the stream it follows, the composer's
+`thread` and the approval rows all belong to the conversation on screen, and
+the home's chat row for a bot reopens the conversation last open with it.
+The composer posts to `POST /chat/:bot` with `wait=0`, then follows the
 run through `/events` plus a short transcript poll while work is in flight.
 Tool results appear as collapsed rows - expanded by default only when the tool
 failed - rather than as raw JSON in the conversation. A bot's own message is

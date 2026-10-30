@@ -6,8 +6,12 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Durable bot registry config extension: the optional `delegatesTo` allowlist,
   with validation.
 - Delegation enforcement for the optional `delegatesTo` allowlist.
-- Optional durable thread IDs in `POST /chat/:bot`, including per-thread pi
-  session creation and SQLite mapping.
+- Multiple conversations per bot: optional durable thread IDs in
+  `POST /chat/:bot`, each with its own pi session; `GET /threads/:bot` lists
+  them with a title, timestamps, and whether each is running or waiting on an
+  approval; `POST /threads/:bot/:thread` archives or renames one; the web app
+  switches between them at `/chat/:bot/:thread`. Pi Durable cannot delete a
+  conversation, so archiving hides a thread rather than removing it.
 - Audit-log storage seam (`apps/api/src/audit-log.ts`).
 - Existing meta-tool bridge, cron briefs, approvals in model mode, and
   compaction configuration.
