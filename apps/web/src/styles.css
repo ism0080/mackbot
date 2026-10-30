@@ -248,6 +248,11 @@ button {
     background: color-mix(in oklab, var(--surface), var(--white) 4%);
   }
 
+  .thread-chip:hover {
+    color: var(--text);
+    background: var(--surface2);
+  }
+
   .ap-ref:hover {
     background: color-mix(in oklab, var(--warn-soft), var(--white) 4%);
   }
@@ -257,6 +262,7 @@ button {
    its own press feedback. */
 .btn:active,
 .chip:active,
+.thread-chip:active,
 .doneitem:active,
 .chatitem:active,
 .icon:active {
@@ -266,6 +272,7 @@ button {
 @media (prefers-reduced-motion: no-preference) {
   .btn,
   .chip,
+  .thread-chip,
   .doneitem,
   .chatitem,
   .icon {
@@ -370,6 +377,74 @@ button {
   content: "";
   position: absolute;
   inset: min(0px, (100% - 44px) / 2);
+}
+
+/* ---------- conversations bar ---------- */
+
+/* A bot's conversations sit under its header as one scrolling row, so a long
+   list costs a swipe rather than the transcript's height. The open one is
+   filled; the others are outlined, and each says its state in words. */
+.threads {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-block: 8px;
+  padding-inline: var(--gutter);
+  border-block-end: 1px solid var(--line);
+  background: var(--bg-deep);
+}
+
+.thread-list {
+  flex: 1;
+  display: flex;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.thread-item {
+  flex: none;
+}
+
+.thread-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-inline-size: 16rem;
+  min-block-size: 32px;
+  padding-block: 4px;
+  padding-inline: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  font-size: var(--step--1);
+  color: var(--text-soft);
+}
+
+.thread-chip.current {
+  color: var(--accent-ink);
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.thread-title {
+  overflow: clip;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-actions {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.thread-actions .btn {
+  padding-block: 10px;
+  font-size: var(--step--1);
 }
 
 /* ---------- scroll region ---------- */
@@ -657,10 +732,14 @@ button {
 
 @keyframes shimmer {
   from {
-    background-position: 180% 0, 0 0;
+    background-position:
+      180% 0,
+      0 0;
   }
   to {
-    background-position: -180% 0, 0 0;
+    background-position:
+      -180% 0,
+      0 0;
   }
 }
 

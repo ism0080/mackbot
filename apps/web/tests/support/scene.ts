@@ -19,6 +19,7 @@ import { FIXTURE_NOW, modelWith } from "./fixtures.ts";
 /** A channel with nothing asked for and nothing known yet. */
 export const idleChannel = (overrides: Partial<Channel> = {}): Channel => ({
   status: AsyncData.Idle(),
+  threads: AsyncData.Idle(),
   transcript: AsyncData.Idle(),
   stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0, failures: 0 },
   frames: [],

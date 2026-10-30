@@ -9,7 +9,7 @@ import type {
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 
-import { pageOf, statusOf } from "./channel.ts";
+import { currentThreadOf, pageOf, statusOf } from "./channel.ts";
 import { clockOf, elapsedOf, plainOf, wordsOf } from "./format.ts";
 import { botName } from "./partials.ts";
 import type { Channel, Model } from "./model.ts";
@@ -33,6 +33,10 @@ export interface Recent {
  *  including one that is idle and finished. */
 export interface Chat {
   readonly bot: string;
+  /** The title of the thread the row previews, when it is not the bot's main
+   *  conversation: the conversation last open with a bot is the one its row
+   *  shows and opens. */
+  readonly title?: string;
   readonly preview: string;
   readonly stamp: string;
   readonly busy: boolean;
@@ -183,8 +187,13 @@ export const selectChats = (model: Model): readonly Chat[] =>
         onNone: () => false,
         onSome: (view) => view.busy,
       });
+      const title =
+        channel.thread === undefined
+          ? undefined
+          : (currentThreadOf(channel)?.title ?? "New conversation");
       return {
         bot,
+        ...(title === undefined ? {} : { title }),
         preview: AsyncData.hasError(channel.transcript)
           ? "Couldn't load this thread"
           : (previewOf(entries) ?? "No messages yet"),

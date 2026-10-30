@@ -6,7 +6,7 @@
  * reconnect policy — the cursor, the generation, the retry budget — lives in
  * the Model where a test can read it.
  */
-import type { BotView, Frame } from "@mackbot/contract";
+import type { BotView, Frame, StreamStatusView } from "@mackbot/contract";
 import { modifyFields } from "foldkit/struct";
 
 import { mergeEntriesInto, modifyStatus, prunePending } from "./channel.ts";
@@ -104,13 +104,17 @@ export const reconnect = (channel: Channel): Channel => {
 };
 
 /**
- * The stream the status names. A new generation is a new stream that starts
- * at zero: carrying the previous stream's cursor over would ask it to resume
- * past its own head, and carrying a closed phase over would keep the next run
- * from ever streaming at all. So a rotation starts the descriptor afresh.
+ * The stream the status names for the conversation on screen. A new
+ * generation is a new stream that starts at zero: carrying the previous
+ * stream's cursor over would ask it to resume past its own head, and carrying
+ * a closed phase over would keep the next run from ever streaming at all. So a
+ * rotation starts the descriptor afresh.
  */
-export const followStatus = (stream: StreamState, view: BotView | undefined): StreamState => {
-  const generation = view?.activeStream?.generation;
+export const followStatus = (
+  stream: StreamState,
+  followed: StreamStatusView | undefined,
+): StreamState => {
+  const generation = followed?.generation;
   if (generation === undefined || generation === stream.generation) return stream;
   return { phase: "idle", generation, lastSeq: 0, attempt: 0, failures: 0 };
 };

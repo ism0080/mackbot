@@ -5,22 +5,26 @@ import { modifyFields } from "foldkit/struct";
 
 import { decideApproval, markApproval, revertApproval } from "./approval-fold.ts";
 import {
+  ArchiveThread,
   Chat,
   CreateBot,
   DecideApproval,
   RetryTask,
   SaveBot,
   SignOut,
+  StartThread,
   StopBot,
   Transcript,
 } from "./api.ts";
 import {
   channelOf,
+  conversationStreamOf,
   emptyChannel,
   lookup,
   mergePage,
   newestEntryIdOf,
   prunePending,
+  threadField,
   withChannel,
 } from "./channel.ts";
 import { dataOf } from "./data.ts";
@@ -37,7 +41,13 @@ import { Message } from "./message.ts";
 import { botName } from "./partials.ts";
 import { EMPTY_DRAFT, Screen } from "./model.ts";
 import type { Channel, Model } from "./model.ts";
-import { enterScreen, requestStatus, requestTranscript, settleStatus } from "./request-fold.ts";
+import {
+  enterScreen,
+  requestStatus,
+  requestThreads,
+  requestTranscript,
+  settleStatus,
+} from "./request-fold.ts";
 import {
   botsOf,
   catalogOf,
@@ -66,6 +76,20 @@ const navigate =
     commands: [Navigate({ path: pathOf(screen) })],
   });
 
+/** Move to a screen and ask for what it shows, the way a click on a link does. */
+const open =
+  (screen: Model["screen"]): Step =>
+  (model) =>
+    Update.combine(model, [navigate(screen), enterScreen(screen)]);
+
+/** One of a bot's conversations, as the screen that shows it. */
+const conversationScreen = (bot: string, thread: string | undefined): Model["screen"] =>
+  Screen.Transcript({ bot, ...threadField(thread) });
+
+/** Whether `thread` is the conversation the bot's channel shows. */
+const isShown = (model: Model, bot: string, thread: string | undefined): boolean =>
+  channelOf(model, bot)?.thread === thread;
+
 export const update = (model: Model, message: Message) =>
   Message.match<Update.Return<Model, Message>>(message, {
     PolledStatus: () => (model.polling ? { model } : requestStatus(model)),
@@ -76,9 +100,12 @@ export const update = (model: Model, message: Message) =>
         modifyFields(model, { visible: () => visible }),
         visible ? [requestStatus] : [],
       ),
-    FrameReceived: ({ bot, frame, seq }) => ({
-      model: withChannel(model, bot, (channel) => applyFrame(channel, frame, seq)),
-    }),
+    FrameReceived: ({ bot, stream, frame, seq }) =>
+      // A frame from a stream the channel no longer follows was in flight when
+      // the person left that conversation; it is not this one's.
+      stream !== undefined && conversationStreamOf(channelOf(model, bot))?.stream !== stream
+        ? { model }
+        : { model: withChannel(model, bot, (channel) => applyFrame(channel, frame, seq)) },
     StreamUpToDate: ({ bot }) => ({
       model: withChannel(model, bot, (channel) => setStreamPhase(channel, "live")),
     }),
@@ -146,37 +173,90 @@ export const update = (model: Model, message: Message) =>
             pending: (pending) => [...pending, { text, after: newestEntryIdOf(current) }],
           }),
         ),
-        commands: [Chat({ bot, text })],
+        commands: [Chat({ bot, text, ...threadField(channel.thread) })],
       };
     },
-    ChatSent: ({ bot }) =>
+    ChatSent: ({ bot, thread }) =>
       // The admission opens a run, so the status names the new stream and the
-      // transcript picks up the user entry the server just recorded.
-      Update.combine(
-        withChannel(model, bot, (channel) => modifyFields(channel, { sending: () => false })),
-        [requestStatus, requestTranscript(bot)],
-      ),
-    ChatFailed: ({ bot, error }) =>
+      // transcript picks up the user entry the server just recorded. A send to
+      // a thread may have just created it, so the conversation list is read
+      // again too; a send to a conversation the person has since left only
+      // changes the status.
+      isShown(model, bot, thread)
+        ? Update.combine(
+            withChannel(model, bot, (channel) => modifyFields(channel, { sending: () => false })),
+            [
+              requestStatus,
+              requestTranscript(bot),
+              ...(thread === undefined ? [] : [requestThreads(bot)]),
+            ],
+          )
+        : Update.combine(model, [requestStatus, requestThreads(bot)]),
+    ChatFailed: ({ bot, thread, error }) =>
       withToast(
-        withChannel(model, bot, (channel) => {
-          const failed = channel.pending[channel.pending.length - 1];
-          return modifyFields(channel, {
-            sending: () => false,
-            pending: (pending) => pending.slice(0, -1),
-            // Put the message back where the person can retry it rather than
-            // losing it to a failed request.
-            draft: (draft) => (draft.length === 0 && failed !== undefined ? failed.text : draft),
-          });
-        }),
+        isShown(model, bot, thread)
+          ? withChannel(model, bot, (channel) => {
+              const failed = channel.pending[channel.pending.length - 1];
+              return modifyFields(channel, {
+                sending: () => false,
+                pending: (pending) => pending.slice(0, -1),
+                // Put the message back where the person can retry it rather than
+                // losing it to a failed request.
+                draft: (draft) =>
+                  draft.length === 0 && failed !== undefined ? failed.text : draft,
+              });
+            })
+          : model,
         "Error",
-        `Couldn't reach ${botName(bot)} (${error}). Your message is still here.`,
+        isShown(model, bot, thread)
+          ? `Couldn't reach ${botName(bot)} (${error}). Your message is still here.`
+          : `Couldn't reach ${botName(bot)} (${error}).`,
       ),
     ClickedOpenTranscript: ({ bot }) =>
-      // Opening a transcript the home could not load is the retry.
-      Update.combine(model, [
-        navigate(Screen.Transcript({ bot })),
-        enterScreen(Screen.Transcript({ bot })),
-      ]),
+      // Opening a transcript the home could not load is the retry. The bot's
+      // chat is the conversation last open with it, so the home's row, which
+      // previews that conversation, opens the one it shows.
+      open(conversationScreen(bot, channelOf(model, bot)?.thread))(model),
+    ClickedOpenThread: ({ bot, thread }) => open(conversationScreen(bot, thread))(model),
+    ClickedNewThread: ({ bot }) => ({ model, commands: [StartThread({ bot })] }),
+    ThreadStarted: ({ bot, thread }) => open(conversationScreen(bot, thread))(model),
+    ClickedArchiveThread: ({ bot, thread }) => ({
+      // The archive is a request, not a fact: the thread stays listed until
+      // the server says it took it out.
+      model,
+      commands: [ArchiveThread({ bot, thread })],
+    }),
+    ThreadArchived: ({ bot, thread }) => {
+      const screen = model.screen;
+      const onArchived =
+        screen._tag === "Transcript" && screen.bot === bot && screen.thread === thread;
+      return Update.combine(model, [
+        toast("Success", `Archived the conversation with ${botName(bot)}.`),
+        requestThreads(bot),
+        // An archived conversation is out of the list, so the screen that
+        // showed it moves to the main one rather than to a thread nobody lists.
+        ...(onArchived ? [open(conversationScreen(bot, undefined))] : []),
+      ]);
+    },
+    ArchiveFailed: ({ bot, error }) =>
+      withToast(
+        model,
+        "Error",
+        `Couldn't archive the conversation with ${botName(bot)} (${error}).`,
+      ),
+    ThreadsLoaded: ({ bot, threads }) => ({
+      model: withChannel(model, bot, (channel) =>
+        modifyFields(channel, { threads: () => AsyncData.succeed(threads) }),
+      ),
+    }),
+    ThreadsFailed: ({ bot, error }) => ({
+      // A list already on screen stays: only a first load becomes the error.
+      model: withChannel(model, bot, (channel) =>
+        modifyFields(channel, {
+          threads: (threads) => (dataOf(threads) === undefined ? AsyncData.fail(error) : threads),
+        }),
+      ),
+    }),
     ClickedLoadEarlier: ({ bot }) => {
       const channel = channelOf(model, bot);
       const before = channel === undefined ? undefined : dataOf(channel.transcript)?.nextBefore;
@@ -187,7 +267,7 @@ export const update = (model: Model, message: Message) =>
         model: withChannel(model, bot, (current) =>
           modifyFields(current, { loadingEarlier: () => true }),
         ),
-        commands: [Transcript({ bot, before })],
+        commands: [Transcript({ bot, ...threadField(channel.thread), before })],
       };
     },
     ToggledPanel: ({ id, isOpen }) => ({
@@ -282,14 +362,18 @@ export const update = (model: Model, message: Message) =>
       for (const id of ids) {
         const current = lookup(channels, id) ?? emptyChannel();
         const view = lookup(bots, id);
-        channels[id] = {
+        const withStatus: Channel = {
           ...current,
           status:
             view === undefined
               ? AsyncData.fail(lookup(errors, id) ?? "status unavailable")
               : AsyncData.succeed(view),
-          // The status row names the stream the client should attach to.
-          stream: followStatus(current.stream, view),
+        };
+        channels[id] = {
+          ...withStatus,
+          // The status row names the stream the client should attach to, when
+          // the run it describes is in the conversation on screen.
+          stream: followStatus(current.stream, conversationStreamOf(withStatus)),
         };
       }
       const loaded = modifyFields(model, {
@@ -310,7 +394,9 @@ export const update = (model: Model, message: Message) =>
     },
     StatusFailed: ({ error, at }) =>
       settleStatus(modifyFields(model, { roster: () => AsyncData.fail(error), now: () => at })),
-    TranscriptLoaded: ({ bot, page, before }) => {
+    TranscriptLoaded: ({ bot, thread, page, before }) => {
+      // A page for a conversation the person has since left is not this one's.
+      if (!isShown(model, bot, thread)) return { model };
       const channel = channelOf(model, bot);
       const previous = channel === undefined ? undefined : dataOf(channel.transcript);
       const merged = mergePage(previous, page, before);
@@ -329,15 +415,17 @@ export const update = (model: Model, message: Message) =>
         ),
       };
     },
-    TranscriptFailed: ({ bot, error, before }) => ({
-      model: withChannel(model, bot, (channel) => ({
-        ...channel,
-        ...(before === undefined ? { refreshing: false } : { loadingEarlier: false }),
-        // A failed page keeps the entries already rendered; only a first load,
-        // which has nothing to keep, becomes the channel's error.
-        transcript:
-          dataOf(channel.transcript) === undefined ? AsyncData.fail(error) : channel.transcript,
-      })),
+    TranscriptFailed: ({ bot, thread, error, before }) => ({
+      model: !isShown(model, bot, thread)
+        ? model
+        : withChannel(model, bot, (channel) => ({
+            ...channel,
+            ...(before === undefined ? { refreshing: false } : { loadingEarlier: false }),
+            // A failed page keeps the entries already rendered; only a first load,
+            // which has nothing to keep, becomes the channel's error.
+            transcript:
+              dataOf(channel.transcript) === undefined ? AsyncData.fail(error) : channel.transcript,
+          })),
     }),
     ClickedOpenBots: () =>
       Update.combine(model, [navigate(Screen.Bots()), enterScreen(Screen.Bots())]),

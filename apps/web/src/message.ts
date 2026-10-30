@@ -5,6 +5,7 @@ import {
   ModelCatalogSchema,
   RosterSchema,
   ThinkingLevelSchema,
+  ThreadListSchema,
   TranscriptPageSchema,
 } from "@mackbot/contract";
 import { Dialog } from "@foldkit/ui";
@@ -19,9 +20,12 @@ export const Message = defineMessageUnion({
   PolledStatus: {},
   /** One decoded SSE frame, with the sequence number of its `id:` line as the
    *  resume cursor. A frame that came without a usable id carries none, and
-   *  leaves the cursor where it was. */
+   *  leaves the cursor where it was. stream names the connection it came
+   *  from, so a frame still in flight from a conversation the person has left
+   *  is not folded into the one they opened. */
   FrameReceived: {
     bot: Schema.String,
+    stream: Schema.optional(Schema.String),
     frame: FrameSchema,
     seq: Schema.optional(Schema.Number),
   },
@@ -31,7 +35,25 @@ export const Message = defineMessageUnion({
   StreamClosed: { bot: Schema.String },
   /** The transport dropped with the stream unfinished; reconnecting is safe. */
   StreamDropped: { bot: Schema.String },
+  /** The person asked for a bot's chat: the conversation they last had open
+   *  with it, or its main one. */
   ClickedOpenTranscript: { bot: Schema.String },
+  /** The person picked one of the bot's conversations; no thread is the main
+   *  one. */
+  ClickedOpenThread: { bot: Schema.String, thread: Schema.optional(Schema.String) },
+  /** The person asked to start a new conversation with a bot. */
+  ClickedNewThread: { bot: Schema.String },
+  /** The new conversation has its id; the server learns of it with its first
+   *  message. */
+  ThreadStarted: { bot: Schema.String, thread: Schema.String },
+  /** The person asked to take a conversation out of the bot's list. */
+  ClickedArchiveThread: { bot: Schema.String, thread: Schema.String },
+  /** The server archived the conversation. */
+  ThreadArchived: { bot: Schema.String, thread: Schema.String },
+  /** The archive did not reach the server, so the conversation is still listed. */
+  ArchiveFailed: { bot: Schema.String, thread: Schema.String, error: Schema.String },
+  ThreadsLoaded: { bot: Schema.String, threads: ThreadListSchema },
+  ThreadsFailed: { bot: Schema.String, error: Schema.String },
   ClickedLoadEarlier: { bot: Schema.String },
   ClickedBack: {},
   /** The user asked for the bot picker, where a chat can be started. */
@@ -40,10 +62,19 @@ export const Message = defineMessageUnion({
   EditedChatText: { bot: Schema.String, text: Schema.String },
   /** The user sent the composer's text to a bot. */
   SubmittedChat: { bot: Schema.String },
-  /** The server admitted the message, and names the operation it recorded. */
-  ChatSent: { bot: Schema.String, operationId: Schema.String },
+  /** The server admitted the message, and names the operation it recorded.
+   *  	hread is the conversation it was sent to. */
+  ChatSent: {
+    bot: Schema.String,
+    thread: Schema.optional(Schema.String),
+    operationId: Schema.String,
+  },
   /** The message did not reach the bot, so the composer keeps its text. */
-  ChatFailed: { bot: Schema.String, error: Schema.String },
+  ChatFailed: {
+    bot: Schema.String,
+    thread: Schema.optional(Schema.String),
+    error: Schema.String,
+  },
   DecidedApproval: {
     bot: Schema.String,
     approvalId: Schema.String,
@@ -137,13 +168,17 @@ export const Message = defineMessageUnion({
     at: Schema.Number,
   },
   StatusFailed: { error: Schema.String, at: Schema.Number },
+  /** A transcript page landed. 	hread is the conversation it was asked for,
+   *  so a page for one the person has since left is dropped. */
   TranscriptLoaded: {
     bot: Schema.String,
+    thread: Schema.optional(Schema.String),
     page: TranscriptPageSchema,
     before: Schema.optional(Schema.Number),
   },
   TranscriptFailed: {
     bot: Schema.String,
+    thread: Schema.optional(Schema.String),
     error: Schema.String,
     before: Schema.optional(Schema.Number),
   },

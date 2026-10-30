@@ -4,7 +4,7 @@ import { Command, given, message, model, story } from "foldkit/story";
 import { fromString } from "foldkit/url";
 import { describe, expect, test } from "vitest";
 
-import { Catalog, Roster, Transcript } from "../src/api.ts";
+import { Catalog, Roster, Threads, Transcript } from "../src/api.ts";
 import { init } from "../src/main.ts";
 import { Message } from "../src/message.ts";
 import { Screen } from "../src/model.ts";
@@ -58,7 +58,11 @@ describe("UrlChanged", () => {
       update,
       given(modelWith()),
       message(Message.UrlChanged({ pathname: "/chat/scribe" })),
-      Command.expectExact(Transcript({ bot: "scribe" })),
+      Command.expectExact(Transcript({ bot: "scribe" }), Threads({ bot: "scribe" })),
+      Command.resolve(
+        Threads({ bot: "scribe" }),
+        Message.ThreadsLoaded({ bot: "scribe", threads: { bot: "scribe", threads: [] } }),
+      ),
       model((m) => {
         expect(m.screen).toEqual(Screen.Transcript({ bot: "scribe" }));
       }),
@@ -75,6 +79,7 @@ describe("UrlChanged", () => {
       channels: {
         hermes: botChannel("hermes", {
           transcript: AsyncData.succeed(transcriptOf()),
+          threads: AsyncData.succeed({ bot: "hermes", threads: [] }),
         }),
       },
     };
@@ -127,7 +132,11 @@ describe("UrlChanged", () => {
       Message.UrlChanged({ pathname: "/chat/hermes" }),
     ]);
 
-    expect(issued).toEqual(['Navigate {"path":"/chat/hermes"}', 'Transcript {"bot":"hermes"}']);
+    expect(issued).toEqual([
+      'Navigate {"path":"/chat/hermes"}',
+      'Transcript {"bot":"hermes"}',
+      'Threads {"bot":"hermes"}',
+    ]);
     expect(after.screen).toEqual(Screen.Transcript({ bot: "hermes" }));
   });
 
@@ -138,7 +147,7 @@ describe("UrlChanged", () => {
       Message.UrlChanged({ pathname: "/chat/hermes" }),
     ]);
 
-    expect(issued).toEqual(['Transcript {"bot":"hermes"}']);
+    expect(issued).toEqual(['Transcript {"bot":"hermes"}', 'Threads {"bot":"hermes"}']);
   });
 });
 
@@ -148,7 +157,15 @@ describe("opening a transcript", () => {
       update,
       given(modelWith()),
       message(Message.ClickedOpenTranscript({ bot: "hermes" })),
-      Command.expectExact(Navigate({ path: "/chat/hermes" }), Transcript({ bot: "hermes" })),
+      Command.expectExact(
+        Navigate({ path: "/chat/hermes" }),
+        Transcript({ bot: "hermes" }),
+        Threads({ bot: "hermes" }),
+      ),
+      Command.resolve(
+        Threads({ bot: "hermes" }),
+        Message.ThreadsLoaded({ bot: "hermes", threads: { bot: "hermes", threads: [] } }),
+      ),
       model((m) => {
         expect(m.screen).toEqual(Screen.Transcript({ bot: "hermes" }));
       }),
@@ -166,6 +183,7 @@ describe("opening a transcript", () => {
       channels: {
         hermes: botChannel("hermes", {
           transcript: AsyncData.succeed(transcriptOf()),
+          threads: AsyncData.succeed({ bot: "hermes", threads: [] }),
         }),
       },
     };
@@ -326,7 +344,15 @@ describe("in-app navigation", () => {
       update,
       given(modelWith()),
       message(Message.UrlRequested({ pathname: "/chat/scribe" })),
-      Command.expectExact(Navigate({ path: "/chat/scribe" }), Transcript({ bot: "scribe" })),
+      Command.expectExact(
+        Navigate({ path: "/chat/scribe" }),
+        Transcript({ bot: "scribe" }),
+        Threads({ bot: "scribe" }),
+      ),
+      Command.resolve(
+        Threads({ bot: "scribe" }),
+        Message.ThreadsLoaded({ bot: "scribe", threads: { bot: "scribe", threads: [] } }),
+      ),
       model((m) => {
         expect(m.screen).toEqual(Screen.Transcript({ bot: "scribe" }));
       }),

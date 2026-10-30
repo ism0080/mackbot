@@ -32,6 +32,7 @@ import {
   SignOut,
   Status,
   StopBot,
+  Threads,
   Transcript,
 } from "../src/api.ts";
 import { Message } from "../src/message.ts";
@@ -396,7 +397,15 @@ test("opening a chat the home has no page for asks for that page", () => {
       }),
     ),
     click(selector('[data-group="chats"] [data-bot="scribe"]')),
-    Command.expectExact(Navigate({ path: "/chat/scribe" }), Transcript({ bot: "scribe" })),
+    Command.expectExact(
+      Navigate({ path: "/chat/scribe" }),
+      Transcript({ bot: "scribe" }),
+      Threads({ bot: "scribe" }),
+    ),
+    Command.resolve(
+      Threads,
+      Message.ThreadsLoaded({ bot: "scribe", threads: { bot: "scribe", threads: [] } }),
+    ),
     Command.resolve(
       Transcript,
       Message.TranscriptLoaded({

@@ -8,11 +8,11 @@
  * between them. Each helper is an update step, so a handler composes the reads
  * it needs with `Update.combine`.
  */
-import type { Update } from "foldkit";
+import { AsyncData, Update } from "foldkit";
 import { modifyFields } from "foldkit/struct";
 
-import { Catalog, Roster, Status, Transcript } from "./api.ts";
-import { channelOf, withChannel } from "./channel.ts";
+import { Catalog, Roster, Status, Threads, Transcript } from "./api.ts";
+import { channelOf, openConversation, threadField, withChannel } from "./channel.ts";
 import { dataOf } from "./data.ts";
 import type { Message } from "./message.ts";
 import { Screen } from "./model.ts";
@@ -39,18 +39,53 @@ export const settleStatus: Step = (model) =>
       }
     : { model: modifyFields(model, { polling: () => false }) };
 
-/** Ask for a bot's newest transcript page, unless one is already on its way. */
+/**
+ * Ask for the newest transcript page of the conversation the bot's channel
+ * shows, unless one is already on its way.
+ */
 export const requestTranscript =
   (bot: string): Step =>
-  (model) =>
-    channelOf(model, bot)?.refreshing === true
+  (model) => {
+    const channel = channelOf(model, bot);
+    return channel?.refreshing === true
       ? { model }
       : {
-          model: withChannel(model, bot, (channel) =>
-            modifyFields(channel, { refreshing: () => true }),
+          model: withChannel(model, bot, (current) =>
+            modifyFields(current, { refreshing: () => true }),
           ),
-          commands: [Transcript({ bot })],
+          commands: [Transcript({ bot, ...threadField(channel?.thread) })],
         };
+  };
+
+/** Ask for the bot's conversation list again: a send or an archive changed it. */
+export const requestThreads =
+  (bot: string): Step =>
+  (model) => ({ model, commands: [Threads({ bot })] });
+
+/** Ask for the bot's conversation list only when nothing has asked for it yet. */
+const requestMissingThreads =
+  (bot: string): Step =>
+  (model) =>
+    AsyncData.isIdle(channelOf(model, bot)?.threads ?? AsyncData.Idle())
+      ? {
+          model: withChannel(model, bot, (channel) =>
+            modifyFields(channel, { threads: () => AsyncData.Loading() }),
+          ),
+          commands: [Threads({ bot })],
+        }
+      : { model };
+
+/**
+ * Point the bot's channel at one of its conversations. The one it already
+ * shows is left as it is; any other starts afresh, so its transcript is read
+ * from the server rather than shown over the last one's.
+ */
+const openThread =
+  (bot: string, thread: string | undefined): Step =>
+  (model) =>
+    channelOf(model, bot)?.thread === thread
+      ? { model }
+      : { model: withChannel(model, bot, (channel) => openConversation(channel, thread)) };
 
 /** Ask for a transcript only when the client holds none of it yet. */
 export const requestMissingTranscript =
@@ -73,6 +108,11 @@ export const enterScreen =
     Screen.match<Update.Return<Model, Message>>(screen, {
       Home: () => ({ model }),
       NewChat: () => ({ model }),
-      Transcript: ({ bot }) => requestMissingTranscript(bot)(model),
+      Transcript: ({ bot, thread }) =>
+        Update.combine(model, [
+          openThread(bot, thread),
+          requestMissingTranscript(bot),
+          requestMissingThreads(bot),
+        ]),
       Bots: () => ({ model, commands: [Roster(), Catalog()] }),
     });

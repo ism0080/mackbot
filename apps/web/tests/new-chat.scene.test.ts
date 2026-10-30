@@ -18,7 +18,7 @@ import {
 } from "foldkit/scene";
 import { test } from "vitest";
 
-import { Catalog, Roster, Transcript } from "../src/api.ts";
+import { Catalog, Roster, Threads, Transcript } from "../src/api.ts";
 import { Message } from "../src/message.ts";
 import { Screen } from "../src/model.ts";
 import { Navigate } from "../src/route.ts";
@@ -65,8 +65,16 @@ test("choosing a bot whose thread is not loaded asks for it", () => {
       }),
     ),
     click(role("button", { name: "Chat with Hermes" })),
-    Command.expectExact(Navigate({ path: "/chat/hermes" }), Transcript({ bot: "hermes" })),
+    Command.expectExact(
+      Navigate({ path: "/chat/hermes" }),
+      Transcript({ bot: "hermes" }),
+      Threads({ bot: "hermes" }),
+    ),
     Command.resolve(Transcript, Message.TranscriptLoaded({ bot: "hermes", page: transcriptOf() })),
+    Command.resolve(
+      Threads,
+      Message.ThreadsLoaded({ bot: "hermes", threads: { bot: "hermes", threads: [] } }),
+    ),
     Command.resolve(Navigate, Message.Navigated()),
     expect(role("heading", { name: "Hermes", level: 1 })).toExist(),
   );
@@ -81,7 +89,12 @@ test("choosing a bot whose thread is already loaded only navigates", () => {
       }),
     ),
     click(role("button", { name: "Chat with Hermes" })),
-    Command.expectExact(Navigate({ path: "/chat/hermes" })),
+    // The conversation list is read the first time the screen opens.
+    Command.expectExact(Navigate({ path: "/chat/hermes" }), Threads({ bot: "hermes" })),
+    Command.resolve(
+      Threads,
+      Message.ThreadsLoaded({ bot: "hermes", threads: { bot: "hermes", threads: [] } }),
+    ),
     Command.resolve(Navigate, Message.Navigated()),
     expect(role("heading", { name: "Hermes", level: 1 })).toExist(),
   );

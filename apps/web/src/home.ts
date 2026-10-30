@@ -266,7 +266,10 @@ const chatRow = (chat: Chat, h: HtmlBuilder<Message>): Html =>
       h.span(
         [h.Class("runit-main")],
         [
-          h.span([h.Class("rt")], [botName(chat.bot)]),
+          h.span(
+            [h.Class("rt")],
+            [chat.title === undefined ? botName(chat.bot) : `${botName(chat.bot)} · ${chat.title}`],
+          ),
           h.span(
             [h.Class("rmeta chat-preview")],
             [chat.stamp.length === 0 ? chat.preview : `${chat.preview} · ${chat.stamp}`],

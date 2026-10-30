@@ -3,7 +3,15 @@
  * than one module needs: reading its status and transcript, merging pages, and
  * retiring the messages this client sent once the server has recorded them.
  */
-import type { BotView, EntryView, TranscriptPage } from "@mackbot/contract";
+import type {
+  ActiveRunView,
+  ApprovalView,
+  BotView,
+  EntryView,
+  StreamStatusView,
+  ThreadView,
+  TranscriptPage,
+} from "@mackbot/contract";
 import { Option } from "effect";
 import { AsyncData } from "foldkit";
 import { modifyFields } from "foldkit/struct";
@@ -12,6 +20,7 @@ import type { Channel, Model, PendingMessage } from "./model.ts";
 
 export const emptyChannel = (): Channel => ({
   status: AsyncData.Idle(),
+  threads: AsyncData.Idle(),
   transcript: AsyncData.Idle(),
   stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0, failures: 0 },
   frames: [],
@@ -25,6 +34,14 @@ export const emptyChannel = (): Channel => ({
 /** A record read that admits the key it does not have. */
 export const lookup = <A>(record: Readonly<Record<string, A>>, key: string): A | undefined =>
   Object.hasOwn(record, key) ? record[key] : undefined;
+
+/**
+ * The `thread` field of a message, a command or a screen: present for a
+ * thread, absent for the main conversation rather than set to `undefined`, so
+ * two values for the same conversation are equal however they were built.
+ */
+export const threadField = (thread: string | undefined): { readonly thread?: string } =>
+  thread === undefined ? {} : { thread };
 
 export const channelOf = (model: Model, bot: string): Channel | undefined =>
   lookup(model.channels, bot);
@@ -123,3 +140,83 @@ export const confirmedPending = (
 
 export const prunePending = (channel: Channel, entries: readonly EntryView[]): Channel =>
   modifyFields(channel, { pending: (pending) => confirmedPending(pending, entries) });
+
+/**
+ * The channel moved onto another conversation. Everything about the one it
+ * showed goes — its entries, its stream cursor, the draft and the messages in
+ * flight — and the bot's own facts stay: its status and its conversation list.
+ */
+export const openConversation = (channel: Channel, thread: string | undefined): Channel => ({
+  ...emptyChannel(),
+  status: channel.status,
+  threads: channel.threads,
+  ...(thread === undefined ? {} : { thread }),
+});
+
+/**
+ * The pi session of the conversation the channel shows, once its transcript
+ * has said which one it is. The status names runs and approvals by session,
+ * so this is what decides whether one of them belongs on this screen.
+ */
+export const sessionOf = (channel: Channel | undefined): string | undefined =>
+  Option.getOrUndefined(Option.map(pageOf(channel), (page) => page.session));
+
+/**
+ * Whether a run or an approval for `session` belongs to the conversation the
+ * channel shows. One recorded without a session predates threads, so it
+ * belongs to the main conversation. Before the transcript names the session,
+ * only the main conversation can claim anything, because that is the only one
+ * a status written before threads could have meant.
+ */
+const belongsHere = (channel: Channel, session: string | undefined): boolean => {
+  if (session === undefined) return channel.thread === undefined;
+  const shown = sessionOf(channel);
+  return shown === undefined ? channel.thread === undefined : shown === session;
+};
+
+/** The run in flight, when it is this conversation's. */
+export const conversationRunOf = (channel: Channel | undefined): ActiveRunView | undefined => {
+  if (channel === undefined) return undefined;
+  const run = Option.getOrUndefined(statusOf(channel))?.activeRun;
+  return run !== undefined && belongsHere(channel, run.session) ? run : undefined;
+};
+
+/**
+ * The stream the channel follows: the main conversation still honours the
+ * status's own `activeStream`, and otherwise it is the stream of the run in
+ * flight, when that run is this conversation's. A run in another of the bot's
+ * conversations is not followed here, so its frames never land in this one.
+ */
+export const conversationStreamOf = (
+  channel: Channel | undefined,
+): StreamStatusView | undefined => {
+  if (channel === undefined) return undefined;
+  const legacy = Option.getOrUndefined(statusOf(channel))?.activeStream;
+  if (channel.thread === undefined && legacy !== undefined) return legacy;
+  return conversationRunOf(channel)?.stream;
+};
+
+/** The pending approvals the conversation the channel shows is waiting on. */
+export const conversationApprovalsOf = (channel: Channel | undefined): readonly ApprovalView[] =>
+  channel === undefined
+    ? []
+    : Option.match(statusOf(channel), {
+        onNone: () => [],
+        onSome: (view) =>
+          view.approvals.filter(
+            (approval) => approval.status === "pending" && belongsHere(channel, approval.session),
+          ),
+      });
+
+/** The bot's conversations, as far as the list has loaded. */
+export const threadsOf = (channel: Channel | undefined): readonly ThreadView[] =>
+  channel === undefined
+    ? []
+    : Option.match(AsyncData.getData(channel.threads), {
+        onNone: () => [],
+        onSome: (list) => list.threads,
+      });
+
+/** The list's entry for the conversation the channel shows, once it has one. */
+export const currentThreadOf = (channel: Channel | undefined): ThreadView | undefined =>
+  threadsOf(channel).find((view) => view.thread === channel?.thread);

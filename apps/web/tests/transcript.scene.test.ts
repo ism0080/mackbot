@@ -327,11 +327,33 @@ test("an active run is a line under the conversation", () => {
             stream,
           },
         }),
-        page: transcriptOf(),
+        page: transcriptOf({ session: "sess_hermes" }),
       }),
     ),
     expect(selector(".streamline .live")).toContainText("Draft the weekly update"),
     expect(selector(".streamline .live")).toContainText("running 6m"),
+  );
+});
+
+test("a run in another of the bot's conversations is not this one's progress", () => {
+  scene(
+    { update, view },
+    given(
+      hermes({
+        status: statusOf({
+          busy: true,
+          activeRun: {
+            ordinal: 1,
+            inputs: ["Draft the weekly update"],
+            startedAt: at(6),
+            session: "sess_other",
+            stream,
+          },
+        }),
+        page: transcriptOf({ session: "sess_hermes" }),
+      }),
+    ),
+    expect(selector(".streamline")).toBeAbsent(),
   );
 });
 

@@ -5,7 +5,7 @@ import { Subscription } from "foldkit";
 import { streamFromEvent, streamFromEventFilterMap } from "foldkit/dom";
 
 import { apiUrl } from "./api.ts";
-import { pageOf, statusOf } from "./channel.ts";
+import { conversationStreamOf, pageOf, statusOf } from "./channel.ts";
 import { Message } from "./message.ts";
 import type { Channel, Model, Screen } from "./model.ts";
 
@@ -56,11 +56,9 @@ const Source = Schema.Struct({
 });
 type Source = typeof Source.Type;
 
+/** The stream of the conversation the channel shows, or "" when it has none. */
 const streamIdOf = (channel: Channel | undefined): string =>
-  Option.match(statusOf(channel), {
-    onNone: () => "",
-    onSome: (view) => view.activeStream?.stream ?? "",
-  });
+  conversationStreamOf(channel)?.stream ?? "";
 
 /** The two conditions the cost rule names: running, or waiting on a human. */
 const workHeldBy = (channel: Channel | undefined): boolean =>
@@ -212,6 +210,7 @@ const sourceStream = (source: Source): Stream.Stream<Message> =>
                     queue,
                     Message.FrameReceived({
                       bot: source.bot,
+                      stream: source.stream,
                       frame,
                       seq: seqOfEventId(event.lastEventId),
                     }),

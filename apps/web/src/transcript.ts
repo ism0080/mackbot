@@ -1,9 +1,23 @@
-import type { ActiveRunView, ApprovalView, EntryView, LiveToolView } from "@mackbot/contract";
+import type {
+  ActiveRunView,
+  ApprovalView,
+  EntryView,
+  LiveToolView,
+  ThreadView,
+} from "@mackbot/contract";
 import { Option } from "effect";
 import { Disclosure } from "@foldkit/ui";
 import type { Html, HtmlBuilder, KeyboardModifiers } from "foldkit/html";
 
-import { pageOf, statusOf } from "./channel.ts";
+import {
+  conversationApprovalsOf,
+  conversationRunOf,
+  currentThreadOf,
+  pageOf,
+  statusOf,
+  threadField,
+  threadsOf,
+} from "./channel.ts";
 import { clockOf, dayKeyOf, dayLabelOf, elapsedOf, wordsOf } from "./format.ts";
 import { parseMarkdown, renderMarkdown } from "./markdown.ts";
 import { Message } from "./message.ts";
@@ -21,12 +35,10 @@ const sendingIn = (channel: Channel | undefined): boolean => channel?.sending ??
 const pendingIn = (channel: Channel | undefined): readonly PendingMessage[] =>
   channel?.pending ?? [];
 
+/** The approvals this conversation is waiting on; another conversation's wait
+ *  is not shown under this one's last message. */
 const awaitingIn = (bot: string, channel: Channel | undefined): readonly ApprovalView[] =>
-  Option.match(statusOf(channel), {
-    onNone: () => [],
-    onSome: (status) =>
-      status.approvals.filter((approval) => approval.status === "pending" && approval.bot === bot),
-  });
+  conversationApprovalsOf(channel).filter((approval) => approval.bot === bot);
 
 const originOf = (entry: EntryView): string | undefined => {
   if (entry.role !== "assistant") return undefined;
@@ -280,6 +292,105 @@ const earlierRow = (bot: string, loading: boolean, h: HtmlBuilder<Message>): Htm
     ],
   );
 
+/** What a conversation is called in the list: its title, or what it is. */
+const threadLabel = (view: ThreadView | undefined, thread: string | undefined): string => {
+  if (thread === undefined) return "Main";
+  return view?.title ?? "New conversation";
+};
+
+/**
+ * One conversation in the bar. The one on screen says so with
+ * `aria-current`, so a screen reader hears which conversation is open, and a
+ * conversation that is working or waiting on a person says that in words.
+ */
+const threadChip = (
+  bot: string,
+  thread: string | undefined,
+  view: ThreadView | undefined,
+  current: boolean,
+  h: HtmlBuilder<Message>,
+): Html =>
+  h.keyed("li")(
+    thread ?? "",
+    [h.Class("thread-item")],
+    [
+      h.button(
+        [
+          h.Type("button"),
+          h.Class(current ? "thread-chip current" : "thread-chip"),
+          h.DataAttribute("thread", thread ?? ""),
+          ...(current ? [h.AriaCurrent("page")] : []),
+          h.OnClick(Message.ClickedOpenThread({ bot, ...threadField(thread) })),
+        ],
+        [
+          h.span([h.Class("thread-title")], [threadLabel(view, thread)]),
+          ...(view !== undefined && view.pendingApprovals > 0
+            ? [h.span([h.Class("tag warn")], ["needs you"])]
+            : view?.busy === true
+              ? [h.span([h.Class("tag work")], ["working"])]
+              : []),
+        ],
+      ),
+    ],
+  );
+
+/**
+ * The bot's conversations, the way into a new one, and the way to put the
+ * open one away. The conversation on screen is always in the bar, even before
+ * the server lists it: a new conversation exists only once its first message
+ * does.
+ */
+const threadBar = (bot: string, channel: Channel | undefined, h: HtmlBuilder<Message>): Html => {
+  const thread = channel?.thread;
+  const listed = threadsOf(channel);
+  const root = listed.find((view) => view.thread === undefined);
+  const threads = listed.filter((view) => view.thread !== undefined);
+  const shown = currentThreadOf(channel);
+  const unlisted = thread !== undefined && shown === undefined;
+
+  return h.nav(
+    [h.Class("threads"), h.AriaLabel(`Conversations with ${botName(bot)}`)],
+    [
+      h.ul(
+        [h.Class("thread-list")],
+        [
+          threadChip(bot, undefined, root, thread === undefined, h),
+          ...(unlisted ? [threadChip(bot, thread, undefined, true, h)] : []),
+          ...threads.map((view) => threadChip(bot, view.thread, view, view.thread === thread, h)),
+        ],
+      ),
+      h.div(
+        [h.Class("thread-actions")],
+        [
+          button(
+            {
+              className: "btn ghost",
+              data: [["open", "new-thread"]],
+              onClick: Message.ClickedNewThread({ bot }),
+            },
+            ["New conversation"],
+            h,
+          ),
+          ...(thread === undefined || shown === undefined
+            ? []
+            : [
+                button(
+                  {
+                    className: "btn ghost",
+                    data: [["archive", thread]],
+                    ariaLabel: `Archive ${threadLabel(shown, thread)}`,
+                    onClick: Message.ClickedArchiveThread({ bot, thread }),
+                  },
+                  ["Archive"],
+                  h,
+                ),
+              ]),
+        ],
+      ),
+    ],
+  );
+};
+
 /**
  * Enter sends and Shift+Enter starts a new line, the way a chat box reads. A
  * key held with another modifier is left to the browser. While an input method
@@ -350,7 +461,8 @@ const composerOf = (
 export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): Html => {
   const channel = model.channels[bot];
   const status = statusOf(channel);
-  const run = Option.flatMap(status, (view) => Option.fromNullishOr(view.activeRun));
+  // A run in another of the bot's conversations is not this one's progress.
+  const run = Option.fromNullishOr(conversationRunOf(channel));
   const draft = draftIn(channel);
   const sending = sendingIn(channel);
   const pending = pendingIn(channel);
@@ -428,6 +540,7 @@ export const transcript = (bot: string, model: Model, h: HtmlBuilder<Message>): 
           }),
         ],
       ),
+      threadBar(bot, channel, h),
       // The thread is a log: a screen reader hears what arrives without the
       // person having to move back through the conversation to find it.
       h.main(

@@ -10,15 +10,18 @@ import {
   RetryResultSchema,
   RosterSchema,
   StatusResponseSchema,
+  ThreadListSchema,
+  ThreadViewSchema,
   TranscriptPageSchema,
 } from "@mackbot/contract";
-import type { AbortRequest, BotCreate, BotWrite } from "@mackbot/contract";
+import type { AbortRequest, BotCreate, BotWrite, ThreadUpdate } from "@mackbot/contract";
 import type { ApprovalDecision } from "@mackbot/contract";
 import { Clock, Effect, Schema } from "effect";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 import { Command, Http } from "foldkit";
 import { load } from "foldkit/navigation";
 
+import { threadField } from "./channel.ts";
 import { Message } from "./message.ts";
 import { retryRequest, retryRoute } from "./task-retry.ts";
 
@@ -61,22 +64,98 @@ export const Status = Command.define("Status", {
   ),
 });
 
+/**
+ * One page of a conversation's transcript. `thread` names the conversation;
+ * absent is the bot's main one.
+ */
 export const Transcript = Command.define("Transcript", {
-  args: { bot: Schema.String, before: Schema.optional(Schema.Number) },
+  args: {
+    bot: Schema.String,
+    thread: Schema.optional(Schema.String),
+    before: Schema.optional(Schema.Number),
+  },
   messages: [Message.TranscriptLoaded, Message.TranscriptFailed],
-  execute: ({ bot, before }) =>
+  execute: ({ bot, thread, before }) =>
     Effect.gen(function* () {
       const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
-      const query =
-        before === undefined
-          ? `?limit=${TRANSCRIPT_LIMIT}`
-          : `?limit=${TRANSCRIPT_LIMIT}&before=${before}`;
-      const response = yield* client.get(apiUrl(`/transcript/${encodeURIComponent(bot)}${query}`));
+      const query = new URLSearchParams({
+        limit: String(TRANSCRIPT_LIMIT),
+        ...threadField(thread),
+        ...(before === undefined ? {} : { before: String(before) }),
+      });
+      const response = yield* client.get(
+        apiUrl(`/transcript/${encodeURIComponent(bot)}?${query.toString()}`),
+      );
       const page = yield* HttpClientResponse.schemaBodyJson(TranscriptPageSchema)(response);
-      return Message.TranscriptLoaded({ bot, page, before });
+      return Message.TranscriptLoaded({ bot, ...threadField(thread), page, before });
     }).pipe(
       Effect.catch((cause) =>
-        Effect.succeed(Message.TranscriptFailed({ bot, error: describe(cause), before })),
+        Effect.succeed(
+          Message.TranscriptFailed({ bot, ...threadField(thread), error: describe(cause), before }),
+        ),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/** The bot's conversations: its main one, then every thread it has not archived. */
+export const Threads = Command.define("Threads", {
+  args: { bot: Schema.String },
+  messages: [Message.ThreadsLoaded, Message.ThreadsFailed],
+  execute: ({ bot }) =>
+    Effect.gen(function* () {
+      const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+      const response = yield* client.get(apiUrl(`/threads/${encodeURIComponent(bot)}`));
+      const threads = yield* HttpClientResponse.schemaBodyJson(ThreadListSchema)(response);
+      return Message.ThreadsLoaded({ bot, threads });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.ThreadsFailed({ bot, error: describe(cause) })),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/**
+ * A new conversation's id. The server creates the conversation with its first
+ * message, so starting one only mints the name the URL and the chat route
+ * carry; it comes from the CSPRNG because it ends up in a shareable link.
+ */
+export const StartThread = Command.define("StartThread", {
+  args: { bot: Schema.String },
+  messages: [Message.ThreadStarted],
+  execute: ({ bot }) =>
+    Effect.sync(() => Message.ThreadStarted({ bot, thread: crypto.randomUUID() })),
+});
+
+/**
+ * `POST /threads/:bot/:thread` archiving the conversation. A conversation
+ * cannot be deleted, so this takes it out of the bot's list and leaves its
+ * history reachable by its link.
+ */
+export const ArchiveThread = Command.define("ArchiveThread", {
+  args: { bot: Schema.String, thread: Schema.String },
+  messages: [Message.ThreadArchived, Message.ArchiveFailed],
+  execute: ({ bot, thread }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.post(
+        apiUrl(`/threads/${encodeURIComponent(bot)}/${encodeURIComponent(thread)}`),
+      ).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson({ archived: true } satisfies ThreadUpdate),
+      );
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(yield* refusalOf(response));
+      }
+      yield* HttpClientResponse.schemaBodyJson(ThreadViewSchema)(response);
+      return Message.ThreadArchived({ bot, thread });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.ArchiveFailed({ bot, thread, error: describe(cause) })),
       ),
       Effect.provide(Http.layer),
     ),
@@ -138,9 +217,9 @@ const refusalOf = (
  * result; the transcript and its SSE stream are how the answer arrives.
  */
 export const Chat = Command.define("Chat", {
-  args: { bot: Schema.String, text: Schema.String },
+  args: { bot: Schema.String, text: Schema.String, thread: Schema.optional(Schema.String) },
   messages: [Message.ChatSent, Message.ChatFailed],
-  execute: ({ bot, text }) =>
+  execute: ({ bot, text, thread }) =>
     Effect.gen(function* () {
       const client = yield* HttpClient.HttpClient;
       const request = yield* HttpClientRequest.post(
@@ -149,16 +228,18 @@ export const Chat = Command.define("Chat", {
         // Cookie authentication is in play here; the server requires this
         // header's presence as proof the request came from a same-origin fetch.
         HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
-        HttpClientRequest.bodyJson({ text }),
+        HttpClientRequest.bodyJson({ text, ...threadField(thread) }),
       );
       const response = yield* client.execute(request);
       if (response.status < 200 || response.status >= 300) {
         return yield* Effect.fail(yield* refusalOf(response));
       }
       const accepted = yield* HttpClientResponse.schemaBodyJson(ChatAcceptedSchema)(response);
-      return Message.ChatSent({ bot, operationId: accepted.operationId });
+      return Message.ChatSent({ bot, ...threadField(thread), operationId: accepted.operationId });
     }).pipe(
-      Effect.catch((cause) => Effect.succeed(Message.ChatFailed({ bot, error: describe(cause) }))),
+      Effect.catch((cause) =>
+        Effect.succeed(Message.ChatFailed({ bot, ...threadField(thread), error: describe(cause) })),
+      ),
       Effect.provide(Http.layer),
     ),
 });

@@ -13,12 +13,14 @@ import { Effect, Option } from "effect";
 import { Command } from "foldkit";
 import { openUrl, pushUrl } from "foldkit/navigation";
 
+import { threadField } from "./channel.ts";
 import { safeHref } from "./link.ts";
 import { Message } from "./message.ts";
 import { Screen } from "./model.ts";
 import type { Screen as ScreenType } from "./model.ts";
 
-const CHAT_PATH = /^\/chat\/([^/]+)\/?$/u;
+/** `/chat/:bot` is a bot's main conversation, `/chat/:bot/:thread` one of its threads. */
+const CHAT_PATH = /^\/chat\/([^/]+)(?:\/([^/]+))?\/?$/u;
 
 /** A malformed escape (`%E0%A4%A`) is a URL nobody built, not a crash. */
 const decodeSegment = Option.liftThrowable(decodeURIComponent);
@@ -27,7 +29,10 @@ const decodeSegment = Option.liftThrowable(decodeURIComponent);
 export const pathOf = (screen: ScreenType): string =>
   Screen.match(screen, {
     Home: () => "/",
-    Transcript: ({ bot }) => `/chat/${encodeURIComponent(bot)}`,
+    Transcript: ({ bot, thread }) =>
+      thread === undefined
+        ? `/chat/${encodeURIComponent(bot)}`
+        : `/chat/${encodeURIComponent(bot)}/${encodeURIComponent(thread)}`,
     NewChat: () => "/new",
     Bots: () => "/bots",
   });
@@ -36,9 +41,10 @@ export const pathOf = (screen: ScreenType): string =>
 export const screenOfPath = (pathname: string): ScreenType => {
   const chat = CHAT_PATH.exec(pathname);
   if (chat !== null) {
-    return Option.match(decodeSegment(chat[1] ?? ""), {
+    const thread = chat[2] === undefined ? Option.some(undefined) : decodeSegment(chat[2]);
+    return Option.match(Option.all([decodeSegment(chat[1] ?? ""), thread]), {
       onNone: () => Screen.Home(),
-      onSome: (bot) => Screen.Transcript({ bot }),
+      onSome: ([bot, named]) => Screen.Transcript({ bot, ...threadField(named) }),
     });
   }
   if (pathname === "/new") return Screen.NewChat();

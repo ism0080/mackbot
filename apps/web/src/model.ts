@@ -4,6 +4,7 @@ import {
   ModelCatalogSchema,
   RosterSchema,
   ThinkingLevelSchema,
+  ThreadListSchema,
   TranscriptPageSchema,
 } from "@mackbot/contract";
 import { Dialog } from "@foldkit/ui";
@@ -16,6 +17,8 @@ import { Toast } from "./toast.ts";
 /**
  * What the browser is looking at. Every screen is a focus — a bot id — never a
  * copy of that bot's data, so a screen can never disagree with the channels.
+ * A transcript also names the conversation it shows: absent is the bot's main
+ * conversation, and a thread id is one the person started beside it.
  *
  * The roster screen shows every bot at once, so it has no single focus. It
  * holds the fleet's configuration rather than one bot's live state, which is
@@ -23,7 +26,7 @@ import { Toast } from "./toast.ts";
  */
 export const Screen = defineTaggedUnion({
   Home: {},
-  Transcript: { bot: Schema.String },
+  Transcript: { bot: Schema.String, thread: Schema.optional(Schema.String) },
   NewChat: {},
   Bots: {},
 });
@@ -101,6 +104,15 @@ export const EMPTY_DRAFT: BotDraft = {
  */
 export const Channel = Schema.Struct({
   status: AsyncData.Schema(BotViewSchema, Schema.String).schema,
+  /**
+   * The conversation the rest of the channel is about — its transcript, its
+   * stream, the draft and the messages in flight. Absent is the bot's main
+   * conversation. Opening another one starts those fields afresh, so one
+   * conversation's words never land in another's.
+   */
+  thread: Schema.optional(Schema.String),
+  /** The bot's conversations, for the list the transcript screen offers. */
+  threads: AsyncData.Schema(ThreadListSchema, Schema.String).schema,
   transcript: AsyncData.Schema(TranscriptPageSchema, Schema.String).schema,
   stream: StreamState,
   frames: Schema.Array(FrameSchema),
