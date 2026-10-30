@@ -54,6 +54,17 @@ export const Message = defineMessageUnion({
   ArchiveFailed: { bot: Schema.String, thread: Schema.String, error: Schema.String },
   ThreadsLoaded: { bot: Schema.String, threads: ThreadListSchema },
   ThreadsFailed: { bot: Schema.String, error: Schema.String },
+  /** The person asked for the conversations they archived with a bot. */
+  ClickedOpenArchive: { bot: Schema.String },
+  /** The bot's conversations, archived ones included, for the archive screen. */
+  ArchivedThreadsLoaded: { bot: Schema.String, threads: ThreadListSchema },
+  ArchivedThreadsFailed: { bot: Schema.String, error: Schema.String },
+  /** The person asked to put an archived conversation back in the bot's list. */
+  ClickedRestoreThread: { bot: Schema.String, thread: Schema.String },
+  /** The server restored the conversation. */
+  ThreadRestored: { bot: Schema.String, thread: Schema.String },
+  /** The restore did not reach the server, so the conversation is still archived. */
+  RestoreFailed: { bot: Schema.String, thread: Schema.String, error: Schema.String },
   ClickedLoadEarlier: { bot: Schema.String },
   ClickedBack: {},
   /** The user asked for the bot picker, where a chat can be started. */

@@ -22,6 +22,9 @@ import type { Screen as ScreenType } from "./model.ts";
 /** `/chat/:bot` is a bot's main conversation, `/chat/:bot/:thread` one of its threads. */
 const CHAT_PATH = /^\/chat\/([^/]+)(?:\/([^/]+))?\/?$/u;
 
+/** `/archive/:bot` lists the conversations archived with a bot. */
+const ARCHIVE_PATH = /^\/archive\/([^/]+)\/?$/u;
+
 /** A malformed escape (`%E0%A4%A`) is a URL nobody built, not a crash. */
 const decodeSegment = Option.liftThrowable(decodeURIComponent);
 
@@ -33,6 +36,7 @@ export const pathOf = (screen: ScreenType): string =>
       thread === undefined
         ? `/chat/${encodeURIComponent(bot)}`
         : `/chat/${encodeURIComponent(bot)}/${encodeURIComponent(thread)}`,
+    Archive: ({ bot }) => `/archive/${encodeURIComponent(bot)}`,
     NewChat: () => "/new",
     Bots: () => "/bots",
   });
@@ -45,6 +49,13 @@ export const screenOfPath = (pathname: string): ScreenType => {
     return Option.match(Option.all([decodeSegment(chat[1] ?? ""), thread]), {
       onNone: () => Screen.Home(),
       onSome: ([bot, named]) => Screen.Transcript({ bot, ...threadField(named) }),
+    });
+  }
+  const archive = ARCHIVE_PATH.exec(pathname);
+  if (archive !== null) {
+    return Option.match(decodeSegment(archive[1] ?? ""), {
+      onNone: () => Screen.Home(),
+      onSome: (bot) => Screen.Archive({ bot }),
     });
   }
   if (pathname === "/new") return Screen.NewChat();

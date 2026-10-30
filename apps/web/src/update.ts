@@ -9,6 +9,7 @@ import {
   Chat,
   CreateBot,
   DecideApproval,
+  RestoreThread,
   RetryTask,
   SaveBot,
   SignOut,
@@ -43,6 +44,7 @@ import { EMPTY_DRAFT, Screen } from "./model.ts";
 import type { Channel, Model } from "./model.ts";
 import {
   enterScreen,
+  requestArchivedThreads,
   requestStatus,
   requestThreads,
   requestTranscript,
@@ -257,6 +259,39 @@ export const update = (model: Model, message: Message) =>
         }),
       ),
     }),
+    ClickedOpenArchive: ({ bot }) => open(Screen.Archive({ bot }))(model),
+    ArchivedThreadsLoaded: ({ bot, threads }) => ({
+      model: withChannel(model, bot, (channel) =>
+        modifyFields(channel, { archived: () => AsyncData.succeed(threads) }),
+      ),
+    }),
+    ArchivedThreadsFailed: ({ bot, error }) => ({
+      // A list already on screen stays: only a first load becomes the error.
+      model: withChannel(model, bot, (channel) =>
+        modifyFields(channel, {
+          archived: (archived) =>
+            dataOf(archived) === undefined ? AsyncData.fail(error) : archived,
+        }),
+      ),
+    }),
+    ClickedRestoreThread: ({ bot, thread }) => ({
+      // The restore is a request, not a fact: the thread stays in the archive
+      // until the server says it put it back.
+      model,
+      commands: [RestoreThread({ bot, thread })],
+    }),
+    ThreadRestored: ({ bot }) =>
+      Update.combine(model, [
+        toast("Success", `Restored the conversation with ${botName(bot)}.`),
+        requestArchivedThreads(bot),
+        requestThreads(bot),
+      ]),
+    RestoreFailed: ({ bot, error }) =>
+      withToast(
+        model,
+        "Error",
+        `Couldn't restore the conversation with ${botName(bot)} (${error}).`,
+      ),
     ClickedLoadEarlier: ({ bot }) => {
       const channel = channelOf(model, bot);
       const before = channel === undefined ? undefined : dataOf(channel.transcript)?.nextBefore;

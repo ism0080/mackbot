@@ -1,5 +1,6 @@
 import type { Document, HtmlBuilder } from "foldkit/html";
 
+import { archive } from "./archive.ts";
 import { bots } from "./bots.ts";
 import { home } from "./home.ts";
 import type { Message } from "./message.ts";
@@ -17,6 +18,11 @@ export const view = (model: Model, h: HtmlBuilder<Message>): Document =>
       title: `${botName(bot)} · mackbot`,
       lang: "en",
       body: transcript(bot, model, h),
+    }),
+    Archive: ({ bot }) => ({
+      title: `Archived · ${botName(bot)} · mackbot`,
+      lang: "en",
+      body: archive(bot, model, h),
     }),
     NewChat: () => ({ title: "New chat · mackbot", lang: "en", body: newChat(model, h) }),
     Bots: () => ({ title: "Bots · mackbot", lang: "en", body: bots(model, h) }),

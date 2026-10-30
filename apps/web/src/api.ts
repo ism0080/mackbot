@@ -117,6 +117,30 @@ export const Threads = Command.define("Threads", {
 });
 
 /**
+ * The bot's conversations with the archived ones included, for the screen that
+ * lists what was put away. The route answers every conversation, so the screen
+ * picks the archived ones out of it.
+ */
+export const ArchivedThreads = Command.define("ArchivedThreads", {
+  args: { bot: Schema.String },
+  messages: [Message.ArchivedThreadsLoaded, Message.ArchivedThreadsFailed],
+  execute: ({ bot }) =>
+    Effect.gen(function* () {
+      const client = (yield* HttpClient.HttpClient).pipe(HttpClient.filterStatusOk);
+      const response = yield* client.get(
+        apiUrl(`/threads/${encodeURIComponent(bot)}?include=archived`),
+      );
+      const threads = yield* HttpClientResponse.schemaBodyJson(ThreadListSchema)(response);
+      return Message.ArchivedThreadsLoaded({ bot, threads });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.ArchivedThreadsFailed({ bot, error: describe(cause) })),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/**
  * A new conversation's id. The server creates the conversation with its first
  * message, so starting one only mints the name the URL and the chat route
  * carry; it comes from the CSPRNG because it ends up in a shareable link.
@@ -156,6 +180,38 @@ export const ArchiveThread = Command.define("ArchiveThread", {
     }).pipe(
       Effect.catch((cause) =>
         Effect.succeed(Message.ArchiveFailed({ bot, thread, error: describe(cause) })),
+      ),
+      Effect.provide(Http.layer),
+    ),
+});
+
+/**
+ * `POST /threads/:bot/:thread` restoring an archived conversation, which puts
+ * it back in the bot's list.
+ */
+export const RestoreThread = Command.define("RestoreThread", {
+  args: { bot: Schema.String, thread: Schema.String },
+  messages: [Message.ThreadRestored, Message.RestoreFailed],
+  execute: ({ bot, thread }) =>
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const request = yield* HttpClientRequest.post(
+        apiUrl(`/threads/${encodeURIComponent(bot)}/${encodeURIComponent(thread)}`),
+      ).pipe(
+        // Cookie authentication is in play here; the server requires this
+        // header's presence as proof the request came from a same-origin fetch.
+        HttpClientRequest.setHeader("X-Mackbot-CSRF", "1"),
+        HttpClientRequest.bodyJson({ archived: false } satisfies ThreadUpdate),
+      );
+      const response = yield* client.execute(request);
+      if (response.status < 200 || response.status >= 300) {
+        return yield* Effect.fail(yield* refusalOf(response));
+      }
+      yield* HttpClientResponse.schemaBodyJson(ThreadViewSchema)(response);
+      return Message.ThreadRestored({ bot, thread });
+    }).pipe(
+      Effect.catch((cause) =>
+        Effect.succeed(Message.RestoreFailed({ bot, thread, error: describe(cause) })),
       ),
       Effect.provide(Http.layer),
     ),

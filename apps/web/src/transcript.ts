@@ -371,6 +371,16 @@ const threadBar = (bot: string, channel: Channel | undefined, h: HtmlBuilder<Mes
             ["New conversation"],
             h,
           ),
+          button(
+            {
+              className: "btn ghost",
+              data: [["open", "archive"]],
+              ariaLabel: `Archived conversations with ${botName(bot)}`,
+              onClick: Message.ClickedOpenArchive({ bot }),
+            },
+            ["Archived"],
+            h,
+          ),
           ...(thread === undefined || shown === undefined
             ? []
             : [

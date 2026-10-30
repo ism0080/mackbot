@@ -23,10 +23,14 @@ import { Toast } from "./toast.ts";
  * The roster screen shows every bot at once, so it has no single focus. It
  * holds the fleet's configuration rather than one bot's live state, which is
  * the one thing on screen that is a copy of the server's answer.
+ *
+ * The archive screen lists the conversations a person put away with one bot,
+ * and is where they are restored.
  */
 export const Screen = defineTaggedUnion({
   Home: {},
   Transcript: { bot: Schema.String, thread: Schema.optional(Schema.String) },
+  Archive: { bot: Schema.String },
   NewChat: {},
   Bots: {},
 });
@@ -113,6 +117,11 @@ export const Channel = Schema.Struct({
   thread: Schema.optional(Schema.String),
   /** The bot's conversations, for the list the transcript screen offers. */
   threads: AsyncData.Schema(ThreadListSchema, Schema.String).schema,
+  /**
+   * The bot's conversations with the archived ones included, for the archive
+   * screen. It is a separate read from `threads`, which leaves them out.
+   */
+  archived: AsyncData.Schema(ThreadListSchema, Schema.String).schema,
   transcript: AsyncData.Schema(TranscriptPageSchema, Schema.String).schema,
   stream: StreamState,
   frames: Schema.Array(FrameSchema),

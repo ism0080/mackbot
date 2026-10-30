@@ -11,7 +11,7 @@
 import { AsyncData, Update } from "foldkit";
 import { modifyFields } from "foldkit/struct";
 
-import { Catalog, Roster, Status, Threads, Transcript } from "./api.ts";
+import { ArchivedThreads, Catalog, Roster, Status, Threads, Transcript } from "./api.ts";
 import { channelOf, openConversation, threadField, withChannel } from "./channel.ts";
 import { dataOf } from "./data.ts";
 import type { Message } from "./message.ts";
@@ -76,6 +76,21 @@ const requestMissingThreads =
       : { model };
 
 /**
+ * Ask for the bot's archived conversations. A list already on screen stays
+ * while the new one is on its way; only a first read shows as loading.
+ */
+export const requestArchivedThreads =
+  (bot: string): Step =>
+  (model) => ({
+    model: withChannel(model, bot, (channel) =>
+      modifyFields(channel, {
+        archived: (archived) => (dataOf(archived) === undefined ? AsyncData.Loading() : archived),
+      }),
+    ),
+    commands: [ArchivedThreads({ bot })],
+  });
+
+/**
  * Point the bot's channel at one of its conversations. The one it already
  * shows is left as it is; any other starts afresh, so its transcript is read
  * from the server rather than shown over the last one's.
@@ -100,7 +115,8 @@ export const requestMissingTranscript =
 /**
  * What arriving on a screen asks the server for. A transcript the client has
  * not loaded is fetched, and the roster screen reads the roster and the
- * catalog every time it opens so it never edits a stale copy.
+ * catalog every time it opens so it never edits a stale copy. The archive is
+ * read every time too, because another client may have archived since.
  */
 export const enterScreen =
   (screen: ScreenType): Step =>
@@ -114,5 +130,6 @@ export const enterScreen =
           requestMissingTranscript(bot),
           requestMissingThreads(bot),
         ]),
+      Archive: ({ bot }) => requestArchivedThreads(bot)(model),
       Bots: () => ({ model, commands: [Roster(), Catalog()] }),
     });

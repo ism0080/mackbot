@@ -534,8 +534,9 @@ button {
 }
 
 /* Retry is the row's one action, so it keeps its own width rather than
-   splitting the row with the task's name. */
-.sp-parked .btn.ghost {
+   splitting the row with the task's name. Restore does the same. */
+.sp-parked .btn.ghost,
+.archived-item .btn.ghost {
   flex: none;
 }
 

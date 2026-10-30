@@ -21,6 +21,7 @@ import type { Channel, Model, PendingMessage } from "./model.ts";
 export const emptyChannel = (): Channel => ({
   status: AsyncData.Idle(),
   threads: AsyncData.Idle(),
+  archived: AsyncData.Idle(),
   transcript: AsyncData.Idle(),
   stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0, failures: 0 },
   frames: [],
@@ -144,12 +145,13 @@ export const prunePending = (channel: Channel, entries: readonly EntryView[]): C
 /**
  * The channel moved onto another conversation. Everything about the one it
  * showed goes — its entries, its stream cursor, the draft and the messages in
- * flight — and the bot's own facts stay: its status and its conversation list.
+ * flight — and the bot's own facts stay: its status and its conversation lists.
  */
 export const openConversation = (channel: Channel, thread: string | undefined): Channel => ({
   ...emptyChannel(),
   status: channel.status,
   threads: channel.threads,
+  archived: channel.archived,
   ...(thread === undefined ? {} : { thread }),
 });
 
@@ -220,3 +222,12 @@ export const threadsOf = (channel: Channel | undefined): readonly ThreadView[] =
 /** The list's entry for the conversation the channel shows, once it has one. */
 export const currentThreadOf = (channel: Channel | undefined): ThreadView | undefined =>
   threadsOf(channel).find((view) => view.thread === channel?.thread);
+
+/** The bot's archived conversations, as far as the archive's list has loaded. */
+export const archivedThreadsOf = (channel: Channel | undefined): readonly ThreadView[] =>
+  channel === undefined
+    ? []
+    : Option.match(AsyncData.getData(channel.archived), {
+        onNone: () => [],
+        onSome: (list) => list.threads.filter((view) => view.archived),
+      });

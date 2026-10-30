@@ -138,6 +138,7 @@ export const transcriptModel = (
       [bot]: {
         status: AsyncData.Idle(),
         threads: AsyncData.Idle(),
+        archived: AsyncData.Idle(),
         transcript: AsyncData.Idle(),
         stream: { phase: "idle", generation: 0, lastSeq: 0, attempt: 0, failures: 0 },
         frames: [],
