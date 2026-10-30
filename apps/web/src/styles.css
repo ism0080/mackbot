@@ -11,52 +11,58 @@
 :root {
   color-scheme: dark;
 
-  /* Base colours, written in oklch. Grays, white and black carry `none` as the
-     hue, so mixing one with a colour never drags the result toward red. */
+  /* Neutrals, written in oklch on one cool hue. Each carries a little chroma, so
+     each needs a real hue: a `none` hue renders as 0°, which is red, and turns
+     the greys mauve beside a blue accent. White and black have no chroma, so
+     they keep `none`. */
   --black: oklch(0% 0 none);
   --white: oklch(100% 0 none);
-  --bg: oklch(14.93% 0.0046 none);
-  --bg-deep: oklch(12.29% 0.0108 none);
-  --surface: oklch(19.98% 0.0086 none);
-  --surface2: oklch(23.83% 0.0147 none);
-  --line: oklch(29.21% 0.0179 none);
-  --text: oklch(94.84% 0.0046 none);
-  --muted: oklch(65.8% 0.0228 none);
-  --accent: oklch(72.87% 0.1398 258.1);
-  --violet: oklch(62% 0.16 290);
-  --ok: oklch(80.03% 0.1821 151.7);
-  --warn: oklch(83.69% 0.1644 84.4);
+  --bg-deep: oklch(12.5% 0.01 255);
+  --bg: oklch(15% 0.011 255);
+  --surface: oklch(19% 0.013 255);
+  --surface2: oklch(23% 0.015 255);
+  --line: oklch(29% 0.017 255);
+  /* The edge of a control rather than of a card: 3:1 against the page, so an
+     outlined button reads as a button. */
+  --line-strong: oklch(48% 0.02 255);
+  --text: oklch(95.5% 0.004 255);
+  --text-soft: oklch(83% 0.01 255);
+  --muted: oklch(69% 0.018 255);
+  --faint: oklch(54% 0.016 255);
 
-  /* The warm text ramp. These are bases, not tints: each is a different
-     lightness, and the old pair that differed only by a hair (the draft body
-     and the reference text) is now one token. */
-  --warn-ink: oklch(89.86% 0.1059 83.8);
-  --warn-strong: oklch(93.59% 0.0363 87.8);
-  --warn-body: oklch(85.11% 0.0334 85.5);
-  --warn-muted: oklch(80.89% 0.0412 84.6);
-  --warn-faint: oklch(69% 0.0529 88);
-  --accent-ink: oklch(84.89% 0.0711 266.4);
+  /* Roles. One base per meaning, and a colour means only that:
+     accent is you and the action you take, warn is waiting on you, bad is
+     broken, ok is done. */
+  --accent: oklch(72% 0.14 258);
+  --warn: oklch(82% 0.15 80);
+  --bad: oklch(68% 0.18 25);
+  --ok: oklch(78% 0.16 152);
+  --violet: oklch(62% 0.16 290);
 
   /* Every tint, border and transparency is derived from a base, never written
-     by hand, so a change to a base carries through all of them. */
-  --text-soft: color-mix(in oklch, var(--text) 45%, var(--muted));
-  --track: color-mix(in oklch, var(--line) 60%, var(--surface2));
-  --hdr-bg: color-mix(in oklch, var(--surface) 86%, transparent);
-  --shadow: color-mix(in oklch, var(--black) 70%, transparent);
-  --sweep: color-mix(in oklch, var(--white) 45%, transparent);
-  --accent-soft: color-mix(in oklch, var(--accent) 20%, var(--bg-deep));
-  --accent-line: color-mix(in oklch, var(--accent) 40%, var(--surface));
-  --accent-bubble: color-mix(in oklch, var(--accent) 32%, var(--bg-deep));
-  --accent-bubble-line: color-mix(in oklch, var(--accent) 45%, var(--bg-deep));
-  --av-bg: color-mix(in oklch, var(--accent) 28%, var(--bg));
-  --av-alt-bg: color-mix(in oklch, var(--violet) 30%, var(--bg));
-  --av-alt-fg: color-mix(in oklch, var(--violet) 45%, var(--white));
-  --warn-soft: color-mix(in oklch, var(--warn) 14%, var(--bg));
-  --warn-quiet: color-mix(in oklch, var(--warn) 7%, var(--bg));
-  --warn-line: color-mix(in oklch, var(--warn) 35%, var(--bg));
-  --warn-line-soft: color-mix(in oklch, var(--warn) 30%, var(--bg));
-  --warn-veil: color-mix(in oklch, var(--warn) 6%, transparent);
-  --ok-soft: color-mix(in oklch, var(--ok) 22%, var(--bg-deep));
+     by hand. They mix in oklab: the neutrals have a hue, and mixing in oklch
+     would swing a tint's hue toward theirs. Each role has the same ramp —
+     `-soft` fills, `-line` borders, `-ink` is the role's text on its fill —
+     and prose stays in the neutral text tokens whatever card it sits in. */
+  --accent-soft: color-mix(in oklab, var(--accent) 16%, var(--bg));
+  --accent-line: color-mix(in oklab, var(--accent) 42%, var(--bg));
+  --accent-ink: color-mix(in oklab, var(--accent) 55%, var(--white));
+  --accent-bubble: color-mix(in oklab, var(--accent) 22%, var(--bg));
+  --accent-bubble-line: color-mix(in oklab, var(--accent) 34%, var(--bg));
+  --warn-soft: color-mix(in oklab, var(--warn) 13%, var(--bg));
+  --warn-line: color-mix(in oklab, var(--warn) 40%, var(--bg));
+  --warn-ink: color-mix(in oklab, var(--warn) 72%, var(--white));
+  --bad-soft: color-mix(in oklab, var(--bad) 15%, var(--bg));
+  --bad-line: color-mix(in oklab, var(--bad) 45%, var(--bg));
+  --bad-ink: color-mix(in oklab, var(--bad) 55%, var(--white));
+  --ok-soft: color-mix(in oklab, var(--ok) 14%, var(--bg));
+  --ok-line: color-mix(in oklab, var(--ok) 40%, var(--bg));
+  --ok-ink: color-mix(in oklab, var(--ok) 55%, var(--white));
+  --av-bg: color-mix(in oklab, var(--accent) 20%, var(--surface));
+  --av-alt-bg: color-mix(in oklab, var(--violet) 30%, var(--bg));
+  --av-alt-fg: color-mix(in oklab, var(--violet) 45%, var(--white));
+  --hdr-bg: color-mix(in oklab, var(--surface) 88%, transparent);
+  --shadow: color-mix(in oklab, var(--black) 70%, transparent);
 
   --r: 14px;
 
@@ -208,16 +214,16 @@ button {
 
 @media (hover: hover) and (pointer: fine) {
   .btn:hover {
-    background: color-mix(in oklch, var(--surface2), var(--white) 8%);
+    background: color-mix(in oklab, var(--surface2), var(--white) 8%);
   }
 
   .btn.primary:hover {
-    background: color-mix(in oklch, var(--accent), var(--black) 12%);
-    border-color: color-mix(in oklch, var(--accent), var(--black) 12%);
+    background: color-mix(in oklab, var(--accent), var(--black) 12%);
+    border-color: color-mix(in oklab, var(--accent), var(--black) 12%);
   }
 
   .ap-review:hover {
-    background: color-mix(in oklch, var(--warn) 12%, transparent);
+    background: color-mix(in oklab, var(--warn) 12%, transparent);
   }
 
   .icon:hover {
@@ -235,15 +241,15 @@ button {
   }
 
   .doneitem:hover {
-    background: color-mix(in oklch, var(--surface), var(--white) 4%);
+    background: color-mix(in oklab, var(--surface), var(--white) 4%);
   }
 
   .chatitem:hover {
-    background: color-mix(in oklch, var(--surface), var(--white) 4%);
+    background: color-mix(in oklab, var(--surface), var(--white) 4%);
   }
 
   .ap-ref:hover {
-    background: color-mix(in oklch, var(--warn-quiet), var(--white) 4%);
+    background: color-mix(in oklab, var(--warn-soft), var(--white) 4%);
   }
 }
 
@@ -413,7 +419,7 @@ button {
 }
 
 .tag {
-  font-size: var(--step--4);
+  font-size: var(--step--3);
   text-transform: uppercase;
   letter-spacing: 0.06em;
   padding: 2px 6px;
@@ -555,8 +561,10 @@ button {
   background: var(--accent);
 }
 
+/* A quiet bot is not a success, so it wears no role colour: green is kept for
+   work that finished. */
 .dot.idle {
-  background: var(--ok);
+  background: var(--faint);
 }
 
 .grow {
@@ -586,13 +594,13 @@ button {
 }
 
 .state.bad {
-  border: 1px solid var(--warn-line);
-  background: var(--warn-soft);
-  color: var(--warn-ink);
+  border: 1px solid var(--bad-line);
+  background: var(--bad-soft);
+  color: var(--bad-ink);
 }
 
 .state.good {
-  border: 1px solid color-mix(in oklch, var(--ok) 35%, var(--bg));
+  border: 1px solid var(--ok-line);
   background: var(--ok-soft);
   color: var(--ok);
 }
@@ -611,7 +619,7 @@ button {
     linear-gradient(
         90deg,
         transparent,
-        color-mix(in oklch, var(--accent) 22%, transparent),
+        color-mix(in oklab, var(--accent) 22%, transparent),
         transparent
       )
       no-repeat,
@@ -703,7 +711,7 @@ button {
 }
 
 .steps-list li.done::before {
-  border-color: color-mix(in oklch, var(--ok) 45%, var(--bg));
+  border-color: var(--ok-line);
   background: var(--ok-soft);
 }
 
@@ -787,19 +795,21 @@ button {
 
 /* The outer radius is derived from the inner one plus the padding, so the card
    and the draft inside it are concentric and the gap between the curves is even
-   all the way round. */
+   all the way round. The card is a neutral surface with an amber edge: the
+   amber says "waiting on you", and the words stay in the text colours so the
+   question and the draft read as plainly as anything else on the screen. */
 .approval {
   --radius: 10px;
   --pad: 12px;
 
   border: 1px solid var(--warn-line);
-  background: linear-gradient(180deg, var(--warn-soft), var(--warn-quiet));
+  background: var(--surface);
   border-radius: calc(var(--radius) + var(--pad));
   padding: var(--pad);
   display: flex;
   flex-direction: column;
   gap: 10px;
-  box-shadow: 0 0 0 1px var(--warn-veil);
+  box-shadow: inset 3px 0 0 var(--warn);
 }
 
 .approval > * {
@@ -822,7 +832,7 @@ button {
 .ap-q {
   margin: 0;
   font-size: var(--step-0);
-  color: var(--warn-strong);
+  color: var(--text);
 }
 
 /* An approval that authorizes a real effect has to show the effect. Without the
@@ -835,9 +845,9 @@ button {
   flex-direction: column;
   gap: 4px;
   inline-size: 100%;
-  border: 1px solid var(--warn-line-soft);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--warn-quiet);
+  background: var(--bg-deep);
   padding-block: 9px;
   padding-inline: 10px;
   text-align: start;
@@ -861,7 +871,7 @@ button {
   overflow: hidden;
   font-size: var(--step--1);
   line-height: 1.5;
-  color: var(--warn-muted);
+  color: var(--text-soft);
 }
 
 .ap-draft-more {
@@ -884,7 +894,7 @@ button {
 .dlg-backdrop {
   position: fixed;
   inset: 0;
-  background: color-mix(in oklch, var(--black) 62%, transparent);
+  background: color-mix(in oklab, var(--black) 62%, transparent);
 }
 
 .dlg-panel {
@@ -897,18 +907,20 @@ button {
   border: 1px solid var(--warn-line);
   border-radius: var(--r);
   background: var(--bg-deep);
-  box-shadow: 0 24px 60px var(--shadow);
+  box-shadow:
+    inset 3px 0 0 var(--warn),
+    0 24px 60px var(--shadow);
 }
 
 .dlg-title {
   font-size: var(--step-0);
-  color: var(--warn-strong);
+  color: var(--text);
 }
 
 .dlg-question {
   margin: 0;
   font-size: var(--step--1);
-  color: var(--warn-body);
+  color: var(--text-soft);
 }
 
 /* The one place the whole artifact is readable, so it scrolls on its own rather
@@ -918,13 +930,13 @@ button {
   max-block-size: 40vh;
   overflow: auto;
   padding: 10px;
-  border: 1px solid var(--warn-line-soft);
+  border: 1px solid var(--line);
   border-radius: 10px;
-  background: var(--warn-quiet);
+  background: var(--surface);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--step--1);
   line-height: 1.5;
-  color: var(--warn-body);
+  color: var(--text-soft);
   white-space: pre-wrap;
 }
 
@@ -958,17 +970,20 @@ button {
 /* ---------- status panel ---------- */
 
 /* A failure is the harness's own word that something broke, so its row wears
-   the warn ramp; a live task is ordinary work and keeps the plain surface. */
+   the bad ramp on its edge — never the amber of an approval, because broken is
+   not the same as waiting on you. A live task is ordinary work and keeps the
+   plain surface. */
 .sp-fail {
   display: flex;
   gap: 10px;
   align-items: flex-start;
   text-align: start;
   padding: 11px 12px;
-  border: 1px solid var(--warn-line);
+  border: 1px solid var(--bad-line);
   border-radius: var(--r);
-  background: var(--warn-quiet);
-  color: var(--warn-strong);
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--bad);
+  color: var(--text);
 }
 
 .sp-task {
@@ -986,7 +1001,7 @@ button {
    rather than being reflowed into one. */
 .sp-detail {
   font-size: var(--step--1);
-  color: var(--warn-body);
+  color: var(--text-soft);
   white-space: pre-wrap;
 }
 
@@ -998,8 +1013,9 @@ button {
 
 /* ---------- parked tasks ---------- */
 
-/* A parked task is work the harness will not start on its own, so its row wears
-   the warn ramp like a failure and carries the button that runs it again. */
+/* A parked task is work the harness will not start on its own, so it is waiting
+   on a person: its edge wears the warn ramp like an approval, and it carries the
+   button that runs it again. */
 .sp-parked {
   display: flex;
   gap: 10px;
@@ -1008,14 +1024,15 @@ button {
   padding: 11px 12px;
   border: 1px solid var(--warn-line);
   border-radius: var(--r);
-  background: var(--warn-quiet);
-  color: var(--warn-strong);
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--warn);
+  color: var(--text);
 }
 
 /* The harness's own reason for the park, in its own words. */
 .sp-reason {
   font-size: var(--step--3);
-  color: var(--warn-muted);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1043,7 +1060,7 @@ button {
   border: 1px solid var(--warn-line);
   border-radius: var(--r);
   background: var(--warn-soft);
-  color: var(--warn-strong);
+  color: var(--text);
   font-size: var(--step--1);
   box-shadow: 0 10px 30px var(--shadow);
 }
@@ -1058,12 +1075,18 @@ button {
   }
 }
 
-/* An answer that worked, or one that is merely information, is not a warning:
-   the variant the update chose is what colours it. */
+/* A warning is the default; an error is something that broke and wears the bad
+   ramp, and an answer that worked, or one that is merely information, is not a
+   warning at all: the variant the update chose is what colours it. */
+.toast[data-variant="Error"] {
+  border-color: var(--bad-line);
+  background: color-mix(in oklab, var(--bad) 18%, var(--surface));
+}
+
 .toast[data-variant="Success"] {
-  border-color: color-mix(in oklch, var(--ok) 35%, var(--bg));
-  background: color-mix(in oklch, var(--ok) 14%, var(--bg));
-  color: color-mix(in oklch, var(--ok) 55%, var(--white));
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+  color: var(--ok-ink);
 }
 
 .toast[data-variant="Info"] {
@@ -1128,7 +1151,7 @@ button {
 
 .ap-foot {
   font-size: var(--step--3);
-  color: var(--warn-faint);
+  color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1154,6 +1177,8 @@ button {
 .btn.ghost {
   flex: 1;
   background: transparent;
+  /* With no fill, the edge is the only thing that says this is a button. */
+  border-color: var(--line-strong);
 }
 
 /* ---------- composer ---------- */
@@ -1294,22 +1319,22 @@ button {
 /* ---------- banner ---------- */
 
 /* The one place a screen-wide notice lives: a fault in the poll, not a decision
-   waiting on a person, so it is a line with the ramp the fault earns. */
+   waiting on a person, so it wears the bad ramp rather than an approval's amber. */
 .banner {
   display: flex;
   gap: 8px;
   align-items: center;
   padding-block: 9px;
   padding-inline: 11px;
-  border: 1px solid var(--warn-line-soft);
+  border: 1px solid var(--bad-line);
   border-radius: var(--r);
-  background: var(--warn-quiet);
+  background: var(--bad-soft);
 }
 
 .banner p {
   margin: 0;
   font-size: var(--step--1);
-  color: var(--warn-body);
+  color: var(--text);
 }
 
 /* A message the server has not confirmed yet. It is dimmed rather than hidden:
@@ -1604,9 +1629,9 @@ button {
   padding: 10px 12px;
   border: 1px dashed var(--warn-line);
   border-radius: var(--r);
-  background: var(--warn-quiet);
+  background: var(--warn-soft);
   font-size: var(--step--1);
-  color: var(--warn-body);
+  color: var(--text);
 }
 
 .ap-ref-text {
