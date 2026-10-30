@@ -150,6 +150,13 @@ The hourly cron sends each bot that declares a `brief` its brief, and prunes
 every bot's audit rows (30 days), recorded failures (7 days) and settled
 approvals (30 days) past their retention; pending approvals are never dropped.
 
+Each bot keeps its audit trail in its own SQLite (`mackbot_audit`): the work it
+admitted and how it settled, stops, retries, Executor calls, every step of an
+approval (requested, decided, delivered, resumed, expired, or a resume the
+harness refused), and every step of a delegation it made (requested or refused,
+delivered, re-attached after a crash, settled or failed). A row holds ids,
+lengths and reasons, never prompt text, drafts, form content or secrets.
+
 ## The bot roster
 
 The roster lives in the `Registry` Durable Object, not in the bundle. The web

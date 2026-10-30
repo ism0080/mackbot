@@ -22,6 +22,13 @@
  * it already made, so the work is not submitted twice. That is the only reason
  * `safe` is honest here; do not make the id depend on anything less durable.
  *
+ * The first attempt pins what it admitted in a memo of the call's task before
+ * anything reaches the target. A replay that finds the pin skips the guards and
+ * rejoins: the roster may have changed since, and refusing then would orphan
+ * work the target already holds. A replay whose first attempt already handed
+ * the answer to the reporter returns the same receipt without waiting, so the
+ * answer cannot arrive twice.
+ *
  * `args.operationId` survives only as an explicit caller override, namespaced so
  * it cannot collide with the target's own `http:`/`cron:`/`delegate:` ids. The
  * model is never asked to supply one.
@@ -62,7 +69,7 @@
  * Public API (what `src/index.ts` imports):
  *
  *   import { createBotDelegation } from "./bot-delegation.ts";
- *   registry.install(createBotDelegation({ env, sourceBotId: botId, submissions }));
+ *   registry.install(createBotDelegation({ env, sourceBotId: botId, submissions, audit }));
  */
 
 import type { Context } from "@earendil-works/chord";
@@ -78,6 +85,8 @@ import type {
   ToolExecutionResult,
 } from "@earendil-works/pi-durable";
 import type { BotConfig } from "@mackbot/contract";
+import type { PiWhenBusy } from "agents/harness/pi";
+import type { AuditSink } from "./audit-log.ts";
 import {
   delegateCallerOperationId,
   delegateReportRequestId,
@@ -89,7 +98,7 @@ import { REGISTRY_NAME } from "./services/bot-registry.ts";
 import { LONG_POLL_TIMEOUT_MS } from "./constants.ts";
 import { describeCause } from "./errors.ts";
 import { toPrettyJson } from "./json.ts";
-import { maybeApprovalNotice } from "./executor-mcp.ts";
+import { maybeApprovalNotice, redactSecrets } from "./executor-mcp.ts";
 import type { Env, WaitResult } from "./index.ts";
 import * as Effect from "effect/Effect";
 
@@ -103,6 +112,12 @@ export type BotDelegationConfig = {
    * is treated as the first hand-off, so only self-delegation is refused.
    */
   readonly submissions?: (conversationId: ConversationId) => Promise<readonly SubmissionRecord[]>;
+  /**
+   * Where each step of a delegation is recorded, on the delegating bot's side:
+   * requested or refused, delivered, re-attached after a replay, handed to the
+   * reporter, settled or failed. Absent, nothing is audited.
+   */
+  readonly audit?: AuditSink;
 };
 
 /**
@@ -137,28 +152,49 @@ export interface DelegationRequest {
   readonly chain: readonly string[];
 }
 
+/** Which guard refused a delegation. */
+export type DelegationRefusalReason = "unknown-bot" | "self" | "loop" | "depth" | "allowlist";
+
+/** A refused delegation: which guard refused it, and what the model is told. */
+export interface DelegationRefusal {
+  readonly reason: DelegationRefusalReason;
+  readonly message: string;
+}
+
 /**
  * Why a delegation is refused, or `undefined` when it may go ahead. The target
  * must be declared, must not be the source or any bot the work already passed
  * through, the chain must stay within {@link MAX_DELEGATION_DEPTH}, and the
  * source's `delegatesTo` must allow it.
  */
-export const refuseDelegation = (request: DelegationRequest): string | undefined => {
+export const refuseDelegation = (request: DelegationRequest): DelegationRefusal | undefined => {
   const { roster, source, target, chain } = request;
   if (!Object.hasOwn(roster, target)) {
-    return `unknown bot "${target}". Declared bots: ${Object.keys(roster).join(", ")}`;
+    return {
+      reason: "unknown-bot",
+      message: `unknown bot "${target}". Declared bots: ${Object.keys(roster).join(", ")}`,
+    };
   }
-  if (target === source) return "a bot cannot delegate to itself";
+  if (target === source) return { reason: "self", message: "a bot cannot delegate to itself" };
   if (chain.includes(target)) {
-    return `"${target}" already handed this work along (${[...chain, source].join(" -> ")}); delegating back to it would loop. Answer with what you have instead.`;
+    return {
+      reason: "loop",
+      message: `"${target}" already handed this work along (${[...chain, source].join(" -> ")}); delegating back to it would loop. Answer with what you have instead.`,
+    };
   }
   if (chain.length + 1 > MAX_DELEGATION_DEPTH) {
-    return `this work has already been delegated ${chain.length} times (${[...chain, source].join(" -> ")}); the limit is ${MAX_DELEGATION_DEPTH}. Answer with what you have instead.`;
+    return {
+      reason: "depth",
+      message: `this work has already been delegated ${chain.length} times (${[...chain, source].join(" -> ")}); the limit is ${MAX_DELEGATION_DEPTH}. Answer with what you have instead.`,
+    };
   }
   const policy = createDelegationPolicy(roster);
   if (!policy.canDelegate(source, target)) {
     const allowed = policy.allowedTargets(source);
-    return `bot "${source}" is not allowed to delegate to "${target}" (not in delegatesTo: ${allowed.join(", ") || "(none)"})`;
+    return {
+      reason: "allowlist",
+      message: `bot "${source}" is not allowed to delegate to "${target}" (not in delegatesTo: ${allowed.join(", ") || "(none)"})`,
+    };
   }
   return undefined;
 };
@@ -183,6 +219,19 @@ type DelegationReportCheckpoint =
 const REPORTER_NAME = "mackbot.delegation-reporter";
 /** The tool task memo that keeps a replay from starting a second reporter. */
 const REPORTER_MEMO = "delegation.reporterTask";
+/**
+ * The tool task memo that pins what the first attempt of a call admitted: the
+ * target and the operation it submitted under. A replay that finds it rejoins
+ * that operation instead of deciding again.
+ */
+const ADMISSION_MEMO = "delegation.admission";
+
+/** What a call admitted, as {@link ADMISSION_MEMO} keeps it. */
+type DelegationAdmission = {
+  readonly target: string;
+  readonly operationId: string;
+  readonly depth: number;
+};
 /**
  * How many long-polls one reporter spends before it gives up and reports that
  * the target never settled: roughly four hours at the 55s bound.
@@ -247,6 +296,7 @@ const awaitTarget = (
  */
 const createReporter = (
   env: Env,
+  audit: AuditSink,
 ): Task<DelegationReportInput, DelegationReportCheckpoint, null, object> =>
   defineTask<DelegationReportInput, DelegationReportCheckpoint, null>({
     name: REPORTER_NAME,
@@ -268,6 +318,18 @@ const createReporter = (
           );
           return;
         }
+        // A rerun of this phase records the settlement again, and the audit
+        // log keeps one per operation.
+        audit({
+          kind: "delegation.settled",
+          operationId: task.input.operationId,
+          detail: {
+            target: task.input.target,
+            status: result.status,
+            reason: result.reason ?? null,
+            via: "reporter",
+          },
+        });
         const answer =
           result.status === "timeout"
             ? `[delegation to "${task.input.target}" never settled (operationId ${task.input.operationId})]`
@@ -305,9 +367,27 @@ const createReporter = (
     },
   });
 
+/** The arguments the model passes `delegate_to_bot`. */
+interface DelegateArgs {
+  readonly target: string;
+  readonly task: string;
+  readonly operationId?: string;
+  readonly whenBusy?: PiWhenBusy;
+  readonly wait?: boolean;
+}
+
+/** What admitting a call decided: the admission it pinned, or the guard that refused it. */
+type AdmissionDecision =
+  | { readonly kind: "admitted"; readonly admission: DelegationAdmission }
+  | { readonly kind: "refused"; readonly refusal: DelegationRefusal };
+
+/** How a failure's words are kept in the audit trail: without secrets, and bounded. */
+const MAX_AUDIT_ERROR_CHARS = 500;
+
 export function createBotDelegation(config: BotDelegationConfig): Extension {
   const { env, sourceBotId } = config;
-  const reporterTask = createReporter(env);
+  const audit: AuditSink = config.audit ?? (() => undefined);
+  const reporterTask = createReporter(env, audit);
 
   /**
    * Start the reporter for this call, or reuse the one a replay already started.
@@ -331,6 +411,171 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
       yield* attempt(() => api.memo(REPORTER_MEMO, String(created), context));
       return String(created);
     });
+
+  /**
+   * Decide a call's first attempt: run the guards, and pin what they admitted
+   * before anything reaches the target.
+   *
+   * The pin is what makes a replay rejoin rather than decide again. The roster
+   * a replay would read may have changed since, and a guard that now refuses
+   * would leave the target holding work this call no longer answers for.
+   */
+  const admit = Effect.fnUntraced(function* (
+    args: DelegateArgs,
+    api: ToolExecutionApi,
+    context: Context,
+  ): Effect.fn.Return<AdmissionDecision, Error> {
+    // The roster is read on every call, because a human may have changed it
+    // since the last one.
+    const bots = yield* attempt(() => env.Registry.getByName(REGISTRY_NAME).roster());
+    const submissions = config.submissions;
+    const chain =
+      submissions === undefined
+        ? []
+        : runDelegationChain(yield* attempt(() => submissions(api.conversationId)));
+    // The call's task names the operation, so a replay of this call joins the
+    // submission it already made. The chain rides in the id, so the target
+    // refuses to hand the work back.
+    const operationId =
+      args.operationId === undefined
+        ? delegateTaskOperationId(sourceBotId, String(api.taskId), chain)
+        : delegateCallerOperationId(sourceBotId, args.operationId, chain);
+    const refusal = refuseDelegation({
+      roster: bots,
+      source: sourceBotId,
+      target: args.target,
+      chain,
+    });
+    if (refusal !== undefined) {
+      audit({
+        kind: "delegation.refused",
+        operationId,
+        detail: { target: args.target, reason: refusal.reason, chain: [...chain, sourceBotId] },
+      });
+      return { kind: "refused", refusal };
+    }
+    // The durable winner, so two attempts racing to pin agree on one.
+    const admission = yield* attempt(() =>
+      api.memo<DelegationAdmission>(
+        ADMISSION_MEMO,
+        { target: args.target, operationId, depth: chain.length + 1 },
+        context,
+      ),
+    );
+    audit({
+      kind: "delegation.requested",
+      operationId: admission.operationId,
+      detail: {
+        target: admission.target,
+        chain: [...chain, sourceBotId],
+        depth: admission.depth,
+        whenBusy: args.whenBusy ?? "followUp",
+        wait: args.wait !== false,
+        // A length, not the task: the audit trail is not a copy of the work.
+        taskLength: args.task.length,
+      },
+    });
+    return { kind: "admitted", admission };
+  });
+
+  /** A failure as the audit trail keeps it: no Executor secret, no URL, bounded. */
+  const failed = (operationId: string, target: string, cause: unknown): ToolExecutionResult => {
+    const error = redactSecrets(describeCause(cause), {
+      url: env.EXECUTOR_URL,
+      token: env.EXECUTOR_TOKEN,
+    }).slice(0, MAX_AUDIT_ERROR_CHARS);
+    audit({ kind: "delegation.failed", operationId, detail: { target, error } });
+    return {
+      output: [
+        {
+          type: "text",
+          text: `delegation to "${target}" failed: ${describeCause(cause)}. The target may already hold the work; do not resubmit it.`,
+        },
+      ],
+      isError: true,
+    };
+  };
+
+  /**
+   * Submit an admitted delegation and wait for it, or rejoin it on a replay.
+   *
+   * A replay whose first attempt already handed the answer to a reporter
+   * returns the same receipt and leaves the target alone: waiting again could
+   * deliver the answer twice, once here and once from the reporter. Otherwise
+   * the replay submits under the pinned id, which the target joins to the work
+   * it already holds, and waits: a target that settled meanwhile answers at
+   * once with the answer the first attempt would have returned.
+   */
+  const deliver = Effect.fnUntraced(function* (
+    args: DelegateArgs,
+    admission: DelegationAdmission,
+    replayed: boolean,
+    api: ToolExecutionApi,
+    context: Context,
+  ): Effect.fn.Return<ToolExecutionResult, Error> {
+    const { target, operationId } = admission;
+    // The answer outlives this call: a durable reporter delivers it as a new
+    // message instead of asking the model to poll.
+    const running = (): ToolExecutionResult => ({
+      output: [
+        {
+          type: "text",
+          text: [
+            `Delegated to "${target}".`,
+            "The task is running; its answer will arrive as a new message in",
+            "this conversation. Do not resubmit it.",
+          ].join(" "),
+        },
+      ],
+    });
+    if (replayed) {
+      const reporter = yield* attempt(() => api.memo<string>(REPORTER_MEMO, context));
+      audit({
+        kind: "delegation.reattached",
+        operationId,
+        detail: { target, reporter: reporter ?? null },
+      });
+      if (reporter !== undefined) return running();
+    }
+    const stub = env.Bot.getByName(target);
+    const receipt = yield* attempt(() =>
+      stub.submit(args.task, operationId, args.whenBusy ?? "followUp"),
+    );
+    // `accepted: false` is the target joining work it already holds: the
+    // evidence that a replay did not submit twice.
+    audit({
+      kind: "delegation.delivered",
+      operationId,
+      detail: { target, accepted: receipt.accepted },
+    });
+    const reportInput: DelegationReportInput = {
+      target,
+      operationId,
+      reportRequestId: delegateReportRequestId(sourceBotId, String(api.taskId)),
+    };
+    const background = (why: "no-wait" | "timeout") =>
+      Effect.gen(function* () {
+        const reporter = yield* startReporter(api, context, reportInput);
+        audit({
+          kind: "delegation.backgrounded",
+          operationId,
+          detail: { target, why, reporter },
+        });
+        return running();
+      });
+    if (args.wait === false) return yield* background("no-wait");
+    const result = yield* attempt(() => stub.wait(operationId, LONG_POLL_TIMEOUT_MS));
+    if (result.status === "timeout") return yield* background("timeout");
+    audit({
+      kind: "delegation.settled",
+      operationId,
+      detail: { target, status: result.status, reason: result.reason ?? null, via: "call" },
+    });
+    return {
+      output: [{ type: "text", text: reportOf(target, result) }],
+      isError: result.status === "unanswered",
+    };
+  });
 
   return defineExtension({
     name: "bot-delegation",
@@ -361,90 +606,46 @@ export function createBotDelegation(config: BotDelegationConfig): Extension {
             }),
           ),
         }),
-        // Safe to replay after a crash: a replay re-derives the same request id
-        // from this call's task and rejoins the target's existing submission.
+        // Safe to replay after a crash: the first attempt pins its operation id,
+        // derived from this call's task, and a replay rejoins it.
         replay: "safe",
-        execute: (args, api, callContext): Promise<ToolExecutionResult> => {
-          // SAFETY: every branch below builds a `ToolExecutionResult`; the
-          // assertion only widens its `type: "text"` literals back to the
-          // tool-result content shape that `Promise<ToolExecutionResult>` needs.
-          const delegated = Effect.gen(function* () {
-            // The roster is read on every call, because a human may have
-            // changed it since the last one.
-            const bots = yield* attempt(() => env.Registry.getByName(REGISTRY_NAME).roster());
-            const submissions = config.submissions;
-            const chain =
-              submissions === undefined
-                ? []
-                : runDelegationChain(yield* attempt(() => submissions(api.conversationId)));
-            const refusal = refuseDelegation({
-              roster: bots,
-              source: sourceBotId,
-              target: args.target,
-              chain,
-            });
-            if (refusal !== undefined) {
-              return { output: [{ type: "text", text: refusal }], isError: true };
-            }
-            // The call's task names the operation, so a replay of this call
-            // joins the submission it already made. The chain rides in the id,
-            // so the target refuses to hand the work back.
-            const operationId =
-              args.operationId === undefined
-                ? delegateTaskOperationId(sourceBotId, String(api.taskId), chain)
-                : delegateCallerOperationId(sourceBotId, args.operationId, chain);
-            const whenBusy = args.whenBusy ?? "followUp";
-            const stub = env.Bot.getByName(args.target);
-            yield* attempt(() => stub.submit(args.task, operationId, whenBusy));
-
-            const reportInput: DelegationReportInput = {
-              target: args.target,
-              operationId,
-              reportRequestId: delegateReportRequestId(sourceBotId, String(api.taskId)),
-            };
-            // The answer outlives this call: a durable reporter delivers it as
-            // a new message instead of asking the model to poll.
-            const running = (): ToolExecutionResult => ({
-              output: [
-                {
-                  type: "text" as const,
-                  text: [
-                    `Delegated to "${args.target}".`,
-                    "The task is running; its answer will arrive as a new message in",
-                    "this conversation. Do not resubmit it.",
-                  ].join(" "),
-                },
-              ],
-            });
-
-            if (args.wait === false) {
-              yield* startReporter(api, callContext, reportInput);
-              return running();
-            }
-            const result = yield* attempt(() => stub.wait(operationId, LONG_POLL_TIMEOUT_MS));
-            if (result.status === "timeout") {
-              yield* startReporter(api, callContext, reportInput);
-              return running();
-            }
-            return {
-              output: [{ type: "text", text: reportOf(args.target, result) }],
-              isError: result.status === "unanswered",
-            };
-          }).pipe(
-            Effect.catch((cause) =>
-              Effect.succeed({
-                output: [
-                  {
-                    type: "text",
-                    text: `delegation to "${args.target}" failed: ${describeCause(cause)}. The target may already hold the work; do not resubmit it.`,
-                  },
-                ],
-                isError: true,
-              }),
+        execute: (args, api, callContext): Promise<ToolExecutionResult> =>
+          Effect.runPromise(
+            Effect.gen(function* () {
+              const pinned = yield* attempt(() =>
+                api.memo<DelegationAdmission>(ADMISSION_MEMO, callContext),
+              );
+              const decision: AdmissionDecision =
+                pinned === undefined
+                  ? yield* admit(args, api, callContext)
+                  : { kind: "admitted", admission: pinned };
+              if (decision.kind === "refused") {
+                const refused: ToolExecutionResult = {
+                  output: [{ type: "text", text: decision.refusal.message }],
+                  isError: true,
+                };
+                return refused;
+              }
+              const { admission } = decision;
+              return yield* deliver(args, admission, pinned !== undefined, api, callContext).pipe(
+                Effect.catch((cause) =>
+                  Effect.succeed(failed(admission.operationId, admission.target, cause)),
+                ),
+              );
+            }).pipe(
+              // Before anything was admitted there is no operation yet, so the
+              // failure is filed under the id the call's task would have used.
+              Effect.catch((cause) =>
+                Effect.succeed(
+                  failed(
+                    delegateTaskOperationId(sourceBotId, String(api.taskId)),
+                    args.target,
+                    cause,
+                  ),
+                ),
+              ),
             ),
-          ) as Effect.Effect<ToolExecutionResult>;
-          return Effect.runPromise(delegated);
-        },
+          ),
       }),
     ],
   });

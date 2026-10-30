@@ -38,6 +38,13 @@ foundation pieces are already implemented and are intentionally omitted here:
 - Retention: the hourly cron prunes each bot's audit rows, recorded failures
   and settled approvals past their retention.
 - A delegation depth limit: a chain of hand-offs is refused past three.
+- Delegation that survives a crash: `delegate_to_bot` is replay-safe. Its
+  operation id comes from the call's durable task id, the first attempt pins
+  what it admitted, and a replay rejoins the target's operation, or returns
+  the receipt when the reporter already took the answer over.
+- Audit-runtime integration: the audit trail records the approval lifecycle
+  and every delegation a bot makes, beside submissions, settlements, stops and
+  Executor calls.
 
 ## Product and UX
 
@@ -79,19 +86,12 @@ foundation pieces are already implemented and are intentionally omitted here:
 - **Asynchronous delegation.** Add async fire-and-poll delegation, richer thread
   lineage, and stronger anti-livelock behavior. The basic `delegatesTo`
   allowlist and the depth limit are implemented.
-- **Delegation that survives a crash.** `delegate_to_bot` is still an unsafe
-  replay: an eviction mid-delegation leaves the model with an interrupted
-  result. Its operation id makes the submission idempotent, so deriving it
-  from the tool call's own task id would make the delegation replay-safe.
 - **Remaining operation taxonomy.** Origin labelling covers `http`, `cron`, and
   `delegate` in `/status` and in audit records. Still open: a queryable `origin`
   column on the audit table (the value lives in `detail`, and the operation id
   prefix already carries it), approval turns labelled as their own origin, and
   per-origin spend, which `pi.usage` does not track because it belongs to the
   harness.
-- **Audit-runtime integration.** The audit seam now records submissions,
-  settlements, stops and Executor calls. Still open: the delegation and
-  approval flows are not audited.
 - **Sandbox and workspace.** Add a durable virtual filesystem and dynamic code
   execution, reserving containers for native tools, git, package installation,
   or compilers.
@@ -133,4 +133,4 @@ foundation pieces are already implemented and are intentionally omitted here:
 2. Async delegation and thread lineage.
 3. Bot presets and saved routines.
 4. Additional channels.
-5. Spend controls, tracing, and audit-runtime integration.
+5. Spend controls and tracing.

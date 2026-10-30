@@ -184,6 +184,7 @@ export class Bot extends DurableObject<Env> {
           env,
           sourceBotId: botId,
           submissions: (conversationId) => this.#submissionsOf(conversationId),
+          audit: (record) => this.#record(record),
         }),
       );
       // The voice contract is fixed prose, not bot configuration: installing it
