@@ -28,6 +28,8 @@
  *
  * `onPaused` is how a paused call becomes durable: the bridge detects the pause
  * and hands over the requestId and the envelope, and the host records the row.
+ * Only Executor's own envelope counts as a pause: a result's text carries what
+ * the tool read, which anyone can write, so it is never searched for one.
  *
  * `url` is the org/connection MCP URL. Its `elicitation_mode` decides how
  * approvals arrive: the bare URL uses `model`, where the paused result carries a
@@ -160,24 +162,42 @@ type Bridge = {
 const makeBridge = (config: ExecutorMcpConfig, connector: Connector): Bridge => {
   const resolved = resolveConfig(config);
   let shared: Promise<Client> | undefined;
+  // The client `shared` resolved to, so a failure can tell whether the client
+  // it saw is still the one being handed out.
+  let sharedClient: Client | undefined;
+  const connectShared = (): Promise<Client> => {
+    const attempt: Promise<Client> = connector(resolved).then(
+      (client) => {
+        if (shared === attempt) sharedClient = client;
+        return client;
+      },
+      (cause: unknown) => {
+        // Let the next call try again instead of reusing a rejected promise.
+        if (shared === attempt) shared = undefined;
+        throw cause;
+      },
+    );
+    return attempt;
+  };
   return {
     config: resolved,
     open: () => Effect.tryPromise({ try: () => connector(resolved), catch: (cause) => cause }),
     acquireShared: () =>
       Effect.tryPromise({
         try: () => {
-          shared ??= connector(resolved).catch((cause: unknown) => {
-            // Let the next call try again instead of reusing a rejected promise.
-            shared = undefined;
-            throw cause;
-          });
+          shared ??= connectShared();
           return shared;
         },
         catch: (cause) => cause,
       }),
     dropShared: (client) =>
       Effect.sync(() => {
-        shared = undefined;
+        // A call that failed on a client another call already replaced must not
+        // retire the healthy one that replaced it.
+        if (sharedClient === client) {
+          shared = undefined;
+          sharedClient = undefined;
+        }
         void client.close().catch(() => undefined);
       }),
   };
@@ -226,6 +246,31 @@ const errorResult = (text: string): ToolExecutionResult => ({
   isError: true,
 });
 
+/** The longest failure text the model is shown. */
+const MAX_ERROR_CHARS = 500;
+
+/**
+ * A failure's words with every secret the bridge holds taken out. Transport
+ * errors quote the URL they failed on, and EXECUTOR_URL names the org
+ * connection, so the token, the configured URL, any other URL and any bearer
+ * credential are replaced before the text goes anywhere.
+ */
+export const redactSecrets = (
+  text: string,
+  secrets: { readonly url: string; readonly token: string },
+): string => {
+  let redacted = text;
+  for (const [secret, placeholder] of [
+    [secrets.token, "[redacted]"],
+    [secrets.url, "[executor-url]"],
+  ] as const) {
+    if (secret.length > 0) redacted = redacted.split(secret).join(placeholder);
+  }
+  return redacted
+    .replace(/Bearer\s+[^\s"',]+/giu, "Bearer [redacted]")
+    .replace(/[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/giu, "[url]");
+};
+
 const describeError = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
@@ -256,10 +301,7 @@ export const APPROVAL_TEXT_PATTERN =
 export const APPROVAL_STATUS_PATTERN = /"status"\s*:\s*"approval-required"/u;
 const REQUEST_ID_PATTERN = /"(?:requestId|executionId)"\s*:\s*"([^"]+)"/u;
 
-export const approvalNotice = (haystack: string): string => {
-  const url =
-    APPROVAL_URL_VALUE_PATTERN.exec(haystack)?.[1] ?? APPROVAL_URL_PATTERN.exec(haystack)?.[0];
-  const requestId = REQUEST_ID_PATTERN.exec(haystack)?.[1];
+const noticeOf = (url: string | undefined, requestId: string | undefined): string => {
   const lines = ["APPROVAL REQUIRED — this call paused and needs the user to act."];
   if (url !== undefined) lines.push(`Open this link to approve: ${url}`);
   if (requestId !== undefined) {
@@ -270,7 +312,20 @@ export const approvalNotice = (haystack: string): string => {
   return lines.join("\n");
 };
 
-/** Whether a result body is a call paused for the user. */
+export const approvalNotice = (haystack: string): string => {
+  const url =
+    APPROVAL_URL_VALUE_PATTERN.exec(haystack)?.[1] ?? APPROVAL_URL_PATTERN.exec(haystack)?.[0];
+  const requestId = REQUEST_ID_PATTERN.exec(haystack)?.[1];
+  return noticeOf(url, requestId);
+};
+
+/**
+ * Whether free text reads like a paused call. This is a heuristic over prose,
+ * for relaying another bot's answer; it never decides that an Executor result
+ * paused, because a result's text can quote anything a tool read — an email
+ * body, a web page — and {@link renderResult} only trusts Executor's own
+ * envelope.
+ */
 export const looksPaused = (haystack: string): boolean =>
   APPROVAL_STATUS_PATTERN.test(haystack) ||
   APPROVAL_KEY_PATTERN.test(haystack) ||
@@ -280,19 +335,73 @@ export const maybeApprovalNotice = (haystack: string): string | null =>
   looksPaused(haystack) ? approvalNotice(haystack) : null;
 
 /**
+ * The statuses Executor's own pause envelope carries: `approval-required` from
+ * the hosted endpoint, and the open-source host's `waiting_for_interaction` and
+ * browser-mode `user_approval_required`.
+ */
+const PAUSE_STATUSES = ["approval-required", "waiting_for_interaction", "user_approval_required"];
+
+/**
+ * Executor's pause envelope: a top-level object whose own `status` says the
+ * call paused, with the id `resume` takes. Executor puts a tool's data under
+ * `result`, never at the top level, so a tool cannot forge this shape by what
+ * it returns.
+ */
+const PauseEnvelopeSchema = Schema.Struct({
+  status: Schema.Literals(PAUSE_STATUSES),
+  requestId: Schema.optional(Schema.String),
+  executionId: Schema.optional(Schema.String),
+  approvalUrl: Schema.optional(Schema.String),
+});
+
+const PauseEnvelopeFromText = Schema.fromJsonString(PauseEnvelopeSchema);
+
+type PauseEnvelope = typeof PauseEnvelopeSchema.Type;
+
+/** A pause Executor reported, with the payload it came in. */
+type Pause = { readonly envelope: PauseEnvelope; readonly raw: string };
+
+/**
+ * The pause a result reports, read from the result's structure, never searched
+ * for in its text. `structuredContent` is Executor's envelope whenever it sends
+ * one, so when it is present it is the only thing read: a tool's output in the
+ * text section cannot speak for it. A result with no `structuredContent` is
+ * read as one text item that is, in its entirety, the envelope.
+ */
+const pauseOf = (result: CallToolResult): Pause | undefined => {
+  const structured = result.structuredContent;
+  if (structured !== undefined) {
+    return Option.getOrUndefined(
+      Option.map(Schema.decodeUnknownOption(PauseEnvelopeSchema)(structured), (envelope) => ({
+        envelope,
+        raw: JSON.stringify(structured),
+      })),
+    );
+  }
+  const [only, ...rest] = result.content;
+  if (only === undefined || only.type !== "text" || rest.length > 0) return undefined;
+  const text = only.text.trim();
+  return Option.getOrUndefined(
+    Option.map(Schema.decodeUnknownOption(PauseEnvelopeFromText)(text), (envelope) => ({
+      envelope,
+      raw: text,
+    })),
+  );
+};
+
+const requestIdOfPause = (pause: Pause): string | undefined =>
+  pause.envelope.requestId ?? pause.envelope.executionId;
+
+/**
  * The envelope of a paused result, or `undefined`. A pause with no `requestId`
  * is not one: nothing can resume it and there is nothing durable to record, so
  * the notice still guides the model but no approval row is written.
  */
-const pausedEnvelope = (
-  text: string,
-  compact: string,
-  haystack: string,
-): PausedEnvelope | undefined => {
-  if (!looksPaused(haystack)) return undefined;
-  const requestId = REQUEST_ID_PATTERN.exec(haystack)?.[1];
+const pausedEnvelope = (pause: Pause | undefined): PausedEnvelope | undefined => {
+  if (pause === undefined) return undefined;
+  const requestId = requestIdOfPause(pause);
   if (requestId === undefined) return undefined;
-  return { requestId, envelope: compact.length > 0 ? compact : text };
+  return { requestId, envelope: pause.raw };
 };
 
 const JsonFromText = Schema.fromJsonString(Schema.Unknown);
@@ -378,13 +487,16 @@ export const renderResult = (
     structuredContent === undefined || repeatsStructured(text, compact)
       ? ""
       : JSON.stringify(structuredContent, null, 2);
-  const haystack = structured.length > 0 ? `${text}\n${structured}` : text;
   const body = renderBody(text, structured);
-  const paused = pausedEnvelope(text, compact, haystack);
+  const pause = pauseOf(result);
+  const paused = pausedEnvelope(pause);
   if (paused !== undefined && onPaused !== undefined) {
     announcePaused(onPaused, paused);
   }
-  const output = paused === undefined ? body : `${approvalNotice(haystack)}\n\n${body}`;
+  const output =
+    pause === undefined
+      ? body
+      : `${noticeOf(pause.envelope.approvalUrl, requestIdOfPause(pause))}\n\n${body}`;
   // Reads the whole payload even when it was not rendered, so dropping a repeat
   // cannot hide a failure.
   const failed = programFailed(compact);
@@ -409,10 +521,29 @@ const runMetaTool = (
           result,
           paused === undefined ? undefined : (found) => paused({ ...found, session }),
         ),
-      onFailure: (cause) =>
-        errorResult(`Executor MCP call failed (${name}): ${describeError(cause)}`),
+      onFailure: (cause) => failureResult(bridge.config, name, cause),
     }),
   );
+
+/**
+ * The result a failed call gives the model. The failure's words help it react
+ * (a validation error, a timeout), but they go into the transcript and on to
+ * the model provider, so they are redacted and bounded; the log keeps the
+ * whole failure, with the credential still taken out.
+ */
+export const failureResult = (
+  config: { readonly url: string; readonly token: string },
+  name: string,
+  cause: unknown,
+): ToolExecutionResult => {
+  const detail = describeError(cause);
+  const logged = config.token.length > 0 ? detail.split(config.token).join("[redacted]") : detail;
+  console.error(`mackbot: Executor MCP call failed (${name}): ${logged}`);
+  const redacted = redactSecrets(detail, config);
+  const bounded =
+    redacted.length > MAX_ERROR_CHARS ? `${redacted.slice(0, MAX_ERROR_CHARS)}…` : redacted;
+  return errorResult(`Executor MCP call failed (${name}): ${bounded}`);
+};
 
 const executorProtocol = [
   "All real tools live behind Executor; you reach them only through the executor_* tools.",
